@@ -1,0 +1,17 @@
+services:
+  seo-checker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3010:3010"
+    env_file:
+      - .env.local
+    environment:
+      DATA_DIR: /data
+      WORKSPACE_ROOT: /workspace
+      PORT: 3010
+    volumes:
+      - ${DATA_HOST_DIR:-./docker-data}:/data
+      - ${WORKSPACE_HOST_ROOT:-/home/sajden/github}:/workspace:ro
+    restart: unless-stopped
