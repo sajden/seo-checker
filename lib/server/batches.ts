@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import type { BatchConfig, BatchRunSummary, CreateBatchRequest } from "@/lib/types";
+import type { BatchConfig, BatchRunDetails, BatchRunSummary, CreateBatchRequest } from "@/lib/types";
 import { getDataDir } from "@/lib/server/runtime-paths";
 
 const storageDir = getDataDir();
@@ -46,16 +46,31 @@ export async function getBatch(batchId: string) {
   return batches.find((batch) => batch.id === batchId) ?? null;
 }
 
-export async function updateBatchRun(batchId: string, summary: BatchRunSummary) {
+export async function updateBatchRun(batchId: string, summary: BatchRunSummary, details?: BatchRunDetails) {
   const batches = await listBatches();
   const updated = batches.map((batch) =>
     batch.id === batchId
-      ? {
+      ? (() => {
+          const allFindings = [...(details?.sourceFindings ?? []), ...(details?.crawlFindings ?? [])];
+          const historyItem = {
+            ranAt: summary.ranAt,
+            sourceFindings: summary.sourceFindings,
+            crawlFindings: summary.crawlFindings,
+            gscRows: summary.gscRows,
+            criticalFindings: allFindings.filter((finding) => finding.severity === "critical").length,
+            warningFindings: allFindings.filter((finding) => finding.severity === "warning").length,
+            infoFindings: allFindings.filter((finding) => finding.severity === "info").length
+          };
+
+          return {
           ...batch,
           updatedAt: summary.ranAt,
           lastRunAt: summary.ranAt,
-          lastRunSummary: summary
-        }
+          lastRunSummary: summary,
+          lastRunDetails: details,
+          runHistory: [historyItem, ...(batch.runHistory ?? [])].slice(0, 30)
+        };
+      })()
       : batch
   );
 

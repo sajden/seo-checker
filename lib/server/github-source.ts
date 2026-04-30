@@ -95,7 +95,7 @@ export function normalizeGitHubRepo(value: string) {
 async function githubRequest<T>(path: string): Promise<T> {
   const headers: Record<string, string> = {
     accept: "application/vnd.github+json",
-    "user-agent": "seo-checker/0.1"
+    "user-agent": "seo-monitor/0.1"
   };
 
   if (process.env.GITHUB_TOKEN) {

@@ -3,10 +3,10 @@ import type { ReactNode } from "react";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  metadataBase: new URL("https://seo-checker.local"),
+  metadataBase: new URL("https://seo-monitor.local"),
   title: {
-    default: "SEO Checker",
-    template: "%s | SEO Checker"
+    default: "SEO Monitor",
+    template: "%s | SEO Monitor"
   },
   description: "Hybrid SEO-checker för source-analyser, crawl och framtida GSC-integration."
 };

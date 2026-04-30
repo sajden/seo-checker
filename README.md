@@ -1,4 +1,4 @@
-# SEO Checker
+# SEO Monitor
 
 Hybrid SEO-checker för två huvudsakliga arbetslägen:
 
@@ -7,7 +7,7 @@ Hybrid SEO-checker för två huvudsakliga arbetslägen:
 
 ## Varför ett separat repo?
 
-Det här repo:t är tänkt som ett operativt verktyg bredvid `seo-hub`, inte som ännu ett innehållsflöde.
+Det här repo:t är tänkt som ett operativt verktyg bredvid `article-generator`, inte som ännu ett innehållsflöde.
 
 Fokus ligger på frågor som:
 
@@ -69,7 +69,7 @@ Compose-filen mountar:
 - `${DATA_HOST_DIR:-./docker-data}` -> `/data`
 - `${WORKSPACE_HOST_ROOT:-/home/sajden/github}` -> `/workspace` som read-only
 
-Om du vill analysera andra repos i containern, sätt `WORKSPACE_HOST_ROOT` på hosten eller ändra volymmounten i [compose.yaml](/home/sajden/github/seo-checker/compose.yaml).
+Om du vill analysera andra repos i containern, sätt `WORKSPACE_HOST_ROOT` på hosten eller ändra volymmounten i [compose.yaml](/home/sajden/github/seo-monitor/compose.yaml).
 
 ### Notering om auth
 

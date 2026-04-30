@@ -1,5 +1,5 @@
 services:
-  seo-checker:
+  seo-monitor:
     build:
       context: .
       dockerfile: Dockerfile

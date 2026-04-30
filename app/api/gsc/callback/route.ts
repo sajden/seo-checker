@@ -11,21 +11,25 @@ export async function GET(request: Request) {
   const cookieHeader = request.headers.get("cookie") ?? "";
   const cookieState = readCookie(cookieHeader, stateCookieName);
 
+  const redirectBase = process.env.GSC_REDIRECT_URI
+    ? new URL(process.env.GSC_REDIRECT_URI).origin
+    : url.origin;
+
   if (error) {
-    return NextResponse.redirect(new URL(`/?gsc=error&message=${encodeURIComponent(error)}`, url.origin));
+    return NextResponse.redirect(new URL(`/?gsc=error&message=${encodeURIComponent(error)}`, redirectBase));
   }
 
   if (!state || !cookieState || state !== cookieState) {
-    return NextResponse.redirect(new URL("/?gsc=error&message=invalid_state", url.origin));
+    return NextResponse.redirect(new URL("/?gsc=error&message=invalid_state", redirectBase));
   }
 
   if (!code) {
-    return NextResponse.redirect(new URL("/?gsc=error&message=missing_code", url.origin));
+    return NextResponse.redirect(new URL("/?gsc=error&message=missing_code", redirectBase));
   }
 
   try {
     await exchangeAuthorizationCode(code);
-    const response = NextResponse.redirect(new URL("/?gsc=connected", url.origin));
+    const response = NextResponse.redirect(new URL("/?gsc=connected", redirectBase));
     response.cookies.set(stateCookieName, "", {
       httpOnly: true,
       sameSite: "lax",
@@ -37,7 +41,7 @@ export async function GET(request: Request) {
     return response;
   } catch (exchangeError) {
     const message = exchangeError instanceof Error ? exchangeError.message : "oauth_exchange_failed";
-    return NextResponse.redirect(new URL(`/?gsc=error&message=${encodeURIComponent(message)}`, url.origin));
+    return NextResponse.redirect(new URL(`/?gsc=error&message=${encodeURIComponent(message)}`, redirectBase));
   }
 }
 

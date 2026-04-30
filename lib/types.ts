@@ -27,6 +27,8 @@ export type CrawledPage = {
   metaDescription: string | null;
   canonical: string | null;
   h1Count: number;
+  h1Text: string | null;
+  h2Texts: string[];
   lang: string | null;
   robots: string | null;
   internalLinks: string[];
@@ -122,6 +124,23 @@ export type BatchRunSummary = {
   ranAt: string;
 };
 
+export type BatchRunDetails = {
+  sourceFindings: SourceFinding[];
+  crawlFindings: CrawlFinding[];
+  gscRows: GscQueryRow[];
+  checkedAt: string;
+};
+
+export type BatchRunHistoryItem = {
+  ranAt: string;
+  sourceFindings: number;
+  crawlFindings: number;
+  gscRows: number;
+  criticalFindings: number;
+  warningFindings: number;
+  infoFindings: number;
+};
+
 export type BatchConfig = {
   id: string;
   name: string;
@@ -137,6 +156,8 @@ export type BatchConfig = {
   updatedAt: string;
   lastRunAt?: string;
   lastRunSummary?: BatchRunSummary;
+  lastRunDetails?: BatchRunDetails;
+  runHistory?: BatchRunHistoryItem[];
 };
 
 export type CreateBatchRequest = {

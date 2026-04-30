@@ -18,7 +18,7 @@ export async function crawlSite(siteUrl: string, maxPages = 12): Promise<CrawlRe
     const response = await fetch(currentUrl, {
       redirect: "follow",
       headers: {
-        "user-agent": "seo-checker/0.1 (+internal audit)"
+        "user-agent": "seo-monitor/0.1 (+internal audit)"
       }
     });
 
@@ -136,8 +136,8 @@ export async function crawlSite(siteUrl: string, maxPages = 12): Promise<CrawlRe
   const robotsUrl = `${origin}/robots.txt`;
   const sitemapUrl = `${origin}/sitemap.xml`;
   const [robotsResponse, sitemapResponse] = await Promise.allSettled([
-    fetch(robotsUrl, { headers: { "user-agent": "seo-checker/0.1 (+internal audit)" } }),
-    fetch(sitemapUrl, { headers: { "user-agent": "seo-checker/0.1 (+internal audit)" } })
+    fetch(robotsUrl, { headers: { "user-agent": "seo-monitor/0.1 (+internal audit)" } }),
+    fetch(sitemapUrl, { headers: { "user-agent": "seo-monitor/0.1 (+internal audit)" } })
   ]);
 
   if (robotsResponse.status === "fulfilled" && robotsResponse.value.status >= 400) {
@@ -181,7 +181,13 @@ function extractPageSignals(url: string, status: number, html: string): CrawledP
   const canonicalMatch = html.match(/<link[^>]+rel=["']canonical["'][^>]+href=["']([\s\S]*?)["'][^>]*>/i);
   const langMatch = html.match(/<html[^>]+lang=["']([\w-]+)["']/i);
   const robotsMatch = html.match(/<meta[^>]+name=["']robots["'][^>]+content=["']([\s\S]*?)["'][^>]*>/i);
-  const h1Count = [...html.matchAll(/<h1\b[^>]*>/gi)].length;
+  const h1Matches = [...html.matchAll(/<h1\b[^>]*>([\s\S]*?)<\/h1>/gi)];
+  const h1Count = h1Matches.length;
+  const h1Text = h1Matches[0]?.[1]?.replace(/<[^>]+>/g, '').trim() ?? null;
+  const h2Texts = [...html.matchAll(/<h2\b[^>]*>([\s\S]*?)<\/h2>/gi)]
+    .map(m => m[1].replace(/<[^>]+>/g, '').trim())
+    .filter(Boolean)
+    .slice(0, 10);
   const internalLinks = extractInternalLinks(url, html);
 
   return {
@@ -191,6 +197,8 @@ function extractPageSignals(url: string, status: number, html: string): CrawledP
     metaDescription: metaDescriptionMatch?.[1]?.trim() ?? null,
     canonical: canonicalMatch?.[1]?.trim() ?? null,
     h1Count,
+    h1Text,
+    h2Texts,
     lang: langMatch?.[1]?.trim() ?? null,
     robots: robotsMatch?.[1]?.trim() ?? null,
     internalLinks
