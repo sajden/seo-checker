@@ -58,11 +58,12 @@ export async function getGscProviderReport(): Promise<GscReport> {
   };
 }
 
-export function buildGscAuthorizationUrl(state: string) {
+export function buildGscAuthorizationUrl(state: string, redirectUriOverride?: string) {
   const clientConfig = requireClientConfig();
+  const redirectUri = redirectUriOverride ?? clientConfig.redirectUri;
   const params = new URLSearchParams({
     client_id: clientConfig.clientId,
-    redirect_uri: clientConfig.redirectUri,
+    redirect_uri: redirectUri,
     response_type: "code",
     scope: gscScope,
     access_type: "offline",
@@ -74,14 +75,15 @@ export function buildGscAuthorizationUrl(state: string) {
   return `${googleOAuthUrl}?${params.toString()}`;
 }
 
-export async function exchangeAuthorizationCode(code: string) {
+export async function exchangeAuthorizationCode(code: string, redirectUriOverride?: string) {
   const clientConfig = requireClientConfig();
+  const redirectUri = redirectUriOverride ?? clientConfig.redirectUri;
   const existing = await readStoredGscOAuth();
   const token = await postTokenRequest({
     code,
     client_id: clientConfig.clientId,
     client_secret: clientConfig.clientSecret,
-    redirect_uri: clientConfig.redirectUri,
+    redirect_uri: redirectUri,
     grant_type: "authorization_code"
   });
 
