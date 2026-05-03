@@ -11,25 +11,23 @@ export async function GET(request: Request) {
   const cookieHeader = request.headers.get("cookie") ?? "";
   const cookieState = readCookie(cookieHeader, stateCookieName);
 
-  const redirectBase = process.env.GSC_REDIRECT_URI
-    ? new URL(process.env.GSC_REDIRECT_URI).origin
-    : url.origin;
+  const redirectBase = process.env.GSC_POST_AUTH_REDIRECT_URL ?? process.env.DASHBOARD_URL ?? url.origin;
 
   if (error) {
-    return NextResponse.redirect(new URL(`/?gsc=error&message=${encodeURIComponent(error)}`, redirectBase));
+    return redirectToDashboard(redirectBase, "error", error);
   }
 
   if (!state || !cookieState || state !== cookieState) {
-    return NextResponse.redirect(new URL("/?gsc=error&message=invalid_state", redirectBase));
+    return redirectToDashboard(redirectBase, "error", "invalid_state");
   }
 
   if (!code) {
-    return NextResponse.redirect(new URL("/?gsc=error&message=missing_code", redirectBase));
+    return redirectToDashboard(redirectBase, "error", "missing_code");
   }
 
   try {
     await exchangeAuthorizationCode(code);
-    const response = NextResponse.redirect(new URL("/?gsc=connected", redirectBase));
+    const response = redirectToDashboard(redirectBase, "connected");
     response.cookies.set(stateCookieName, "", {
       httpOnly: true,
       sameSite: "lax",
@@ -41,8 +39,17 @@ export async function GET(request: Request) {
     return response;
   } catch (exchangeError) {
     const message = exchangeError instanceof Error ? exchangeError.message : "oauth_exchange_failed";
-    return NextResponse.redirect(new URL(`/?gsc=error&message=${encodeURIComponent(message)}`, redirectBase));
+    return redirectToDashboard(redirectBase, "error", message);
   }
+}
+
+function redirectToDashboard(baseUrl: string, state: "connected" | "error", message?: string) {
+  const target = new URL(baseUrl);
+  target.searchParams.set("gsc", state);
+  if (message) {
+    target.searchParams.set("message", message);
+  }
+  return NextResponse.redirect(target);
 }
 
 function readCookie(cookieHeader: string, name: string) {
