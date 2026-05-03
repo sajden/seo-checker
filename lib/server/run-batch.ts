@@ -1,5 +1,5 @@
 import { getBatch, updateBatchRun } from "@/lib/server/batches";
-import { analyzeGitHubSourceRepo, analyzeSourceRepo } from "@/lib/server/analyzers/source";
+import { analyzeGitHubSourceRepo } from "@/lib/server/analyzers/source";
 import { crawlSite } from "@/lib/server/analyzers/crawl";
 import { querySearchAnalytics } from "@/lib/server/providers/gsc";
 import type { BatchRunResponse } from "@/lib/types";
@@ -12,12 +12,10 @@ export async function runBatch(batchId: string): Promise<BatchRunResponse | null
   }
 
   const sourceReport = batch.sourceTarget
-    ? batch.sourceTarget.type === "github"
-      ? await analyzeGitHubSourceRepo({
-          repoFullName: batch.sourceTarget.repoFullName,
-          branch: batch.sourceTarget.branch
-        })
-      : await analyzeSourceRepo(batch.sourceTarget.repoPath)
+    ? await analyzeGitHubSourceRepo({
+        repoFullName: batch.sourceTarget.repoFullName,
+        branch: batch.sourceTarget.branch
+      })
     : null;
 
   const crawlReport = batch.siteUrl ? await crawlSite(batch.siteUrl, batch.maxPages) : null;

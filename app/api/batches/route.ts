@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import { createBatch, listBatches } from "@/lib/server/batches";
-import { normalizeRepoPath } from "@/lib/server/repositories";
 import { normalizeGitHubRepo } from "@/lib/server/github-source";
 import type { CreateBatchRequest } from "@/lib/types";
 
@@ -19,16 +18,11 @@ export async function POST(request: Request) {
     }
 
     const sourceTarget = body.sourceTarget
-      ? body.sourceTarget.type === "local"
-        ? {
-            type: "local" as const,
-            repoPath: normalizeRepoPath(body.sourceTarget.repoPath)
-          }
-        : {
-            type: "github" as const,
-            repoFullName: normalizeGitHubRepo(body.sourceTarget.repoFullName),
-            branch: body.sourceTarget.branch?.trim() || undefined
-          }
+      ? {
+          type: "github" as const,
+          repoFullName: normalizeGitHubRepo(body.sourceTarget.repoFullName),
+          branch: body.sourceTarget.branch?.trim() || undefined
+        }
       : undefined;
 
     const batch = await createBatch({

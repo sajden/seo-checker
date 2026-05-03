@@ -2,7 +2,7 @@
 
 Hybrid SEO-checker för två huvudsakliga arbetslägen:
 
-- `source analysis`: läser ett lokalt repo och letar efter kända SEO-risker i kod och innehåll
+- `source analysis`: läser ett GitHub-repo och letar efter kända SEO-risker i kod och innehåll
 - `crawl analysis`: crawlar en publik URL och tittar på renderad HTML, indexeringssignaler och grundläggande sidstruktur
 
 ## Varför ett separat repo?
@@ -19,9 +19,8 @@ Fokus ligger på frågor som:
 
 ## Nuvarande MVP
 
-- Next.js UI för att välja repo och ange URL
+- Next.js UI för att ange GitHub-repo och publik URL
 - `POST /api/analyze` för att köra source audit, crawl eller båda
-- repo-listning från workspace-root
 - GSC OAuth 2.0-flöde med callback-route och lokal tokenlagring i `DATA_DIR/gsc-oauth.json`
 - property-listning via `sites.list`
 - Search Analytics-query via UI för valt datumintervall och property
@@ -42,21 +41,19 @@ Fokus ligger på frågor som:
 - `GSC_REDIRECT_URI`
 - `GSC_REFRESH_TOKEN`
 - `DATA_DIR`
-- `WORKSPACE_ROOT`
 - `GITHUB_TOKEN`
 
 ### Redirect URI
 
 I Google Cloud Console ska redirect URI peka på appens callback-route, till exempel:
 
-`http://127.0.0.1:3010/api/gsc/callback`
+`https://seo-api.sebcastwall.se/api/gsc/callback`
 
 ## Docker
 
 Appen är anpassad för att köras i Docker med persistenta mounts:
 
 - `/data` för GSC-token och batch-definitioner
-- `/workspace` för lokala repos som ska kunna väljas i UI:t
 
 Kör lokalt:
 
@@ -67,9 +64,6 @@ docker compose up --build
 Compose-filen mountar:
 
 - `${DATA_HOST_DIR:-./docker-data}` -> `/data`
-- `${WORKSPACE_HOST_ROOT:-/home/sajden/github}` -> `/workspace` som read-only
-
-Om du vill analysera andra repos i containern, sätt `WORKSPACE_HOST_ROOT` på hosten eller ändra volymmounten i [compose.yaml](/home/sajden/github/seo-monitor/compose.yaml).
 
 ### Notering om auth
 

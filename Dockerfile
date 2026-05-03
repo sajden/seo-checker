@@ -16,7 +16,6 @@ ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV PORT=3010
 ENV DATA_DIR=/data
-ENV WORKSPACE_ROOT=/workspace
 
 RUN addgroup -S nextjs && adduser -S nextjs -G nextjs
 
@@ -24,7 +23,7 @@ COPY --from=builder /app/public ./public
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
 
-RUN mkdir -p /data /workspace && chown -R nextjs:nextjs /app /data /workspace
+RUN mkdir -p /data && chown -R nextjs:nextjs /app /data
 
 USER nextjs
 EXPOSE 3010

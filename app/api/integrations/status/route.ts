@@ -16,6 +16,17 @@ export async function GET() {
         mode: gsc.mode,
         secretExposed: false,
         summary: gsc.summary
+      },
+      {
+        id: "github_source",
+        label: "GitHub Source",
+        configured: Boolean(process.env.GITHUB_TOKEN),
+        connected: Boolean(process.env.GITHUB_TOKEN),
+        mode: "github_api",
+        secretExposed: false,
+        summary: process.env.GITHUB_TOKEN
+          ? "GitHub API token is configured for source analysis of private repositories."
+          : "GitHub API token is missing. Public repositories may work, but private source analysis requires GITHUB_TOKEN."
       }
     ]
   });

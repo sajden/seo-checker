@@ -1,17 +1,9 @@
-import { access, readdir, readFile } from "node:fs/promises";
-import path from "node:path";
 import { readGitHubTextFiles, type SourceFileRecord } from "@/lib/server/github-source";
 import type { SourceFinding, SourceReport } from "@/lib/types";
 
 type FileRecord = SourceFileRecord;
 
 const PAGE_FILE_PATTERN = /(^|\/)app\/(?!api\/)(?:.+\/)?page\.(ts|tsx|js|jsx|mdx)$/;
-
-export async function analyzeSourceRepo(repoPath: string): Promise<SourceReport> {
-  const resolvedRepoPath = path.resolve(repoPath);
-  const files = await readTextFiles(resolvedRepoPath);
-  return analyzeSourceFiles(files, resolvedRepoPath, "local");
-}
 
 export async function analyzeGitHubSourceRepo(input: { repoFullName: string; branch?: string }): Promise<SourceReport> {
   const source = await readGitHubTextFiles(input);
@@ -21,7 +13,7 @@ export async function analyzeGitHubSourceRepo(input: { repoFullName: string; bra
 function analyzeSourceFiles(
   files: FileRecord[],
   targetLabel: string,
-  targetType: "local" | "github"
+  targetType: "github"
 ): SourceReport {
   const findings: SourceFinding[] = [];
 
@@ -212,40 +204,4 @@ function findNoSsrShellRisks(files: FileRecord[], publicPages: FileRecord[]) {
   }
 
   return findings;
-}
-
-async function readTextFiles(rootPath: string) {
-  await access(rootPath);
-
-  const files: FileRecord[] = [];
-  await walk(rootPath, rootPath, files);
-  return files;
-}
-
-async function walk(rootPath: string, currentPath: string, files: FileRecord[]) {
-  const entries = await readdir(currentPath, { withFileTypes: true });
-
-  for (const entry of entries) {
-    if (entry.name.startsWith(".git") || entry.name === "node_modules" || entry.name === ".next") {
-      continue;
-    }
-
-    const absolutePath = path.join(currentPath, entry.name);
-
-    if (entry.isDirectory()) {
-      await walk(rootPath, absolutePath, files);
-      continue;
-    }
-
-    if (!/\.(ts|tsx|js|jsx|md|mdx|txt)$/.test(entry.name)) {
-      continue;
-    }
-
-    const content = await readFile(absolutePath, "utf8");
-    files.push({
-      absolutePath,
-      relativePath: path.relative(rootPath, absolutePath).replaceAll("\\", "/"),
-      content
-    });
-  }
 }

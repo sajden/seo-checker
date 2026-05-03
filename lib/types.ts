@@ -1,5 +1,5 @@
 export type Severity = "critical" | "warning" | "info";
-export type SourceTargetType = "local" | "github";
+export type SourceTargetType = "github";
 export type BatchCadence = "off" | "daily" | "mon-wed-fri" | "weekly";
 export type FindingCategory =
   | "metadata"
@@ -90,7 +90,6 @@ export type GscQueryResult = {
 };
 
 export type AnalyzeRequest = {
-  repoPath?: string;
   sourceTargetType?: SourceTargetType;
   githubRepo?: string;
   githubBranch?: string;
@@ -107,15 +106,11 @@ export type AnalyzeResponse = {
 };
 
 export type SourceBatchTarget =
-  | {
-      type: "local";
-      repoPath: string;
-    }
-  | {
-      type: "github";
-      repoFullName: string;
-      branch?: string;
-    };
+  {
+    type: "github";
+    repoFullName: string;
+    branch?: string;
+  };
 
 export type BatchRunSummary = {
   sourceFindings: number;
