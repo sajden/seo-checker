@@ -3,12 +3,12 @@ import type { ReactNode } from "react";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  metadataBase: new URL("https://seo-monitor.local"),
+  metadataBase: new URL("https://seo-api.sebcastwall.se"),
   title: {
-    default: "SEO Monitor",
-    template: "%s | SEO Monitor"
+    default: "SEO API",
+    template: "%s | SEO API"
   },
-  description: "Hybrid SEO-checker för source-analyser, crawl och framtida GSC-integration."
+  description: "API runtime for dashboard SEO checks, GitHub source analysis, and Google Search Console OAuth."
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {

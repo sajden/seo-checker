@@ -1,10 +1,5 @@
-import { Suspense } from "react";
-import { AnalyzerForm } from "@/components/analyzer-form";
+import { redirect } from "next/navigation";
 
 export default function HomePage() {
-  return (
-    <Suspense fallback={null}>
-      <AnalyzerForm />
-    </Suspense>
-  );
+  redirect((process.env.DASHBOARD_URL ?? "https://dashboard.sebcastwall.se") as never);
 }
