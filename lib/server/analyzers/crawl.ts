@@ -4,7 +4,16 @@ export async function crawlSite(siteUrl: string, maxPages = 12): Promise<CrawlRe
   const startedAt = Date.now();
   const normalizedStartUrl = normalizeUrl(siteUrl);
   const origin = new URL(normalizedStartUrl).origin;
-  const queue = [normalizedStartUrl];
+  const robotsUrl = `${origin}/robots.txt`;
+  const sitemapUrl = `${origin}/sitemap.xml`;
+  const [robotsResponse, sitemapResponse] = await Promise.allSettled([
+    fetch(robotsUrl, { headers: { "user-agent": "seo-monitor/0.1 (+internal audit)" } }),
+    fetch(sitemapUrl, { headers: { "user-agent": "seo-monitor/0.1 (+internal audit)" } })
+  ]);
+  const sitemapUrls = sitemapResponse.status === "fulfilled" && sitemapResponse.value.ok
+    ? extractSitemapUrls(await sitemapResponse.value.text(), origin)
+    : [];
+  const queue = uniqueUrls([normalizedStartUrl, ...sitemapUrls]);
   const visited = new Set<string>();
   const pages: CrawledPage[] = [];
   const findings: CrawlFinding[] = [];
@@ -134,13 +143,6 @@ export async function crawlSite(siteUrl: string, maxPages = 12): Promise<CrawlRe
     }
   }
 
-  const robotsUrl = `${origin}/robots.txt`;
-  const sitemapUrl = `${origin}/sitemap.xml`;
-  const [robotsResponse, sitemapResponse] = await Promise.allSettled([
-    fetch(robotsUrl, { headers: { "user-agent": "seo-monitor/0.1 (+internal audit)" } }),
-    fetch(sitemapUrl, { headers: { "user-agent": "seo-monitor/0.1 (+internal audit)" } })
-  ]);
-
   if (robotsResponse.status === "fulfilled" && robotsResponse.value.status >= 400) {
     findings.push({
       id: "robots-missing",
@@ -173,6 +175,18 @@ export async function crawlSite(siteUrl: string, maxPages = 12): Promise<CrawlRe
     robotsUrl,
     sitemapUrl
   };
+}
+
+function extractSitemapUrls(xml: string, origin: string) {
+  return [...xml.matchAll(/<loc>\s*([^<]+?)\s*<\/loc>/gi)]
+    .map((match) => decodeHtml(match[1].trim()))
+    .filter((url) => {
+      try {
+        return new URL(url).origin === origin;
+      } catch {
+        return false;
+      }
+    });
 }
 
 function extractPageSignals(url: string, status: number, html: string): CrawledPage {
@@ -214,7 +228,7 @@ function extractInternalLinks(currentUrl: string, html: string) {
 
   for (const match of matches) {
     try {
-      const nextUrl = new URL(match[1], current);
+      const nextUrl = new URL(decodeHtml(match[1]), current);
       if (nextUrl.origin !== current.origin) {
         continue;
       }
@@ -240,4 +254,24 @@ function normalizeUrl(siteUrl: string) {
   }
 
   return `https://${trimmed}`;
+}
+
+function uniqueUrls(urls: string[]) {
+  const seen = new Set<string>();
+  return urls.filter((url) => {
+    const normalized = url.replace(/\/$/, "") || url;
+    if (seen.has(normalized)) return false;
+    seen.add(normalized);
+    return true;
+  });
+}
+
+function decodeHtml(value: string) {
+  return value
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, "\"")
+    .replace(/&#39;/g, "'")
+    .replace(/&apos;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">");
 }
