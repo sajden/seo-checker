@@ -24,7 +24,8 @@ export async function runBatch(batchId: string): Promise<BatchRunResponse | null
         siteUrl: batch.gscProperty,
         startDate: getDateOffset(28),
         endDate: getDateOffset(0),
-        rowLimit: 25
+        rowLimit: 100,
+        pageUrlPrefix: batch.siteUrl ? normalizePageUrlPrefix(batch.siteUrl) : undefined
       })
     : null;
 
@@ -33,11 +34,20 @@ export async function runBatch(batchId: string): Promise<BatchRunResponse | null
     sourceFindings: sourceReport?.findings.length ?? 0,
     crawlFindings: crawlReport?.findings.length ?? 0,
     gscRows: gscQueryResult?.rows.length ?? 0,
+    sourceFilesChecked: sourceReport?.filesChecked ?? 0,
+    crawlPagesChecked: crawlReport?.pages.length ?? 0,
+    gscRawRows: gscQueryResult?.rawRows ?? 0,
     ranAt
   }, {
     sourceFindings: sourceReport?.findings ?? [],
     crawlFindings: crawlReport?.findings ?? [],
     gscRows: gscQueryResult?.rows ?? [],
+    sourceFilesChecked: sourceReport?.filesChecked ?? 0,
+    crawlPagesChecked: crawlReport?.pages.length ?? 0,
+    sourceDurationMs: sourceReport?.durationMs ?? 0,
+    crawlDurationMs: crawlReport?.durationMs ?? 0,
+    gscRawRows: gscQueryResult?.rawRows ?? 0,
+    gscPageUrlPrefix: gscQueryResult?.pageUrlPrefix,
     checkedAt: ranAt
   });
 
@@ -53,4 +63,8 @@ function getDateOffset(daysBack: number) {
   const date = new Date();
   date.setDate(date.getDate() - daysBack);
   return date.toISOString().slice(0, 10);
+}
+
+function normalizePageUrlPrefix(siteUrl: string) {
+  return siteUrl.endsWith("/") ? siteUrl : `${siteUrl}/`;
 }

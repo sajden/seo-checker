@@ -133,6 +133,7 @@ export async function querySearchAnalytics(params: {
   startDate: string;
   endDate: string;
   rowLimit?: number;
+  pageUrlPrefix?: string;
 }) {
   const accessToken = await getAccessToken();
   const encodedSiteUrl = encodeURIComponent(params.siteUrl);
@@ -159,12 +160,21 @@ export async function querySearchAnalytics(params: {
   const payload = (await response.json()) as {
     rows?: GscQueryRow[];
   };
+  const rows = payload.rows ?? [];
+  const filteredRows = params.pageUrlPrefix
+    ? rows.filter((row) => {
+        const pageUrl = row.keys[0];
+        return typeof pageUrl === "string" && pageUrl.startsWith(params.pageUrlPrefix ?? "");
+      })
+    : rows;
 
   const result: GscQueryResult = {
     siteUrl: params.siteUrl,
     startDate: params.startDate,
     endDate: params.endDate,
-    rows: payload.rows ?? []
+    rows: filteredRows,
+    pageUrlPrefix: params.pageUrlPrefix,
+    rawRows: rows.length
   };
 
   return result;

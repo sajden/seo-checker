@@ -50,13 +50,16 @@ export type CrawlReport = {
   checkedAt: string;
   robotsUrl?: string;
   sitemapUrl?: string;
+  durationMs?: number;
 };
 
 export type SourceReport = {
   repoPath: string;
   targetType?: SourceTargetType;
+  filesChecked?: number;
   findings: SourceFinding[];
   checkedAt: string;
+  durationMs?: number;
 };
 
 export type GscReport = {
@@ -87,6 +90,8 @@ export type GscQueryResult = {
   startDate: string;
   endDate: string;
   rows: GscQueryRow[];
+  pageUrlPrefix?: string;
+  rawRows?: number;
 };
 
 export type AnalyzeRequest = {
@@ -116,6 +121,9 @@ export type BatchRunSummary = {
   sourceFindings: number;
   crawlFindings: number;
   gscRows: number;
+  sourceFilesChecked?: number;
+  crawlPagesChecked?: number;
+  gscRawRows?: number;
   ranAt: string;
 };
 
@@ -123,6 +131,12 @@ export type BatchRunDetails = {
   sourceFindings: SourceFinding[];
   crawlFindings: CrawlFinding[];
   gscRows: GscQueryRow[];
+  sourceFilesChecked?: number;
+  crawlPagesChecked?: number;
+  sourceDurationMs?: number;
+  crawlDurationMs?: number;
+  gscRawRows?: number;
+  gscPageUrlPrefix?: string;
   checkedAt: string;
 };
 
@@ -131,6 +145,9 @@ export type BatchRunHistoryItem = {
   sourceFindings: number;
   crawlFindings: number;
   gscRows: number;
+  sourceFilesChecked?: number;
+  crawlPagesChecked?: number;
+  gscRawRows?: number;
   criticalFindings: number;
   warningFindings: number;
   infoFindings: number;

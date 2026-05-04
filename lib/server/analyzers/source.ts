@@ -6,8 +6,14 @@ type FileRecord = SourceFileRecord;
 const PAGE_FILE_PATTERN = /(^|\/)app\/(?!api\/)(?:.+\/)?page\.(ts|tsx|js|jsx|mdx)$/;
 
 export async function analyzeGitHubSourceRepo(input: { repoFullName: string; branch?: string }): Promise<SourceReport> {
+  const startedAt = Date.now();
   const source = await readGitHubTextFiles(input);
-  return analyzeSourceFiles(source.files, source.targetLabel, "github");
+  const report = analyzeSourceFiles(source.files, source.targetLabel, "github");
+  return {
+    ...report,
+    filesChecked: source.files.length,
+    durationMs: Date.now() - startedAt
+  };
 }
 
 function analyzeSourceFiles(
@@ -142,6 +148,7 @@ function analyzeSourceFiles(
   return {
     repoPath: targetLabel,
     targetType,
+    filesChecked: files.length,
     findings,
     checkedAt: new Date().toISOString()
   };

@@ -1,6 +1,7 @@
 import type { CrawlFinding, CrawledPage, CrawlReport } from "@/lib/types";
 
 export async function crawlSite(siteUrl: string, maxPages = 12): Promise<CrawlReport> {
+  const startedAt = Date.now();
   const normalizedStartUrl = normalizeUrl(siteUrl);
   const origin = new URL(normalizedStartUrl).origin;
   const queue = [normalizedStartUrl];
@@ -168,6 +169,7 @@ export async function crawlSite(siteUrl: string, maxPages = 12): Promise<CrawlRe
     pages,
     findings,
     checkedAt: new Date().toISOString(),
+    durationMs: Date.now() - startedAt,
     robotsUrl,
     sitemapUrl
   };
