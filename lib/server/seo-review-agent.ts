@@ -107,8 +107,10 @@ function buildFallbackReview(input: SeoReviewInput): SeoReview {
   const critical = allFindings.filter((finding) => finding.severity === "critical");
   const warnings = allFindings.filter((finding) => finding.severity === "warning");
   const keywordGaps = input.keywordReview.opportunities.filter((item) => item.status === "missing" || item.status === "weak");
+  const suggestedKeywords = buildSuggestedKeywords(input);
   const gscOpportunities = (input.gscQueryResult?.rows ?? [])
     .filter((row) => row.impressions >= 1 && row.position > 3)
+    .filter((row) => !isProjectBrandedGscRow(row))
     .slice(0, 5);
   const plannedKeywords = input.keywordPlan.keywords.filter((keyword) => keyword.status !== "ignored");
   const commercialPages = (input.crawlReport?.pages ?? [])
@@ -161,11 +163,11 @@ function buildFallbackReview(input: SeoReviewInput): SeoReview {
     topActions.push({
       rank: topActions.length + 1,
       priority: "high",
-      title: "Bygg ut keyword-planen",
+      title: "Lägg in föreslagen keyword-plan",
       why: `Keyword-planen innehåller bara ${plannedKeywords.length} aktivt keyword, vilket gör reviewn för smal för en seriös SEO-prioritering.`,
-      action: "Lägg in 10-20 kommersiella och informativa keywords, till exempel AI konsult företag, AI automatisering företag, AI agent företag, Microsoft 365 automatisering och interna AI-verktyg.",
+      action: `Lägg in dessa keywords med target pages: ${suggestedKeywords.map((item) => `${item.query} -> ${item.targetUrl}`).join("; ")}.`,
       expectedImpact: "Ger daglig review bättre underlag och gör det möjligt att rangordna rätt sidor och sökintentioner.",
-      evidence: [`Aktiva keywords: ${plannedKeywords.length}`]
+      evidence: [`Aktiva keywords: ${plannedKeywords.length}`, ...suggestedKeywords.slice(0, 4).map((item) => `${item.query} -> ${item.targetUrl}`)]
     });
   }
 
@@ -216,11 +218,15 @@ function buildFallbackReview(input: SeoReviewInput): SeoReview {
       input.keywordReview.missingCount
         ? "Prioritera keywords som saknar tydlig target page-täckning."
         : "Följ täckta keywords mot GSC-position och CTR.",
-      "Mappa varje kommersiellt keyword till exakt en primär sida."
+      "Mappa varje kommersiellt keyword till exakt en primär sida.",
+      ...suggestedKeywords.slice(0, 8).map((item) => `Föreslaget keyword: ${item.query} -> ${item.targetUrl}`)
     ],
     contentOpportunities: gscOpportunities.length
       ? gscOpportunities.map((row) => `Bygg ut innehåll för "${row.keys[1] ?? row.keys[0]}" med bättre svarsdjup och internlänkning.`)
-      : keywordGaps.slice(0, 3).map((item) => `Skapa eller uppdatera target content för "${item.query}".`),
+      : [
+          ...keywordGaps.slice(0, 3).map((item) => `Skapa eller uppdatera target content för "${item.query}".`),
+          ...suggestedKeywords.slice(0, 5).map((item) => `Planera sida eller sektion för "${item.query}" på ${item.targetUrl}.`)
+        ],
     technicalRisks: [...critical, ...warnings].slice(0, 5).map((finding) => `${finding.title}: ${finding.summary}`),
     monitoringNotes: [
       `Crawlad sidor: ${input.crawlReport?.pages.length ?? 0}.`,
@@ -330,6 +336,51 @@ function shortPageName(url: string) {
   } catch {
     return url;
   }
+}
+
+function buildSuggestedKeywords(input: SeoReviewInput) {
+  const siteUrl = normalizeSiteUrl(input.batch.siteUrl ?? "https://sebcastwall.se");
+  const existing = new Set(input.keywordPlan.keywords.map((keyword) => normalizeText(keyword.query)));
+  const raw = [
+    { query: "AI konsult företag", intent: "commercial", targetUrl: `${siteUrl}/` },
+    { query: "AI automatisering företag", intent: "commercial", targetUrl: `${siteUrl}/tjanster/ai-automatisering` },
+    { query: "AI agent företag", intent: "commercial", targetUrl: `${siteUrl}/tjanster/ai-agenter` },
+    { query: "AI agenter för företag", intent: "commercial", targetUrl: `${siteUrl}/tjanster/ai-agenter` },
+    { query: "Microsoft 365 automatisering", intent: "commercial", targetUrl: `${siteUrl}/artiklar/ai-motesanteckningar-microsoft-365-utan-manuellt-efterarbete` },
+    { query: "ChatGPT för företag", intent: "informational", targetUrl: `${siteUrl}/artiklar/chatgpt-for-foretag-kanslig-data` },
+    { query: "interna AI verktyg", intent: "commercial", targetUrl: `${siteUrl}/tjanster/interna-verktyg` },
+    { query: "systemintegration småföretag", intent: "commercial", targetUrl: `${siteUrl}/tjanster/integrationer` },
+    { query: "automatisera administration", intent: "informational", targetUrl: `${siteUrl}/tjanster/ai-automatisering` },
+    { query: "AI workflow automation", intent: "commercial", targetUrl: `${siteUrl}/tjanster/ai-automatisering` }
+  ];
+
+  return raw.filter((item) => !existing.has(normalizeText(item.query))).slice(0, 10);
+}
+
+function isProjectBrandedGscRow(row: { keys: string[] }) {
+  const page = row.keys[0] ?? "";
+  const query = normalizeText(row.keys[1] ?? row.keys[0] ?? "");
+  return /\/projekt\/?$/i.test(page) && /\b(natverkskollen|vagkollen|integrationskollen|automationsaudit|internverktygskollen)\b/.test(query);
+}
+
+function normalizeSiteUrl(value: string) {
+  try {
+    const url = new URL(value);
+    url.hash = "";
+    url.search = "";
+    return url.toString().replace(/\/$/, "");
+  } catch {
+    return "https://sebcastwall.se";
+  }
+}
+
+function normalizeText(value: string) {
+  return value
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function actionForFinding(finding: SourceFinding | CrawlFinding) {
