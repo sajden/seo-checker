@@ -300,7 +300,21 @@ function stringOr(value: unknown, fallback: string) {
 }
 
 function stringArrayOr(value: unknown, fallback: string[]) {
-  return Array.isArray(value) ? value.map(String).filter(Boolean).slice(0, 12) : fallback;
+  if (!Array.isArray(value)) return fallback;
+  const normalized = value
+    .map((item) => {
+      if (typeof item === "string") return item;
+      if (item && typeof item === "object") {
+        const record = item as Record<string, unknown>;
+        return [record.title, record.action, record.recommendation, record.summary]
+          .filter((part): part is string => typeof part === "string" && part.trim().length > 0)
+          .join(": ");
+      }
+      return "";
+    })
+    .filter(Boolean)
+    .slice(0, 12);
+  return normalized.length ? normalized : fallback;
 }
 
 function mergeActions(primary: SeoReviewAction[], fallback: SeoReviewAction[]) {
