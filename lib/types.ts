@@ -150,6 +150,35 @@ export type SearchDemandProject = {
   stats?: Record<string, unknown>;
 };
 
+export type DemandOpportunity = {
+  rank: number;
+  topic: string;
+  preferredKeyword: string;
+  priority: SeoReviewPriority;
+  relevanceScore: number;
+  demandScore: number;
+  feasibilityScore: number;
+  finalScore: number;
+  intent: string;
+  targetUrl?: string;
+  suggestedAngle?: string;
+  rationale: string;
+  evidence: string[];
+};
+
+export type DemandOpportunityReview = {
+  generatedAt: string;
+  mode: "llm" | "fallback";
+  model?: string;
+  opportunities: DemandOpportunity[];
+  rejected: Array<{
+    topic: string;
+    reason: string;
+    evidence: string[];
+  }>;
+  notes: string[];
+};
+
 export type AnalyzeRequest = {
   sourceTargetType?: SourceTargetType;
   githubRepo?: string;
@@ -190,6 +219,7 @@ export type BatchRunDetails = {
   crawlPages?: CrawledPage[];
   analyticsSummary?: SiteAnalyticsSummary;
   searchDemandProject?: SearchDemandProject;
+  demandOpportunityReview?: DemandOpportunityReview;
   keywordReview?: KeywordReview;
   seoReview?: SeoReview;
   sourceFilesChecked?: number;
@@ -251,6 +281,7 @@ export type BatchRunResponse = {
   crawlReport: CrawlReport | null;
   gscQueryResult: GscQueryResult | null;
   keywordReview?: KeywordReview;
+  demandOpportunityReview?: DemandOpportunityReview;
   seoReview?: SeoReview;
 };
 

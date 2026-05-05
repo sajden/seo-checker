@@ -7,6 +7,7 @@ import type {
   GscQueryResult,
   KeywordPlan,
   KeywordReview,
+  DemandOpportunityReview,
   SeoReview,
   SeoReviewAction,
   SearchDemandProject,
@@ -24,6 +25,7 @@ type SeoReviewInput = {
   gscQueryResult: GscQueryResult | null;
   analyticsSummary: SiteAnalyticsSummary | null;
   searchDemandProject: SearchDemandProject | null;
+  demandOpportunityReview: DemandOpportunityReview | null;
   keywordPlan: KeywordPlan;
   keywordReview: KeywordReview;
 };
@@ -118,6 +120,15 @@ function buildAgentPayload(input: SeoReviewInput) {
           topics: input.searchDemandProject.topics.slice(0, 80)
         }
       : null,
+    demandOpportunityReview: input.demandOpportunityReview
+      ? {
+          mode: input.demandOpportunityReview.mode,
+          model: input.demandOpportunityReview.model,
+          opportunities: input.demandOpportunityReview.opportunities.slice(0, 20),
+          rejected: input.demandOpportunityReview.rejected.slice(0, 10),
+          notes: input.demandOpportunityReview.notes
+        }
+      : null,
     keywordPlan: input.keywordPlan.keywords.slice(0, 100),
     keywordReview: input.keywordReview
   };
@@ -129,7 +140,7 @@ function buildFallbackReview(input: SeoReviewInput): SeoReview {
   const warnings = allFindings.filter((finding) => finding.severity === "warning");
   const keywordGaps = input.keywordReview.opportunities.filter((item) => item.status === "missing" || item.status === "weak");
   const suggestedKeywords = buildSuggestedKeywords(input);
-  const demandTopics = getPrioritizedSearchDemandTopics(input);
+  const demandOpportunities = input.demandOpportunityReview?.opportunities ?? [];
   const gscOpportunities = (input.gscQueryResult?.rows ?? [])
     .filter((row) => row.impressions >= 1 && row.position > 3)
     .filter((row) => !isProjectBrandedGscRow(row))
@@ -194,22 +205,19 @@ function buildFallbackReview(input: SeoReviewInput): SeoReview {
     });
   }
 
-  for (const topic of demandTopics.slice(0, Math.max(0, 7 - topActions.length))) {
+  for (const opportunity of demandOpportunities.slice(0, Math.max(0, 7 - topActions.length))) {
     topActions.push({
       rank: topActions.length + 1,
-      priority: topic.score >= 80 || topic.demand?.demandBucket === "high" || topic.demand?.demandBucket === "rising" ? "high" : "medium",
-      title: `Använd Search Demand: ${topic.preferredKeyword ?? topic.topic}`,
-      why: `${topic.source}, score ${topic.score}, demand ${topic.demand?.demandBucket ?? "unknown"}, competition ${topic.demand?.competition ?? "unknown"}.`,
-      action: topic.suggestedAngle
-        ? `Skapa eller uppdatera content med vinkeln: ${topic.suggestedAngle}`
+      priority: opportunity.priority,
+      title: `Använd Demand Agent: ${opportunity.preferredKeyword}`,
+      why: opportunity.rationale,
+      action: opportunity.suggestedAngle
+        ? `Skapa eller uppdatera content med vinkeln: ${opportunity.suggestedAngle}`
         : "Mappa ämnet till en target page i keyword-planen och bygg title/H1/H2/meta runt preferred keyword.",
       expectedImpact: "Gör SEO-planen mer efterfrågestyrd och minskar risken att vi optimerar mot fel sökord.",
-      evidence: [
-        `Topic: ${topic.topic}`,
-        `Score: ${topic.score}`,
-        topic.reasoning ?? `Source: ${topic.source}`
-      ],
-      keyword: topic.preferredKeyword ?? topic.topic
+      evidence: opportunity.evidence,
+      targetUrl: opportunity.targetUrl,
+      keyword: opportunity.preferredKeyword
     });
   }
 
@@ -281,7 +289,7 @@ function buildFallbackReview(input: SeoReviewInput): SeoReview {
         ? "Prioritera keywords som saknar tydlig target page-täckning."
         : "Följ täckta keywords mot GSC-position och CTR.",
       "Mappa varje kommersiellt keyword till exakt en primär sida.",
-      ...demandTopics.slice(0, 6).map((item) => `Search Demand: ${item.preferredKeyword ?? item.topic} (${item.demand?.demandBucket ?? "unknown"} demand, score ${item.score})`),
+      ...demandOpportunities.slice(0, 6).map((item) => `Demand Agent: ${item.preferredKeyword} (score ${item.finalScore}, relevance ${item.relevanceScore})`),
       ...suggestedKeywords.slice(0, 8).map((item) => `Föreslaget keyword: ${item.query} -> ${item.targetUrl}`)
     ],
     contentOpportunities: gscOpportunities.length
@@ -298,6 +306,9 @@ function buildFallbackReview(input: SeoReviewInput): SeoReview {
       input.searchDemandProject
         ? `Search Demand: ${input.searchDemandProject.topics.length} topics från ${input.searchDemandProject.generatedAt ?? "okänd import"}.`
         : "Search Demand saknas som input.",
+      input.demandOpportunityReview
+        ? `Demand Agent: ${input.demandOpportunityReview.opportunities.length} prioriterade opportunities (${input.demandOpportunityReview.mode}).`
+        : "Demand Agent saknas.",
       "Nuvarande crawl är HTML-baserad. Lägg till rendered/browser crawl för UX, above-the-fold och JS-renderad DOM.",
       input.analyticsSummary?.available
         ? `Analytics: ${input.analyticsSummary.totals.views} views, ${input.analyticsSummary.totals.reads30s} 30s reads, ${input.analyticsSummary.totals.conversions} conversions senaste ${input.analyticsSummary.days} dagarna.`

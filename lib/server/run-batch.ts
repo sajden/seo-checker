@@ -6,6 +6,7 @@ import { fetchSiteAnalyticsSummary } from "@/lib/server/providers/site-analytics
 import { fetchSearchDemandProject } from "@/lib/server/providers/search-demand";
 import { getKeywordPlan } from "@/lib/server/keyword-plan";
 import { buildKeywordReview } from "@/lib/server/keyword-review";
+import { rankDemandOpportunities } from "@/lib/server/demand-ranking-agent";
 import { generateSeoReview } from "@/lib/server/seo-review-agent";
 import type { BatchRunResponse } from "@/lib/types";
 
@@ -43,6 +44,14 @@ export async function runBatch(batchId: string): Promise<BatchRunResponse | null
     crawlReport,
     gscQueryResult
   });
+  const demandOpportunityReview = await rankDemandOpportunities({
+    siteUrl: batch.siteUrl,
+    searchDemandProject,
+    keywordPlan,
+    crawlReport,
+    gscQueryResult,
+    analyticsSummary
+  });
   const seoReview = await generateSeoReview({
     batch,
     sourceReport,
@@ -50,6 +59,7 @@ export async function runBatch(batchId: string): Promise<BatchRunResponse | null
     gscQueryResult,
     analyticsSummary,
     searchDemandProject,
+    demandOpportunityReview,
     keywordPlan,
     keywordReview
   });
@@ -70,6 +80,7 @@ export async function runBatch(batchId: string): Promise<BatchRunResponse | null
     crawlPages: crawlReport?.pages ?? [],
     analyticsSummary: analyticsSummary ?? undefined,
     searchDemandProject: searchDemandProject ?? undefined,
+    demandOpportunityReview,
     keywordReview,
     seoReview,
     sourceFilesChecked: sourceReport?.filesChecked ?? 0,
@@ -87,6 +98,7 @@ export async function runBatch(batchId: string): Promise<BatchRunResponse | null
     crawlReport,
     gscQueryResult,
     keywordReview,
+    demandOpportunityReview,
     seoReview
   };
 }
