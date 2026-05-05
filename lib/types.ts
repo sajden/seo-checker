@@ -123,6 +123,33 @@ export type SiteAnalyticsSummary = {
   referrers?: Array<{ referrer: string; count: number }>;
 };
 
+export type SearchDemandTopic = {
+  topic: string;
+  score: number;
+  source: string;
+  preferredKeyword?: string;
+  suggestedAngle?: string;
+  reasoning?: string;
+  topicType?: string;
+  demand?: {
+    demandBucket?: string;
+    competition?: string;
+    intent?: string;
+    source?: string;
+    capturedAt?: string | null;
+    runId?: string | null;
+  };
+};
+
+export type SearchDemandProject = {
+  schemaVersion?: number;
+  projectSlug: string;
+  generatedAt?: string | null;
+  topics: SearchDemandTopic[];
+  keywords?: Array<Record<string, unknown>>;
+  stats?: Record<string, unknown>;
+};
+
 export type AnalyzeRequest = {
   sourceTargetType?: SourceTargetType;
   githubRepo?: string;
@@ -162,6 +189,7 @@ export type BatchRunDetails = {
   gscRows: GscQueryRow[];
   crawlPages?: CrawledPage[];
   analyticsSummary?: SiteAnalyticsSummary;
+  searchDemandProject?: SearchDemandProject;
   keywordReview?: KeywordReview;
   seoReview?: SeoReview;
   sourceFilesChecked?: number;
