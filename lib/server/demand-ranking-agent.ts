@@ -8,6 +8,7 @@ import type {
   KeywordPlan,
   SearchDemandProject,
   SearchDemandTopic,
+  SeoReviewPriority,
   SiteAnalyticsSummary
 } from "@/lib/types";
 
@@ -178,7 +179,7 @@ function sanitizeDemandReview(candidate: Partial<DemandOpportunityReview>, fallb
           rank: index + 1,
           topic: stringOr(item.topic, ""),
           preferredKeyword: stringOr(item.preferredKeyword, stringOr(item.topic, "")),
-          priority: ["critical", "high", "medium", "low"].includes(String(item.priority)) ? item.priority : "medium",
+          priority: normalizeDemandPriority(item.priority),
           relevanceScore: scoreOr(item.relevanceScore),
           demandScore: scoreOr(item.demandScore),
           feasibilityScore: scoreOr(item.feasibilityScore),
@@ -281,6 +282,13 @@ function stringOr(value: unknown, fallback: string) {
 
 function scoreOr(value: unknown) {
   return clamp(Number(value ?? 0));
+}
+
+function normalizeDemandPriority(value: unknown): SeoReviewPriority {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (normalized === "high") return "high";
+  if (normalized === "low") return "low";
+  return "medium";
 }
 
 function clamp(value: number) {

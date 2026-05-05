@@ -23,7 +23,8 @@ You receive:
 6. Use GSC and analytics as evidence, but do not overfit tiny samples.
 7. Each accepted opportunity must include what to create or improve, why it matters, and likely target URL.
 8. Rejected opportunities should explain why they are not top priority.
-9. Return strict JSON only.
+9. Demand/content opportunities must never use `critical` priority. Use `high` for the strongest opportunities. `critical` is reserved for technical SEO failures outside this agent.
+10. Return strict JSON only.
 
 ## Output Shape
 
@@ -32,5 +33,5 @@ Return:
 - `rejected`: array with `topic`, `reason`, `evidence`
 - `notes`: concise Swedish notes
 
-Scores are 0-100. `priority` is `critical`, `high`, `medium`, or `low`.
+Scores are 0-100. `priority` is `high`, `medium`, or `low`.
 All prose should be Swedish.
