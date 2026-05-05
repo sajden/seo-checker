@@ -190,3 +190,55 @@ export type BatchRunResponse = {
   crawlReport: CrawlReport | null;
   gscQueryResult: GscQueryResult | null;
 };
+
+export type KeywordSource = "manual" | "google_keyword_planner" | "google_trends" | "gsc" | "import";
+export type KeywordDemandBucket = "unknown" | "low" | "medium" | "high" | "rising";
+export type KeywordCompetition = "unknown" | "low" | "medium" | "high";
+export type KeywordIntent = "unknown" | "informational" | "commercial" | "transactional" | "navigational";
+export type KeywordStatus = "planned" | "targeted" | "covered" | "missing" | "weak" | "ignored";
+
+export type KeywordCandidate = {
+  id: string;
+  projectSlug: string;
+  query: string;
+  source: KeywordSource;
+  market: string;
+  language: string;
+  demandBucket: KeywordDemandBucket;
+  competition: KeywordCompetition;
+  intent: KeywordIntent;
+  targetUrl?: string;
+  status: KeywordStatus;
+  notes?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type KeywordPlanSummary = {
+  total: number;
+  planned: number;
+  targeted: number;
+  covered: number;
+  missing: number;
+  weak: number;
+};
+
+export type KeywordPlan = {
+  projectSlug: string;
+  keywords: KeywordCandidate[];
+  summary: KeywordPlanSummary;
+};
+
+export type UpsertKeywordRequest = {
+  query: string;
+  projectSlug?: string;
+  source?: KeywordSource;
+  market?: string;
+  language?: string;
+  demandBucket?: KeywordDemandBucket;
+  competition?: KeywordCompetition;
+  intent?: KeywordIntent;
+  targetUrl?: string;
+  status?: KeywordStatus;
+  notes?: string;
+};
