@@ -94,6 +94,35 @@ export type GscQueryResult = {
   rawRows?: number;
 };
 
+export type SiteAnalyticsPage = {
+  pagePath: string;
+  views: number;
+  articleViews: number;
+  reads30s: number;
+  scroll50: number;
+  scroll90: number;
+  conversions: number;
+  readRate: number;
+  scroll50Rate: number;
+  scroll90Rate: number;
+};
+
+export type SiteAnalyticsSummary = {
+  available: boolean;
+  days: number;
+  generatedAt?: string;
+  totals: {
+    views: number;
+    articleViews: number;
+    reads30s: number;
+    scroll50: number;
+    scroll90: number;
+    conversions: number;
+  };
+  pages: SiteAnalyticsPage[];
+  referrers?: Array<{ referrer: string; count: number }>;
+};
+
 export type AnalyzeRequest = {
   sourceTargetType?: SourceTargetType;
   githubRepo?: string;
@@ -132,6 +161,7 @@ export type BatchRunDetails = {
   crawlFindings: CrawlFinding[];
   gscRows: GscQueryRow[];
   crawlPages?: CrawledPage[];
+  analyticsSummary?: SiteAnalyticsSummary;
   keywordReview?: KeywordReview;
   seoReview?: SeoReview;
   sourceFilesChecked?: number;
@@ -295,4 +325,5 @@ export type SeoReview = {
   contentOpportunities: string[];
   technicalRisks: string[];
   monitoringNotes: string[];
+  fixBriefMarkdown?: string;
 };

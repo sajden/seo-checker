@@ -2,6 +2,7 @@ import { getBatch, updateBatchRun } from "@/lib/server/batches";
 import { analyzeGitHubSourceRepo } from "@/lib/server/analyzers/source";
 import { crawlSite } from "@/lib/server/analyzers/crawl";
 import { querySearchAnalytics } from "@/lib/server/providers/gsc";
+import { fetchSiteAnalyticsSummary } from "@/lib/server/providers/site-analytics";
 import { getKeywordPlan } from "@/lib/server/keyword-plan";
 import { buildKeywordReview } from "@/lib/server/keyword-review";
 import { generateSeoReview } from "@/lib/server/seo-review-agent";
@@ -31,6 +32,7 @@ export async function runBatch(batchId: string): Promise<BatchRunResponse | null
         pageUrlPrefix: batch.siteUrl ? normalizePageUrlPrefix(batch.siteUrl) : undefined
       })
     : null;
+  const analyticsSummary = await fetchSiteAnalyticsSummary(batch.siteUrl, 28);
   const projectSlug = inferProjectSlug(batch.siteUrl ?? batch.name);
   const keywordPlan = await getKeywordPlan(projectSlug);
   const keywordReview = buildKeywordReview({
@@ -44,6 +46,7 @@ export async function runBatch(batchId: string): Promise<BatchRunResponse | null
     sourceReport,
     crawlReport,
     gscQueryResult,
+    analyticsSummary,
     keywordPlan,
     keywordReview
   });
@@ -62,6 +65,7 @@ export async function runBatch(batchId: string): Promise<BatchRunResponse | null
     crawlFindings: crawlReport?.findings ?? [],
     gscRows: gscQueryResult?.rows ?? [],
     crawlPages: crawlReport?.pages ?? [],
+    analyticsSummary: analyticsSummary ?? undefined,
     keywordReview,
     seoReview,
     sourceFilesChecked: sourceReport?.filesChecked ?? 0,

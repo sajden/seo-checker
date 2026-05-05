@@ -9,6 +9,7 @@ import type {
   KeywordReview,
   SeoReview,
   SeoReviewAction,
+  SiteAnalyticsSummary,
   SourceFinding,
   SourceReport
 } from "@/lib/types";
@@ -20,6 +21,7 @@ type SeoReviewInput = {
   sourceReport: SourceReport | null;
   crawlReport: CrawlReport | null;
   gscQueryResult: GscQueryResult | null;
+  analyticsSummary: SiteAnalyticsSummary | null;
   keywordPlan: KeywordPlan;
   keywordReview: KeywordReview;
 };
@@ -97,6 +99,15 @@ function buildAgentPayload(input: SeoReviewInput) {
       endDate: input.gscQueryResult?.endDate,
       rows: input.gscQueryResult?.rows.slice(0, 50) ?? []
     },
+    analytics: input.analyticsSummary
+      ? {
+          available: input.analyticsSummary.available,
+          days: input.analyticsSummary.days,
+          totals: input.analyticsSummary.totals,
+          pages: input.analyticsSummary.pages.slice(0, 50),
+          referrers: input.analyticsSummary.referrers?.slice(0, 10) ?? []
+        }
+      : null,
     keywordPlan: input.keywordPlan.keywords.slice(0, 100),
     keywordReview: input.keywordReview
   };
@@ -113,6 +124,7 @@ function buildFallbackReview(input: SeoReviewInput): SeoReview {
     .filter((row) => !isProjectBrandedGscRow(row))
     .slice(0, 5);
   const plannedKeywords = input.keywordPlan.keywords.filter((keyword) => keyword.status !== "ignored");
+  const articleAnalytics = (input.analyticsSummary?.pages ?? []).filter((page) => page.pagePath.startsWith("/artiklar/"));
   const commercialPages = (input.crawlReport?.pages ?? [])
     .filter((page) => /\/tjanster|\/kontakt|\/projekt|\/verktyg|\/$/i.test(new URL(page.url).pathname))
     .slice(0, 8);
@@ -185,6 +197,25 @@ function buildFallbackReview(input: SeoReviewInput): SeoReview {
     });
   }
 
+  for (const page of articleAnalytics
+    .filter((item) => item.views > 0 && (item.readRate < 0.35 || item.scroll50Rate < 0.45 || item.conversions === 0))
+    .slice(0, Math.max(0, 8 - topActions.length))) {
+    topActions.push({
+      rank: topActions.length + 1,
+      priority: page.views >= 5 ? "high" : "medium",
+      title: `Förbättra artikel-engagement: ${page.pagePath}`,
+      why: `${page.views} views, ${Math.round(page.readRate * 100)}% 30s-read, ${Math.round(page.scroll50Rate * 100)}% scroll 50 och ${page.conversions} CTA/contact-klick.`,
+      action: "Skärp intro, lägg tydligare internlänk till relevant tjänstesida högre upp, och placera en konkret CTA före mitten av artikeln.",
+      expectedImpact: "Ökar chansen att artikeltrafik leder vidare till kommersiella sidor eller kontakt.",
+      evidence: [
+        `${page.views} views`,
+        `${Math.round(page.readRate * 100)}% read 30s`,
+        `${Math.round(page.scroll50Rate * 100)}% scroll 50`
+      ],
+      targetUrl: `${normalizeSiteUrl(input.batch.siteUrl ?? "https://sebcastwall.se")}${page.pagePath}`
+    });
+  }
+
   if (topActions.length === 0) {
     topActions.push({
       rank: 1,
@@ -232,7 +263,10 @@ function buildFallbackReview(input: SeoReviewInput): SeoReview {
       `Crawlad sidor: ${input.crawlReport?.pages.length ?? 0}.`,
       `GSC-rader: ${input.gscQueryResult?.rows.length ?? 0}.`,
       `Keywords i plan: ${input.keywordPlan.keywords.length}.`,
-      "Nuvarande crawl är HTML-baserad. Lägg till rendered/browser crawl för UX, above-the-fold och JS-renderad DOM."
+      "Nuvarande crawl är HTML-baserad. Lägg till rendered/browser crawl för UX, above-the-fold och JS-renderad DOM.",
+      input.analyticsSummary?.available
+        ? `Analytics: ${input.analyticsSummary.totals.views} views, ${input.analyticsSummary.totals.reads30s} 30s reads, ${input.analyticsSummary.totals.conversions} conversions senaste ${input.analyticsSummary.days} dagarna.`
+        : "Analytics saknas eller har ännu ingen data från sajten."
     ]
   };
 }
@@ -272,7 +306,8 @@ function sanitizeReview(candidate: Partial<SeoReview>, fallback: SeoReview): Seo
     keywordStrategy: mergeStrings(stringArrayOr(candidate.keywordStrategy, []), fallback.keywordStrategy, 12),
     contentOpportunities: mergeStrings(stringArrayOr(candidate.contentOpportunities, []), fallback.contentOpportunities, 12),
     technicalRisks: mergeStrings(stringArrayOr(candidate.technicalRisks, []), fallback.technicalRisks, 12),
-    monitoringNotes: mergeStrings(stringArrayOr(candidate.monitoringNotes, []), fallback.monitoringNotes, 12)
+    monitoringNotes: mergeStrings(stringArrayOr(candidate.monitoringNotes, []), fallback.monitoringNotes, 12),
+    fixBriefMarkdown: stringOr(candidate.fixBriefMarkdown, buildFixBriefMarkdown(mergedActions, fallback))
   };
 }
 
@@ -395,6 +430,34 @@ function normalizeText(value: string) {
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function buildFixBriefMarkdown(actions: SeoReviewAction[], fallback: SeoReview) {
+  const lines = [
+    "# SEO-fix brief",
+    "",
+    fallback.executiveSummary,
+    "",
+    "## Prioriterade ändringar",
+    ...actions.slice(0, 8).map((action) => [
+      "",
+      `${action.rank}. ${action.title}`,
+      `Prioritet: ${action.priority}`,
+      action.targetUrl ? `URL: ${action.targetUrl}` : undefined,
+      action.keyword ? `Keyword: ${action.keyword}` : undefined,
+      `Varför: ${action.why}`,
+      `Gör: ${action.action}`,
+      `Förväntad effekt: ${action.expectedImpact}`,
+      action.evidence.length ? `Bevis: ${action.evidence.join(" | ")}` : undefined
+    ].filter(Boolean).join("\n")),
+    "",
+    "## Krav",
+    "- Gör bara relevanta SEO/copy-ändringar.",
+    "- Behåll teknisk struktur och befintlig design.",
+    "- Uppdatera title, meta description, H1/H2 och internlänkar där det anges.",
+    "- Kör build/typecheck efter ändringar."
+  ];
+  return lines.join("\n");
 }
 
 function actionForFinding(finding: SourceFinding | CrawlFinding) {
