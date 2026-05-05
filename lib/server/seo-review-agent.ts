@@ -108,8 +108,12 @@ function buildFallbackReview(input: SeoReviewInput): SeoReview {
   const warnings = allFindings.filter((finding) => finding.severity === "warning");
   const keywordGaps = input.keywordReview.opportunities.filter((item) => item.status === "missing" || item.status === "weak");
   const gscOpportunities = (input.gscQueryResult?.rows ?? [])
-    .filter((row) => row.impressions >= 10 && row.position > 8)
+    .filter((row) => row.impressions >= 1 && row.position > 3)
     .slice(0, 5);
+  const plannedKeywords = input.keywordPlan.keywords.filter((keyword) => keyword.status !== "ignored");
+  const commercialPages = (input.crawlReport?.pages ?? [])
+    .filter((page) => /\/tjanster|\/kontakt|\/projekt|\/verktyg|\/$/i.test(new URL(page.url).pathname))
+    .slice(0, 8);
   const topActions: SeoReviewAction[] = [];
 
   for (const item of keywordGaps.slice(0, 4)) {
@@ -153,6 +157,32 @@ function buildFallbackReview(input: SeoReviewInput): SeoReview {
     });
   }
 
+  if (plannedKeywords.length < 8) {
+    topActions.push({
+      rank: topActions.length + 1,
+      priority: "high",
+      title: "Bygg ut keyword-planen",
+      why: `Keyword-planen innehåller bara ${plannedKeywords.length} aktivt keyword, vilket gör reviewn för smal för en seriös SEO-prioritering.`,
+      action: "Lägg in 10-20 kommersiella och informativa keywords, till exempel AI konsult företag, AI automatisering företag, AI agent företag, Microsoft 365 automatisering och interna AI-verktyg.",
+      expectedImpact: "Ger daglig review bättre underlag och gör det möjligt att rangordna rätt sidor och sökintentioner.",
+      evidence: [`Aktiva keywords: ${plannedKeywords.length}`]
+    });
+  }
+
+  for (const page of commercialPages.slice(0, Math.max(0, 7 - topActions.length))) {
+    const title = page.title || page.url;
+    topActions.push({
+      rank: topActions.length + 1,
+      priority: "medium",
+      title: `Skärp kommersiell sida: ${shortPageName(page.url)}`,
+      why: "Crawlen visar sidan, men reviewn har för lite bevis på att den är mappad mot ett prioriterat keyword och en tydlig sökintention.",
+      action: "Bestäm primärt keyword för sidan och verifiera att title, H1, första stycket, H2-struktur och interna länkar konsekvent stödjer det keywordet.",
+      expectedImpact: "Gör sidan lättare att bedöma och ranka mot rätt kommersiell intention.",
+      evidence: [`Title: ${title}`, `H1: ${page.h1Text || "saknas"}`],
+      targetUrl: page.url
+    });
+  }
+
   if (topActions.length === 0) {
     topActions.push({
       rank: 1,
@@ -165,10 +195,16 @@ function buildFallbackReview(input: SeoReviewInput): SeoReview {
     });
   }
 
-  const score = Math.max(
-    0,
-    Math.min(100, 82 - critical.length * 18 - warnings.length * 5 - input.keywordReview.missingCount * 14 - input.keywordReview.weakCount * 7)
-  );
+  const score = Math.max(0, Math.min(100,
+    82
+      - critical.length * 18
+      - warnings.length * 5
+      - input.keywordReview.missingCount * 18
+      - input.keywordReview.weakCount * 9
+      - (plannedKeywords.length < 5 ? 14 : 0)
+      - ((input.gscQueryResult?.rows.length ?? 0) < 10 ? 4 : 0)
+      - ((input.crawlReport?.pages.length ?? 0) === 0 ? 20 : 0)
+  ));
 
   return {
     generatedAt: new Date().toISOString(),
@@ -189,7 +225,8 @@ function buildFallbackReview(input: SeoReviewInput): SeoReview {
     monitoringNotes: [
       `Crawlad sidor: ${input.crawlReport?.pages.length ?? 0}.`,
       `GSC-rader: ${input.gscQueryResult?.rows.length ?? 0}.`,
-      `Keywords i plan: ${input.keywordPlan.keywords.length}.`
+      `Keywords i plan: ${input.keywordPlan.keywords.length}.`,
+      "Nuvarande crawl är HTML-baserad. Lägg till rendered/browser crawl för UX, above-the-fold och JS-renderad DOM."
     ]
   };
 }
@@ -213,17 +250,23 @@ function parseReviewJson(output: string) {
 }
 
 function sanitizeReview(candidate: Partial<SeoReview>, fallback: SeoReview): SeoReview {
+  const actions = normalizeActions(candidate.topActions, fallback.topActions);
+  const mergedActions = mergeActions(actions, fallback.topActions);
+  const strictScore = typeof candidate.score === "number"
+    ? Math.max(0, Math.min(100, Math.round(Math.min(candidate.score, fallback.score + 8))))
+    : fallback.score;
+
   return {
     generatedAt: candidate.generatedAt ?? new Date().toISOString(),
     mode: candidate.mode === "llm" ? "llm" : "fallback",
     model: candidate.model,
-    score: typeof candidate.score === "number" ? Math.max(0, Math.min(100, Math.round(candidate.score))) : fallback.score,
+    score: strictScore,
     executiveSummary: stringOr(candidate.executiveSummary, fallback.executiveSummary),
-    topActions: normalizeActions(candidate.topActions, fallback.topActions),
-    keywordStrategy: stringArrayOr(candidate.keywordStrategy, fallback.keywordStrategy),
-    contentOpportunities: stringArrayOr(candidate.contentOpportunities, fallback.contentOpportunities),
-    technicalRisks: stringArrayOr(candidate.technicalRisks, fallback.technicalRisks),
-    monitoringNotes: stringArrayOr(candidate.monitoringNotes, fallback.monitoringNotes)
+    topActions: mergedActions,
+    keywordStrategy: mergeStrings(stringArrayOr(candidate.keywordStrategy, []), fallback.keywordStrategy, 12),
+    contentOpportunities: mergeStrings(stringArrayOr(candidate.contentOpportunities, []), fallback.contentOpportunities, 12),
+    technicalRisks: mergeStrings(stringArrayOr(candidate.technicalRisks, []), fallback.technicalRisks, 12),
+    monitoringNotes: mergeStrings(stringArrayOr(candidate.monitoringNotes, []), fallback.monitoringNotes, 12)
   };
 }
 
@@ -252,6 +295,41 @@ function stringOr(value: unknown, fallback: string) {
 
 function stringArrayOr(value: unknown, fallback: string[]) {
   return Array.isArray(value) ? value.map(String).filter(Boolean).slice(0, 12) : fallback;
+}
+
+function mergeActions(primary: SeoReviewAction[], fallback: SeoReviewAction[]) {
+  const merged: SeoReviewAction[] = [];
+  const seen = new Set<string>();
+
+  for (const action of [...primary, ...fallback]) {
+    const key = `${action.title.toLowerCase()}|${action.targetUrl ?? ""}|${action.keyword ?? ""}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(action);
+  }
+
+  return merged.slice(0, 8).map((action, index) => ({ ...action, rank: index + 1 }));
+}
+
+function mergeStrings(primary: string[], fallback: string[], limit: number) {
+  const seen = new Set<string>();
+  const merged: string[] = [];
+  for (const item of [...primary, ...fallback]) {
+    const trimmed = item.trim();
+    if (!trimmed || seen.has(trimmed.toLowerCase())) continue;
+    seen.add(trimmed.toLowerCase());
+    merged.push(trimmed);
+  }
+  return merged.slice(0, limit);
+}
+
+function shortPageName(url: string) {
+  try {
+    const pathname = new URL(url).pathname.replace(/\/$/, "") || "/";
+    return pathname === "/" ? "startsidan" : pathname;
+  } catch {
+    return url;
+  }
 }
 
 function actionForFinding(finding: SourceFinding | CrawlFinding) {

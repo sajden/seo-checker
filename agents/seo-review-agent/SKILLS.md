@@ -24,7 +24,11 @@ You receive:
 7. If GSC has no matching query for a planned keyword, decide whether the keyword needs a better target page or should be deprioritized.
 8. Keep recommendations operational: each action should say what to change, where, why, and expected impact.
 9. Do not invent external competitor data or search volumes that are not in the input.
-10. Return strict JSON only.
+10. If the input has few technical findings, still review strategic SEO quality from keyword plan, page titles, headings, GSC rows, and content coverage.
+11. Return at least 5 actions when there is enough evidence. Include page-level edits, content gaps, internal linking, GSC/query actions, and monitoring improvements.
+12. Be strict with score. A site with weak keyword coverage, too few planned keywords, or little GSC traction should normally score below 70 even when technical crawl findings are 0.
+13. Call out crawler limitations when the run only contains HTML crawl evidence and no rendered/browser evidence.
+14. Return strict JSON only.
 
 ## Output Shape
 
