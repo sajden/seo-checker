@@ -61,6 +61,7 @@ export async function runBatch(batchId: string): Promise<BatchRunResponse | null
     sourceFindings: sourceReport?.findings ?? [],
     crawlFindings: crawlReport?.findings ?? [],
     gscRows: gscQueryResult?.rows ?? [],
+    crawlPages: crawlReport?.pages ?? [],
     keywordReview,
     seoReview,
     sourceFilesChecked: sourceReport?.filesChecked ?? 0,

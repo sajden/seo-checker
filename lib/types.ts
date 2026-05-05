@@ -131,6 +131,7 @@ export type BatchRunDetails = {
   sourceFindings: SourceFinding[];
   crawlFindings: CrawlFinding[];
   gscRows: GscQueryRow[];
+  crawlPages?: CrawledPage[];
   keywordReview?: KeywordReview;
   seoReview?: SeoReview;
   sourceFilesChecked?: number;
