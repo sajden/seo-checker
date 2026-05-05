@@ -12,4 +12,12 @@ services:
       PORT: 3010
     volumes:
       - ${DATA_HOST_DIR:-./docker-data}:/data
+    networks:
+      - default
+      - article-generator
     restart: unless-stopped
+
+networks:
+  article-generator:
+    external: true
+    name: article-generator_default
