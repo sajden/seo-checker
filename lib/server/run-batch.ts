@@ -4,6 +4,7 @@ import { crawlSite } from "@/lib/server/analyzers/crawl";
 import { querySearchAnalytics } from "@/lib/server/providers/gsc";
 import { getKeywordPlan } from "@/lib/server/keyword-plan";
 import { buildKeywordReview } from "@/lib/server/keyword-review";
+import { generateSeoReview } from "@/lib/server/seo-review-agent";
 import type { BatchRunResponse } from "@/lib/types";
 
 export async function runBatch(batchId: string): Promise<BatchRunResponse | null> {
@@ -38,6 +39,14 @@ export async function runBatch(batchId: string): Promise<BatchRunResponse | null
     crawlReport,
     gscQueryResult
   });
+  const seoReview = await generateSeoReview({
+    batch,
+    sourceReport,
+    crawlReport,
+    gscQueryResult,
+    keywordPlan,
+    keywordReview
+  });
 
   const ranAt = new Date().toISOString();
   const updatedBatch = await updateBatchRun(batch.id, {
@@ -53,6 +62,7 @@ export async function runBatch(batchId: string): Promise<BatchRunResponse | null
     crawlFindings: crawlReport?.findings ?? [],
     gscRows: gscQueryResult?.rows ?? [],
     keywordReview,
+    seoReview,
     sourceFilesChecked: sourceReport?.filesChecked ?? 0,
     crawlPagesChecked: crawlReport?.pages.length ?? 0,
     sourceDurationMs: sourceReport?.durationMs ?? 0,
@@ -67,7 +77,8 @@ export async function runBatch(batchId: string): Promise<BatchRunResponse | null
     sourceReport,
     crawlReport,
     gscQueryResult,
-    keywordReview
+    keywordReview,
+    seoReview
   };
 }
 

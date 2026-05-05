@@ -132,6 +132,7 @@ export type BatchRunDetails = {
   crawlFindings: CrawlFinding[];
   gscRows: GscQueryRow[];
   keywordReview?: KeywordReview;
+  seoReview?: SeoReview;
   sourceFilesChecked?: number;
   crawlPagesChecked?: number;
   sourceDurationMs?: number;
@@ -191,6 +192,7 @@ export type BatchRunResponse = {
   crawlReport: CrawlReport | null;
   gscQueryResult: GscQueryResult | null;
   keywordReview?: KeywordReview;
+  seoReview?: SeoReview;
 };
 
 export type KeywordSource = "manual" | "google_keyword_planner" | "google_trends" | "gsc" | "import";
@@ -265,4 +267,31 @@ export type KeywordReview = {
   weakCount: number;
   opportunities: KeywordReviewItem[];
   summary: string;
+};
+
+export type SeoReviewPriority = "critical" | "high" | "medium" | "low";
+
+export type SeoReviewAction = {
+  rank: number;
+  priority: SeoReviewPriority;
+  title: string;
+  why: string;
+  action: string;
+  expectedImpact: string;
+  evidence: string[];
+  targetUrl?: string;
+  keyword?: string;
+};
+
+export type SeoReview = {
+  generatedAt: string;
+  mode: "llm" | "fallback";
+  model?: string;
+  score: number;
+  executiveSummary: string;
+  topActions: SeoReviewAction[];
+  keywordStrategy: string[];
+  contentOpportunities: string[];
+  technicalRisks: string[];
+  monitoringNotes: string[];
 };
