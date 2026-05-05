@@ -10,6 +10,7 @@ services:
     environment:
       DATA_DIR: /data
       PORT: 3010
+      HOSTNAME: 0.0.0.0
     volumes:
       - ${DATA_HOST_DIR:-./docker-data}:/data
     networks:
