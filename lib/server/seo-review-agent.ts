@@ -219,11 +219,22 @@ function sanitizeReview(candidate: Partial<SeoReview>, fallback: SeoReview): Seo
     model: candidate.model,
     score: typeof candidate.score === "number" ? Math.max(0, Math.min(100, Math.round(candidate.score))) : fallback.score,
     executiveSummary: stringOr(candidate.executiveSummary, fallback.executiveSummary),
-    topActions: Array.isArray(candidate.topActions) && candidate.topActions.length
-      ? candidate.topActions.slice(0, 8).map((action, index) => ({
+    topActions: normalizeActions(candidate.topActions, fallback.topActions),
+    keywordStrategy: stringArrayOr(candidate.keywordStrategy, fallback.keywordStrategy),
+    contentOpportunities: stringArrayOr(candidate.contentOpportunities, fallback.contentOpportunities),
+    technicalRisks: stringArrayOr(candidate.technicalRisks, fallback.technicalRisks),
+    monitoringNotes: stringArrayOr(candidate.monitoringNotes, fallback.monitoringNotes)
+  };
+}
+
+function normalizeActions(value: unknown, fallback: SeoReviewAction[]) {
+  if (!Array.isArray(value)) return fallback;
+  const actions = value
+    .slice(0, 8)
+    .map((action, index) => ({
           rank: index + 1,
           priority: ["critical", "high", "medium", "low"].includes(action.priority) ? action.priority : "medium",
-          title: stringOr(action.title, `Åtgärd ${index + 1}`),
+          title: stringOr(action.title, ""),
           why: stringOr(action.why, ""),
           action: stringOr(action.action, ""),
           expectedImpact: stringOr(action.expectedImpact, ""),
@@ -231,12 +242,8 @@ function sanitizeReview(candidate: Partial<SeoReview>, fallback: SeoReview): Seo
           targetUrl: action.targetUrl ? String(action.targetUrl) : undefined,
           keyword: action.keyword ? String(action.keyword) : undefined
         }))
-      : fallback.topActions,
-    keywordStrategy: stringArrayOr(candidate.keywordStrategy, fallback.keywordStrategy),
-    contentOpportunities: stringArrayOr(candidate.contentOpportunities, fallback.contentOpportunities),
-    technicalRisks: stringArrayOr(candidate.technicalRisks, fallback.technicalRisks),
-    monitoringNotes: stringArrayOr(candidate.monitoringNotes, fallback.monitoringNotes)
-  };
+    .filter((action) => action.title && action.why && action.action);
+  return actions.length ? actions.map((action, index) => ({ ...action, rank: index + 1 })) : fallback;
 }
 
 function stringOr(value: unknown, fallback: string) {
