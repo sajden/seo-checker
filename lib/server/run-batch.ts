@@ -2,6 +2,8 @@ import { getBatch, updateBatchRun } from "@/lib/server/batches";
 import { analyzeGitHubSourceRepo } from "@/lib/server/analyzers/source";
 import { crawlSite } from "@/lib/server/analyzers/crawl";
 import { querySearchAnalytics } from "@/lib/server/providers/gsc";
+import { getKeywordPlan } from "@/lib/server/keyword-plan";
+import { buildKeywordReview } from "@/lib/server/keyword-review";
 import type { BatchRunResponse } from "@/lib/types";
 
 export async function runBatch(batchId: string): Promise<BatchRunResponse | null> {
@@ -28,6 +30,14 @@ export async function runBatch(batchId: string): Promise<BatchRunResponse | null
         pageUrlPrefix: batch.siteUrl ? normalizePageUrlPrefix(batch.siteUrl) : undefined
       })
     : null;
+  const projectSlug = inferProjectSlug(batch.siteUrl ?? batch.name);
+  const keywordPlan = await getKeywordPlan(projectSlug);
+  const keywordReview = buildKeywordReview({
+    projectSlug,
+    keywords: keywordPlan.keywords,
+    crawlReport,
+    gscQueryResult
+  });
 
   const ranAt = new Date().toISOString();
   const updatedBatch = await updateBatchRun(batch.id, {
@@ -42,6 +52,7 @@ export async function runBatch(batchId: string): Promise<BatchRunResponse | null
     sourceFindings: sourceReport?.findings ?? [],
     crawlFindings: crawlReport?.findings ?? [],
     gscRows: gscQueryResult?.rows ?? [],
+    keywordReview,
     sourceFilesChecked: sourceReport?.filesChecked ?? 0,
     crawlPagesChecked: crawlReport?.pages.length ?? 0,
     sourceDurationMs: sourceReport?.durationMs ?? 0,
@@ -55,7 +66,8 @@ export async function runBatch(batchId: string): Promise<BatchRunResponse | null
     batch: updatedBatch ?? batch,
     sourceReport,
     crawlReport,
-    gscQueryResult
+    gscQueryResult,
+    keywordReview
   };
 }
 
@@ -67,4 +79,13 @@ function getDateOffset(daysBack: number) {
 
 function normalizePageUrlPrefix(siteUrl: string) {
   return siteUrl.endsWith("/") ? siteUrl : `${siteUrl}/`;
+}
+
+function inferProjectSlug(value: string) {
+  try {
+    const host = new URL(value).hostname.replace(/^www\./, "");
+    return host.split(".")[0] || "sebcastwall";
+  } catch {
+    return value.toLowerCase().includes("sebcastwall") ? "sebcastwall" : "default";
+  }
 }

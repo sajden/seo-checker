@@ -131,6 +131,7 @@ export type BatchRunDetails = {
   sourceFindings: SourceFinding[];
   crawlFindings: CrawlFinding[];
   gscRows: GscQueryRow[];
+  keywordReview?: KeywordReview;
   sourceFilesChecked?: number;
   crawlPagesChecked?: number;
   sourceDurationMs?: number;
@@ -189,6 +190,7 @@ export type BatchRunResponse = {
   sourceReport: SourceReport | null;
   crawlReport: CrawlReport | null;
   gscQueryResult: GscQueryResult | null;
+  keywordReview?: KeywordReview;
 };
 
 export type KeywordSource = "manual" | "google_keyword_planner" | "google_trends" | "gsc" | "import";
@@ -241,4 +243,26 @@ export type UpsertKeywordRequest = {
   targetUrl?: string;
   status?: KeywordStatus;
   notes?: string;
+};
+
+export type KeywordReviewItem = {
+  keywordId: string;
+  query: string;
+  status: KeywordStatus;
+  targetUrl?: string;
+  pageCovered: boolean;
+  gscMatched: boolean;
+  evidence: string[];
+  recommendation: string;
+};
+
+export type KeywordReview = {
+  projectSlug: string;
+  checkedAt: string;
+  keywordCount: number;
+  coveredCount: number;
+  missingCount: number;
+  weakCount: number;
+  opportunities: KeywordReviewItem[];
+  summary: string;
 };
