@@ -239,12 +239,13 @@ function buildFallbackReview(input: SeoReviewInput): SeoReview {
       - ((input.crawlReport?.pages.length ?? 0) === 0 ? 20 : 0)
   ));
 
-  return {
+  const rankedActions = topActions.map((action, index) => ({ ...action, rank: index + 1 })).slice(0, 8);
+  const fallbackReview = {
     generatedAt: new Date().toISOString(),
     mode: "fallback",
     score,
     executiveSummary: `${input.keywordReview.summary} ${critical.length} kritiska och ${warnings.length} varningar hittades i source/crawl.`,
-    topActions: topActions.map((action, index) => ({ ...action, rank: index + 1 })).slice(0, 8),
+    topActions: rankedActions,
     keywordStrategy: [
       input.keywordReview.missingCount
         ? "Prioritera keywords som saknar tydlig target page-täckning."
@@ -267,7 +268,13 @@ function buildFallbackReview(input: SeoReviewInput): SeoReview {
       input.analyticsSummary?.available
         ? `Analytics: ${input.analyticsSummary.totals.views} views, ${input.analyticsSummary.totals.reads30s} 30s reads, ${input.analyticsSummary.totals.conversions} conversions senaste ${input.analyticsSummary.days} dagarna.`
         : "Analytics saknas eller har ännu ingen data från sajten."
-    ]
+    ],
+    fixBriefMarkdown: ""
+  } satisfies SeoReview;
+
+  return {
+    ...fallbackReview,
+    fixBriefMarkdown: buildFixBriefMarkdown(rankedActions, fallbackReview)
   };
 }
 
