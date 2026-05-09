@@ -11,7 +11,8 @@ import type {
   CreateBatchRequest,
   GscProperty,
   GscQueryResult,
-  GscReport
+  GscReport,
+  SerpComparison
 } from "@/lib/types";
 
 const cadenceOptions: Array<{ value: BatchCadence; label: string }> = [
@@ -34,9 +35,13 @@ export function AnalyzerForm() {
   const [gscProperties, setGscProperties] = useState<GscProperty[]>([]);
   const [selectedProperty, setSelectedProperty] = useState("");
   const [gscQueryResult, setGscQueryResult] = useState<GscQueryResult | null>(null);
+  const [serpQuery, setSerpQuery] = useState("chatgpt för företag");
+  const [serpOwnDomain, setSerpOwnDomain] = useState("sebcastwall.se");
+  const [serpComparison, setSerpComparison] = useState<SerpComparison | null>(null);
   const [gscStartDate, setGscStartDate] = useState(defaultStartDate());
   const [gscEndDate, setGscEndDate] = useState(defaultEndDate());
   const [gscError, setGscError] = useState<string | null>(null);
+  const [serpError, setSerpError] = useState<string | null>(null);
   const [batches, setBatches] = useState<BatchConfig[]>([]);
   const [batchName, setBatchName] = useState("");
   const [batchEnabled, setBatchEnabled] = useState(true);
@@ -52,6 +57,7 @@ export function AnalyzerForm() {
   const [error, setError] = useState<string | null>(null);
   const [batchError, setBatchError] = useState<string | null>(null);
   const [isGscPending, setIsGscPending] = useState(false);
+  const [isSerpPending, setIsSerpPending] = useState(false);
   const [isBatchPending, setIsBatchPending] = useState(false);
   const [isPending, startTransition] = useTransition();
 
@@ -174,6 +180,39 @@ export function AnalyzerForm() {
       setGscError(analyticsError instanceof Error ? analyticsError.message : "Could not read Search Analytics.");
     } finally {
       setIsGscPending(false);
+    }
+  }
+
+  async function handleSerpSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setIsSerpPending(true);
+    setSerpError(null);
+
+    try {
+      const serpResponse = await fetch("/api/serp/compare", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({
+          query: serpQuery,
+          ownDomain: serpOwnDomain,
+          market: "SE",
+          language: "sv",
+          num: 10
+        })
+      });
+      const payload = (await serpResponse.json()) as SerpComparison & { error?: string };
+      if (!serpResponse.ok) {
+        throw new Error(payload.error ?? "Could not compare SERP.");
+      }
+
+      setSerpComparison(payload);
+    } catch (serpSubmitError) {
+      setSerpComparison(null);
+      setSerpError(serpSubmitError instanceof Error ? serpSubmitError.message : "Could not compare SERP.");
+    } finally {
+      setIsSerpPending(false);
     }
   }
 
@@ -524,7 +563,8 @@ export function AnalyzerForm() {
                 {batch.lastRunSummary ? (
                   <p className="muted">
                     Last run {batch.lastRunSummary.ranAt}: {batch.lastRunSummary.sourceFindings} source findings,{" "}
-                    {batch.lastRunSummary.crawlFindings} crawl findings, {batch.lastRunSummary.gscRows} GSC rows.
+                    {batch.lastRunSummary.crawlFindings} crawl findings, {batch.lastRunSummary.gscRows} GSC rows,{" "}
+                    {batch.lastRunSummary.serpComparisons ?? 0} SERP comparisons.
                   </p>
                 ) : (
                   <p className="muted">No run yet.</p>
@@ -557,7 +597,8 @@ export function AnalyzerForm() {
             <p className="muted">
               Source findings: {batchRunResponse.sourceReport?.findings.length ?? 0}. Crawl findings:{" "}
               {batchRunResponse.crawlReport?.findings.length ?? 0}. GSC rows:{" "}
-              {batchRunResponse.gscQueryResult?.rows.length ?? 0}.
+              {batchRunResponse.gscQueryResult?.rows.length ?? 0}. SERP comparisons:{" "}
+              {batchRunResponse.serpComparisons?.length ?? 0}.
             </p>
           </div>
         ) : null}
@@ -685,6 +726,115 @@ export function AnalyzerForm() {
             ) : (
               <p className="muted">No Search Analytics rows for the selected range.</p>
             )}
+          </div>
+        ) : null}
+      </section>
+
+      <section className="panel">
+        <div className="panel-heading">
+          <div>
+            <p className="eyebrow">SERP comparison</p>
+            <h2>Compare keyword against top results</h2>
+            <p className="hero-copy">
+              Check whether your domain appears in the current top results and inspect competing titles, snippets and domains.
+            </p>
+          </div>
+          <span className={`status-pill ${serpComparison?.ownRank ? "ok" : "muted"}`}>
+            {serpComparison?.ownRank ? `rank ${serpComparison.ownRank}` : "not checked"}
+          </span>
+        </div>
+
+        <form onSubmit={handleSerpSubmit} className="gsc-grid">
+          <div className="field">
+            <label htmlFor="serpQuery">Keyword</label>
+            <input
+              id="serpQuery"
+              type="text"
+              value={serpQuery}
+              onChange={(event) => setSerpQuery(event.target.value)}
+              placeholder="chatgpt för företag"
+            />
+          </div>
+          <div className="field">
+            <label htmlFor="serpOwnDomain">Own domain</label>
+            <input
+              id="serpOwnDomain"
+              type="text"
+              value={serpOwnDomain}
+              onChange={(event) => setSerpOwnDomain(event.target.value)}
+              placeholder="sebcastwall.se"
+            />
+          </div>
+          <div className="actions">
+            <button type="submit" disabled={isSerpPending || !serpQuery.trim()}>
+              {isSerpPending ? "Comparing SERP..." : "Compare SERP"}
+            </button>
+          </div>
+        </form>
+
+        {serpError ? <p className="error-copy">{serpError}</p> : null}
+
+        {serpComparison ? (
+          <div className="gsc-results">
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">{serpComparison.provider.replaceAll("_", " ")}</p>
+                <h3>{serpComparison.query}</h3>
+              </div>
+              <span className={`status-pill ${serpComparison.configured ? "ok" : "muted"}`}>
+                {serpComparison.configured ? `${serpComparison.results.length} results` : "setup required"}
+              </span>
+            </div>
+
+            {serpComparison.observations.length > 0 ? (
+              <div className="finding-list">
+                {serpComparison.observations.map((observation) => (
+                  <article key={observation} className="finding severity-info">
+                    <p>{observation}</p>
+                  </article>
+                ))}
+              </div>
+            ) : null}
+
+            {serpComparison.results.length > 0 ? (
+              <div className="table-wrap">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Rank</th>
+                      <th>Result</th>
+                      <th>Snippet</th>
+                      <th>Domain</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {serpComparison.results.map((result) => (
+                      <tr key={`${result.rank}-${result.link}`} className={result.isOwnDomain ? "own-result" : undefined}>
+                        <td>{result.rank}</td>
+                        <td>
+                          <a href={result.link} target="_blank" rel="noreferrer">
+                            {result.title}
+                          </a>
+                        </td>
+                        <td>{result.snippet ?? "-"}</td>
+                        <td>{result.displayLink ?? "-"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : null}
+
+            {serpComparison.limitations.length > 0 ? (
+              <div>
+                <p className="muted">Limitations</p>
+                <ul className="muted">
+                  {serpComparison.limitations.map((limitation) => (
+                    <li key={limitation}>{limitation}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
           </div>
         ) : null}
       </section>

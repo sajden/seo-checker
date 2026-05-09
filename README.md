@@ -24,6 +24,7 @@ Fokus ligger på frågor som:
 - GSC OAuth 2.0-flöde med callback-route och lokal tokenlagring i `DATA_DIR/gsc-oauth.json`
 - property-listning via `sites.list`
 - Search Analytics-query via UI för valt datumintervall och property
+- SERP-jämförelse via Google Custom Search JSON API för prioriterade keywords
 - batch-definitioner med lagring i `DATA_DIR/batches.json`
 
 ## Kommande steg
@@ -42,6 +43,44 @@ Fokus ligger på frågor som:
 - `GSC_REFRESH_TOKEN`
 - `DATA_DIR`
 - `GITHUB_TOKEN`
+
+## Miljövariabler för SERP-jämförelse
+
+SERP-jämförelsen använder Google Custom Search JSON API i stället för att scrapa Google-resultat direkt.
+
+- `GOOGLE_CUSTOM_SEARCH_API_KEY`
+- `GOOGLE_CUSTOM_SEARCH_ENGINE_ID`
+- `BRAVE_SEARCH_API_KEY`
+- `SERP_PROVIDER` valfri, `auto`, `brave_search` eller `google_custom_search`
+- `SERP_DAILY_KEYWORD_LIMIT` valfri, default `5`, max `10`
+- `SERP_CACHE_TTL_HOURS` valfri, default `48`, max `168`
+
+SERP-providern väljs automatiskt: Brave används först om `BRAVE_SEARCH_API_KEY` finns, annars Google Custom Search om Google-nycklar finns. Manuell import fungerar utan provider. Daglig batch-körning väljer ett litet antal keywords från keyword-planen och GSC-data i stället för att slå alla keywords varje dag. Resultaten sparas i `DATA_DIR/serp-history.json`, återanvänds inom cache-fönstret och roteras så keywords som inte kollats nyligen får högre prioritet.
+
+### Manuell SERP-import
+
+Om API-provider saknas kan SERP-data importeras manuellt via CLI/curl:
+
+```bash
+curl -X POST http://localhost:3000/api/serp/manual \
+  -H 'content-type: application/json' \
+  -d '{
+    "query": "chatgpt för företag",
+    "ownDomain": "sebcastwall.se",
+    "market": "SE",
+    "language": "sv",
+    "source": "manual-google",
+    "results": [
+      {
+        "title": "Exempelresultat",
+        "link": "https://example.com/",
+        "snippet": "Kort snippet från SERP."
+      }
+    ]
+  }'
+```
+
+Importerade resultat sparas i samma `DATA_DIR/serp-history.json` som automatiska SERP-körningar.
 
 ### Redirect URI
 

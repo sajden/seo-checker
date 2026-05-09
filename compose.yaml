@@ -12,7 +12,7 @@ services:
       PORT: 3010
       HOSTNAME: 0.0.0.0
     volumes:
-      - ${DATA_HOST_DIR:-./docker-data}:/data
+      - ${DATA_HOST_DIR:-/opt/ai-dashboard/data/seo-monitor}:/data
     networks:
       - default
       - article-generator

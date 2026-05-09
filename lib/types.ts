@@ -94,6 +94,209 @@ export type GscQueryResult = {
   rawRows?: number;
 };
 
+export type GscUrlInspectionResult = {
+  url: string;
+  siteUrl: string;
+  inspectedAt: string;
+  inspectionResultLink?: string;
+  verdict?: string;
+  coverageState?: string;
+  indexingState?: string;
+  robotsTxtState?: string;
+  pageFetchState?: string;
+  googleCanonical?: string;
+  userCanonical?: string;
+  lastCrawlTime?: string;
+  referringUrls?: string[];
+  crawledAs?: string;
+  sitemap?: string[];
+  mobileUsabilityVerdict?: string;
+  richResultsVerdict?: string;
+  error?: string;
+};
+
+export type GscIndexCoverageBucket =
+  | "indexed"
+  | "discovered_not_indexed"
+  | "crawled_not_indexed"
+  | "unknown_to_google"
+  | "canonical_mismatch"
+  | "blocked_or_noindex"
+  | "inspection_error"
+  | "other_not_indexed";
+
+export type GscIndexCoverageItem = GscUrlInspectionResult & {
+  bucket: GscIndexCoverageBucket;
+  priority: "critical" | "high" | "medium" | "low";
+  reason: string;
+  commercialScore: number;
+};
+
+export type GscIndexCoverageReport = {
+  generatedAt: string;
+  inspectedCount: number;
+  indexedCount: number;
+  issueCount: number;
+  counts: Record<GscIndexCoverageBucket, number>;
+  topIssues: GscIndexCoverageItem[];
+  items: GscIndexCoverageItem[];
+  notes: string[];
+};
+
+export type SerpResult = {
+  rank: number;
+  title: string;
+  link: string;
+  displayLink?: string;
+  snippet?: string;
+  isOwnDomain: boolean;
+};
+
+export type SerpComparison = {
+  configured: boolean;
+  provider: "google_custom_search" | "brave_search" | "manual";
+  query: string;
+  market: string;
+  language: string;
+  ownDomain?: string;
+  checkedAt: string;
+  fromCache?: boolean;
+  totalResults?: string;
+  ownRank: number | null;
+  results: SerpResult[];
+  competitorResults: SerpResult[];
+  observations: string[];
+  limitations: string[];
+};
+
+export type SerpCompareRequest = {
+  query: string;
+  ownDomain?: string;
+  market?: string;
+  language?: string;
+  num?: number;
+  provider?: "auto" | "brave_search" | "google_custom_search";
+};
+
+export type ManualSerpImportRequest = {
+  query: string;
+  ownDomain?: string;
+  market?: string;
+  language?: string;
+  source?: string;
+  results: Array<{
+    title: string;
+    link: string;
+    snippet?: string;
+    displayLink?: string;
+  }>;
+};
+
+export type SerpHistoryEntry = {
+  key: string;
+  query: string;
+  market: string;
+  language: string;
+  ownDomain?: string;
+  lastCheckedAt: string;
+  checks: SerpComparison[];
+};
+
+export type SeoActionStatus = "planned" | "doing" | "done" | "ignored";
+
+export type SeoActionItem = {
+  id: string;
+  projectSlug: string;
+  title: string;
+  priority: SeoReviewPriority;
+  status: SeoActionStatus;
+  action: string;
+  why: string;
+  expectedImpact: string;
+  evidence: string[];
+  targetUrl?: string;
+  keyword?: string;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  recheckAfter?: string;
+  occurrences: number;
+  sourceRunAt: string;
+  completedAt?: string;
+  ignoredAt?: string;
+  notes?: string;
+};
+
+export type SeoMemorySnapshot = {
+  id: string;
+  projectSlug: string;
+  batchId: string;
+  ranAt: string;
+  score?: number;
+  sourceFindings: number;
+  crawlFindings: number;
+  gscRows: Array<{
+    query: string;
+    page?: string;
+    clicks: number;
+    impressions: number;
+    ctr: number;
+    position: number;
+  }>;
+  serpRows: Array<{
+    query: string;
+    ownRank: number | null;
+    provider: SerpComparison["provider"];
+    topResults: Array<{
+      rank: number;
+      title: string;
+      displayLink?: string;
+      isOwnDomain: boolean;
+    }>;
+  }>;
+  keywordReview: {
+    coveredCount: number;
+    missingCount: number;
+    weakCount: number;
+    summary: string;
+  };
+  actionTitles: string[];
+};
+
+export type SeoTrendSummary = {
+  generatedAt: string;
+  previousRunAt?: string;
+  gscTrends: Array<{
+    query: string;
+    impressionsNow: number;
+    impressionsPrevious: number;
+    impressionsDelta: number;
+    ctrNow: number;
+    ctrPrevious: number;
+    ctrDelta: number;
+    positionNow: number;
+    positionPrevious: number;
+    positionDelta: number;
+  }>;
+  serpTrends: Array<{
+    query: string;
+    ownRankNow: number | null;
+    ownRankPrevious: number | null;
+    rankDelta: number | null;
+    status: "new" | "improved" | "declined" | "unchanged" | "not_ranked";
+  }>;
+  recurringActions: Array<{
+    id: string;
+    title: string;
+    status: SeoActionStatus;
+    occurrences: number;
+    lastSeenAt: string;
+    recheckAfter?: string;
+    keyword?: string;
+    targetUrl?: string;
+  }>;
+  openActions: SeoActionItem[];
+};
+
 export type SiteAnalyticsPage = {
   pagePath: string;
   views: number;
@@ -179,6 +382,23 @@ export type DemandOpportunityReview = {
   notes: string[];
 };
 
+export type PageSeoOpportunity = {
+  url: string;
+  path: string;
+  priority: SeoReviewPriority;
+  status: string;
+  score: number;
+  title?: string | null;
+  metaDescription?: string | null;
+  h1Text?: string | null;
+  keywords: KeywordReviewItem[];
+  serp: SerpComparison[];
+  indexIssue?: GscIndexCoverageItem;
+  gscRows: GscQueryRow[];
+  recommendations: string[];
+  fixBriefMarkdown: string;
+};
+
 export type AnalyzeRequest = {
   sourceTargetType?: SourceTargetType;
   githubRepo?: string;
@@ -206,9 +426,14 @@ export type BatchRunSummary = {
   sourceFindings: number;
   crawlFindings: number;
   gscRows: number;
+  gscUrlInspections?: number;
+  serpComparisons?: number;
+  pageSeoOpportunities?: number;
+  seoActionItems?: number;
   sourceFilesChecked?: number;
   crawlPagesChecked?: number;
   gscRawRows?: number;
+  runProfile?: "full" | "technical" | "content" | "serp" | "light";
   ranAt: string;
 };
 
@@ -216,9 +441,15 @@ export type BatchRunDetails = {
   sourceFindings: SourceFinding[];
   crawlFindings: CrawlFinding[];
   gscRows: GscQueryRow[];
+  gscUrlInspections?: GscUrlInspectionResult[];
+  gscIndexCoverage?: GscIndexCoverageReport;
   crawlPages?: CrawledPage[];
   analyticsSummary?: SiteAnalyticsSummary;
   searchDemandProject?: SearchDemandProject;
+  serpComparisons?: SerpComparison[];
+  pageSeoOpportunities?: PageSeoOpportunity[];
+  seoMemory?: SeoTrendSummary;
+  seoActionItems?: SeoActionItem[];
   demandOpportunityReview?: DemandOpportunityReview;
   keywordReview?: KeywordReview;
   seoReview?: SeoReview;
@@ -228,14 +459,21 @@ export type BatchRunDetails = {
   crawlDurationMs?: number;
   gscRawRows?: number;
   gscPageUrlPrefix?: string;
+  gscUrlInspectionLimit?: number;
+  runProfile?: "full" | "technical" | "content" | "serp" | "light";
   checkedAt: string;
 };
 
 export type BatchRunHistoryItem = {
   ranAt: string;
+  runProfile?: "full" | "technical" | "content" | "serp" | "light";
   sourceFindings: number;
   crawlFindings: number;
   gscRows: number;
+  gscUrlInspections?: number;
+  serpComparisons?: number;
+  pageSeoOpportunities?: number;
+  seoActionItems?: number;
   sourceFilesChecked?: number;
   crawlPagesChecked?: number;
   gscRawRows?: number;
@@ -280,7 +518,13 @@ export type BatchRunResponse = {
   sourceReport: SourceReport | null;
   crawlReport: CrawlReport | null;
   gscQueryResult: GscQueryResult | null;
+  gscUrlInspections?: GscUrlInspectionResult[];
+  gscIndexCoverage?: GscIndexCoverageReport;
+  serpComparisons?: SerpComparison[];
+  pageSeoOpportunities?: PageSeoOpportunity[];
   keywordReview?: KeywordReview;
+  seoMemory?: SeoTrendSummary;
+  seoActionItems?: SeoActionItem[];
   demandOpportunityReview?: DemandOpportunityReview;
   seoReview?: SeoReview;
 };

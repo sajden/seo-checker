@@ -188,6 +188,11 @@ select {
   color: var(--muted);
 }
 
+.status-pill.ok {
+  background: rgba(15, 118, 110, 0.14);
+  color: var(--accent);
+}
+
 .finding-list {
   display: grid;
   gap: 14px;
@@ -262,6 +267,15 @@ select {
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--muted);
+}
+
+.data-table a {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.own-result td {
+  background: rgba(15, 118, 110, 0.08);
 }
 
 .severity-critical {

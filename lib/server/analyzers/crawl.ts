@@ -6,6 +6,7 @@ export async function crawlSite(siteUrl: string, maxPages = 12): Promise<CrawlRe
   const origin = new URL(normalizedStartUrl).origin;
   const robotsUrl = `${origin}/robots.txt`;
   const sitemapUrl = `${origin}/sitemap.xml`;
+  const pageDelayMs = getCrawlPageDelayMs();
   const [robotsResponse, sitemapResponse] = await Promise.allSettled([
     fetch(robotsUrl, { headers: { "user-agent": "seo-monitor/0.1 (+internal audit)" } }),
     fetch(sitemapUrl, { headers: { "user-agent": "seo-monitor/0.1 (+internal audit)" } })
@@ -25,7 +26,11 @@ export async function crawlSite(siteUrl: string, maxPages = 12): Promise<CrawlRe
     }
 
     visited.add(currentUrl);
-    const response = await fetch(currentUrl, {
+    if (pages.length > 0 && pageDelayMs > 0) {
+      await sleep(pageDelayMs);
+    }
+
+    const response = await fetchWithRetry(currentUrl, {
       redirect: "follow",
       headers: {
         "user-agent": "seo-monitor/0.1 (+internal audit)"
@@ -254,6 +259,49 @@ function normalizeUrl(siteUrl: string) {
   }
 
   return `https://${trimmed}`;
+}
+
+async function fetchWithRetry(url: string, init: RequestInit) {
+  const attempts = Math.max(1, Math.min(5, Number(process.env.CRAWL_FETCH_RETRIES ?? "3") || 3));
+  let lastResponse: Response | null = null;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const response = await fetch(url, init);
+    if (!shouldRetryResponse(response) || attempt === attempts) {
+      return response;
+    }
+
+    lastResponse = response;
+    const retryAfterMs = parseRetryAfterMs(response.headers.get("retry-after"));
+    await sleep(retryAfterMs ?? attempt * getCrawlRetryBaseDelayMs());
+  }
+
+  return lastResponse as Response;
+}
+
+function shouldRetryResponse(response: Response) {
+  return response.status === 429 || response.status === 500 || response.status === 502 || response.status === 503 || response.status === 504;
+}
+
+function parseRetryAfterMs(value: string | null) {
+  if (!value) return null;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
+  const timestamp = Date.parse(value);
+  if (!Number.isNaN(timestamp)) return Math.max(0, timestamp - Date.now());
+  return null;
+}
+
+function getCrawlPageDelayMs() {
+  return Math.max(0, Math.min(10_000, Number(process.env.CRAWL_PAGE_DELAY_MS ?? "750") || 750));
+}
+
+function getCrawlRetryBaseDelayMs() {
+  return Math.max(250, Math.min(30_000, Number(process.env.CRAWL_RETRY_BASE_DELAY_MS ?? "1500") || 1500));
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function uniqueUrls(urls: string[]) {

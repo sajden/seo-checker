@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { readStoredGscOAuth, writeStoredGscOAuth, type StoredGscOAuth } from "@/lib/server/providers/gsc-storage";
-import type { GscProperty, GscQueryResult, GscQueryRow, GscReport } from "@/lib/types";
+import type { GscProperty, GscQueryResult, GscQueryRow, GscReport, GscUrlInspectionResult } from "@/lib/types";
 
 const expectedEnv = [
   "GSC_CLIENT_ID",
@@ -178,6 +178,88 @@ export async function querySearchAnalytics(params: {
   };
 
   return result;
+}
+
+export async function inspectGscUrl(params: {
+  siteUrl: string;
+  inspectionUrl: string;
+  languageCode?: string;
+}): Promise<GscUrlInspectionResult> {
+  const inspectedAt = new Date().toISOString();
+
+  try {
+    const accessToken = await getAccessToken();
+    const response = await fetch("https://searchconsole.googleapis.com/v1/urlInspection/index:inspect", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${accessToken}`,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        inspectionUrl: params.inspectionUrl,
+        siteUrl: params.siteUrl,
+        languageCode: params.languageCode ?? "sv-SE"
+      })
+    });
+
+    if (!response.ok) {
+      throw await buildGoogleApiError("Kunde inte läsa URL Inspection-data.", response);
+    }
+
+    const payload = (await response.json()) as {
+      inspectionResult?: {
+        inspectionResultLink?: string;
+        indexStatusResult?: {
+          verdict?: string;
+          coverageState?: string;
+          robotsTxtState?: string;
+          indexingState?: string;
+          pageFetchState?: string;
+          googleCanonical?: string;
+          userCanonical?: string;
+          lastCrawlTime?: string;
+          referringUrls?: string[];
+          crawledAs?: string;
+          sitemap?: string[];
+        };
+        mobileUsabilityResult?: {
+          verdict?: string;
+        };
+        richResultsResult?: {
+          verdict?: string;
+        };
+      };
+    };
+    const result = payload.inspectionResult;
+    const indexStatus = result?.indexStatusResult;
+
+    return {
+      url: params.inspectionUrl,
+      siteUrl: params.siteUrl,
+      inspectedAt,
+      inspectionResultLink: result?.inspectionResultLink,
+      verdict: indexStatus?.verdict,
+      coverageState: indexStatus?.coverageState,
+      indexingState: indexStatus?.indexingState,
+      robotsTxtState: indexStatus?.robotsTxtState,
+      pageFetchState: indexStatus?.pageFetchState,
+      googleCanonical: indexStatus?.googleCanonical,
+      userCanonical: indexStatus?.userCanonical,
+      lastCrawlTime: indexStatus?.lastCrawlTime,
+      referringUrls: indexStatus?.referringUrls,
+      crawledAs: indexStatus?.crawledAs,
+      sitemap: indexStatus?.sitemap,
+      mobileUsabilityVerdict: result?.mobileUsabilityResult?.verdict,
+      richResultsVerdict: result?.richResultsResult?.verdict
+    };
+  } catch (error) {
+    return {
+      url: params.inspectionUrl,
+      siteUrl: params.siteUrl,
+      inspectedAt,
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
 }
 
 export function createOAuthState() {

@@ -4,12 +4,18 @@ import type {
   BatchConfig,
   CrawlFinding,
   CrawlReport,
+  GscIndexCoverageReport,
   GscQueryResult,
+  GscUrlInspectionResult,
   KeywordPlan,
   KeywordReview,
+  PageSeoOpportunity,
   DemandOpportunityReview,
+  SerpComparison,
+  SerpResult,
   SeoReview,
   SeoReviewAction,
+  SeoTrendSummary,
   SearchDemandProject,
   SiteAnalyticsSummary,
   SourceFinding,
@@ -23,8 +29,13 @@ type SeoReviewInput = {
   sourceReport: SourceReport | null;
   crawlReport: CrawlReport | null;
   gscQueryResult: GscQueryResult | null;
+  gscUrlInspections: GscUrlInspectionResult[];
+  gscIndexCoverage: GscIndexCoverageReport;
   analyticsSummary: SiteAnalyticsSummary | null;
   searchDemandProject: SearchDemandProject | null;
+  serpComparisons: SerpComparison[];
+  pageSeoOpportunities: PageSeoOpportunity[];
+  seoMemory: SeoTrendSummary;
   demandOpportunityReview: DemandOpportunityReview | null;
   keywordPlan: KeywordPlan;
   keywordReview: KeywordReview;
@@ -103,6 +114,86 @@ function buildAgentPayload(input: SeoReviewInput) {
       endDate: input.gscQueryResult?.endDate,
       rows: input.gscQueryResult?.rows.slice(0, 50) ?? []
     },
+    indexing: {
+      summary: {
+        inspectedCount: input.gscIndexCoverage.inspectedCount,
+        indexedCount: input.gscIndexCoverage.indexedCount,
+        issueCount: input.gscIndexCoverage.issueCount,
+        counts: input.gscIndexCoverage.counts,
+        notes: input.gscIndexCoverage.notes
+      },
+      topIssues: input.gscIndexCoverage.topIssues.slice(0, 20).map((item) => ({
+        url: item.url,
+        bucket: item.bucket,
+        priority: item.priority,
+        coverageState: item.coverageState,
+        indexingState: item.indexingState,
+        googleCanonical: item.googleCanonical,
+        userCanonical: item.userCanonical,
+        lastCrawlTime: item.lastCrawlTime,
+        reason: item.reason,
+        commercialScore: item.commercialScore
+      })),
+      inspectedUrls: input.gscIndexCoverage.items.slice(0, 60)
+    },
+    serp: input.serpComparisons.slice(0, 10).map((comparison) => ({
+      query: comparison.query,
+      configured: comparison.configured,
+      provider: comparison.provider,
+      checkedAt: comparison.checkedAt,
+      fromCache: comparison.fromCache ?? false,
+      ownDomain: comparison.ownDomain,
+      ownRank: comparison.ownRank,
+      topResults: comparison.results.slice(0, 10).map((result) => ({
+        rank: result.rank,
+        title: result.title,
+        link: result.link,
+        displayLink: result.displayLink,
+        isOwnDomain: result.isOwnDomain
+      })),
+      observations: comparison.observations
+    })),
+    pageOpportunities: input.pageSeoOpportunities.slice(0, 12).map((page) => ({
+      url: page.url,
+      priority: page.priority,
+      status: page.status,
+      score: page.score,
+      title: page.title,
+      h1Text: page.h1Text,
+      metaDescription: page.metaDescription,
+      keywords: page.keywords.map((keyword) => ({
+        query: keyword.query,
+        status: keyword.status,
+        recommendation: keyword.recommendation
+      })),
+      recommendations: page.recommendations,
+      indexIssue: page.indexIssue
+        ? {
+            bucket: page.indexIssue.bucket,
+            priority: page.indexIssue.priority,
+            reason: page.indexIssue.reason
+          }
+        : undefined
+    })),
+    memory: {
+      previousRunAt: input.seoMemory.previousRunAt,
+      gscTrends: input.seoMemory.gscTrends.slice(0, 20),
+      serpTrends: input.seoMemory.serpTrends.slice(0, 20),
+      recurringActions: input.seoMemory.recurringActions.slice(0, 12),
+      openActions: input.seoMemory.openActions.slice(0, 12).map((item) => ({
+        id: item.id,
+        title: item.title,
+        status: item.status,
+        priority: item.priority,
+        occurrences: item.occurrences,
+        firstSeenAt: item.firstSeenAt,
+        lastSeenAt: item.lastSeenAt,
+        recheckAfter: item.recheckAfter,
+        keyword: item.keyword,
+        targetUrl: item.targetUrl,
+        action: item.action
+      }))
+    },
     analytics: input.analyticsSummary
       ? {
           available: input.analyticsSummary.available,
@@ -141,6 +232,8 @@ function buildFallbackReview(input: SeoReviewInput): SeoReview {
   const keywordGaps = input.keywordReview.opportunities.filter((item) => item.status === "missing" || item.status === "weak");
   const suggestedKeywords = buildSuggestedKeywords(input);
   const demandOpportunities = input.demandOpportunityReview?.opportunities ?? [];
+  const serpActions = buildSerpActions(input);
+  const memoryActions = buildMemoryActions(input);
   const gscOpportunities = (input.gscQueryResult?.rows ?? [])
     .filter((row) => row.impressions >= 1 && row.position > 3)
     .filter((row) => !isProjectBrandedGscRow(row))
@@ -151,6 +244,29 @@ function buildFallbackReview(input: SeoReviewInput): SeoReview {
     .filter((page) => /\/tjanster|\/kontakt|\/projekt|\/verktyg|\/$/i.test(new URL(page.url).pathname))
     .slice(0, 8);
   const topActions: SeoReviewAction[] = [];
+  const indexingIssues = input.gscIndexCoverage.topIssues;
+
+  for (const item of indexingIssues.slice(0, 3)) {
+    topActions.push({
+      rank: topActions.length + 1,
+      priority: item.priority === "critical" ? "critical" : item.priority === "high" ? "high" : "medium",
+      title: `Kontrollera indexering: ${shortPageName(item.url)}`,
+      why: item.reason,
+      action: item.bucket === "discovered_not_indexed" || item.bucket === "unknown_to_google"
+        ? "Öppna URL Inspection i GSC, testa live-URL och begär indexering om live-testet är grönt. Stärk samtidigt interna länkar från /tjanster, startsidan eller relevanta artiklar."
+        : "Öppna URL Inspection i GSC, jämför canonical/sitemap/robots och åtgärda orsaken innan du begär indexering.",
+      expectedImpact: "Säkerställer att viktiga landningssidor faktiskt kan visas i Googles index, inte bara är tekniskt crawlbara.",
+      evidence: [
+        `URL: ${item.url}`,
+        `Bucket: ${item.bucket}`,
+        `Verdict: ${item.verdict ?? "saknas"}`,
+        `Coverage: ${item.coverageState ?? "saknas"}`,
+        `Google canonical: ${item.googleCanonical ?? "saknas"}`,
+        `User canonical: ${item.userCanonical ?? "saknas"}`
+      ],
+      targetUrl: item.url
+    });
+  }
 
   for (const item of keywordGaps.slice(0, 4)) {
     topActions.push({
@@ -163,6 +279,20 @@ function buildFallbackReview(input: SeoReviewInput): SeoReview {
       evidence: item.evidence,
       targetUrl: item.targetUrl,
       keyword: item.query
+    });
+  }
+
+  for (const action of serpActions.slice(0, 3)) {
+    topActions.push({
+      ...action,
+      rank: topActions.length + 1
+    });
+  }
+
+  for (const action of memoryActions.slice(0, 3)) {
+    topActions.push({
+      ...action,
+      rank: topActions.length + 1
     });
   }
 
@@ -289,6 +419,16 @@ function buildFallbackReview(input: SeoReviewInput): SeoReview {
         ? "Prioritera keywords som saknar tydlig target page-täckning."
         : "Följ täckta keywords mot GSC-position och CTR.",
       "Mappa varje kommersiellt keyword till exakt en primär sida.",
+      ...input.seoMemory.gscTrends.slice(0, 4).map((item) =>
+        `Trend ${item.query}: impressions ${formatSigned(item.impressionsDelta)}, position ${formatPositionDelta(item.positionDelta)}, CTR ${formatPercentDelta(item.ctrDelta)}.`
+      ),
+      ...input.serpComparisons
+        .filter((item) => !isProjectBrandedTopic(item.query))
+        .slice(0, 4)
+        .map((item) => {
+          const topDomains = item.results.slice(0, 3).map((result) => result.displayLink || result.title).join(", ");
+          return `SERP ${item.query}: ${item.ownRank === null ? "egen domän saknas i topp 10" : `egen rank #${item.ownRank}`} mot ${topDomains || "okända toppresultat"}.`;
+        }),
       ...demandOpportunities.slice(0, 6).map((item) => `Demand Agent: ${item.preferredKeyword} (score ${item.finalScore}, relevance ${item.relevanceScore})`),
       ...suggestedKeywords.slice(0, 8).map((item) => `Föreslaget keyword: ${item.query} -> ${item.targetUrl}`)
     ],
@@ -302,6 +442,7 @@ function buildFallbackReview(input: SeoReviewInput): SeoReview {
     monitoringNotes: [
       `Crawlad sidor: ${input.crawlReport?.pages.length ?? 0}.`,
       `GSC-rader: ${input.gscQueryResult?.rows.length ?? 0}.`,
+      `GSC URL Inspection: ${input.gscIndexCoverage.inspectedCount} URL:er, ${input.gscIndexCoverage.indexedCount} indexerade, ${input.gscIndexCoverage.issueCount} möjliga indexeringsproblem.`,
       `Keywords i plan: ${input.keywordPlan.keywords.length}.`,
       input.searchDemandProject
         ? `Search Demand: ${input.searchDemandProject.topics.length} topics från ${input.searchDemandProject.generatedAt ?? "okänd import"}.`
@@ -309,6 +450,19 @@ function buildFallbackReview(input: SeoReviewInput): SeoReview {
       input.demandOpportunityReview
         ? `Demand Agent: ${input.demandOpportunityReview.opportunities.length} prioriterade opportunities (${input.demandOpportunityReview.mode}).`
         : "Demand Agent saknas.",
+      input.serpComparisons.length
+        ? `SERP: ${input.serpComparisons.length} keyword-jämförelser, ${input.serpComparisons.filter((item) => item.ownRank !== null).length} med egen domän i toppresultaten.`
+        : "SERP-jämförelser saknas eller är inte konfigurerade.",
+      ...input.serpComparisons
+        .filter((item) => !isProjectBrandedTopic(item.query))
+        .slice(0, 4)
+        .map((item) => `SERP ${item.query}: topp 3 är ${item.results.slice(0, 3).map((result) => `${result.rank}. ${result.title}`).join(" | ") || "saknas"}.`),
+      input.seoMemory.previousRunAt
+        ? `SEO-minne: jämför mot föregående körning ${input.seoMemory.previousRunAt}.`
+        : "SEO-minne: detta är första snapshoten eller saknar tidigare jämförbar körning.",
+      ...input.seoMemory.recurringActions.slice(0, 5).map((item) =>
+        `Återkommande åtgärd: ${item.title} (${item.occurrences} gånger, status ${item.status}, recheck ${item.recheckAfter ?? "saknas"}).`
+      ),
       "Nuvarande crawl är HTML-baserad. Lägg till rendered/browser crawl för UX, above-the-fold och JS-renderad DOM.",
       input.analyticsSummary?.available
         ? `Analytics: ${input.analyticsSummary.totals.views} views, ${input.analyticsSummary.totals.reads30s} 30s reads, ${input.analyticsSummary.totals.conversions} conversions senaste ${input.analyticsSummary.days} dagarna.`
@@ -359,7 +513,7 @@ function sanitizeReview(candidate: Partial<SeoReview>, fallback: SeoReview): Seo
     contentOpportunities: mergeStrings(stringArrayOr(candidate.contentOpportunities, []), fallback.contentOpportunities, 12),
     technicalRisks: mergeStrings(stringArrayOr(candidate.technicalRisks, []), fallback.technicalRisks, 12),
     monitoringNotes: mergeStrings(stringArrayOr(candidate.monitoringNotes, []), fallback.monitoringNotes, 12),
-    fixBriefMarkdown: stringOr(candidate.fixBriefMarkdown, buildFixBriefMarkdown(mergedActions, fallback))
+    fixBriefMarkdown: buildFixBriefMarkdown(mergedActions, fallback)
   };
 }
 
@@ -407,8 +561,9 @@ function stringArrayOr(value: unknown, fallback: string[]) {
 function mergeActions(primary: SeoReviewAction[], fallback: SeoReviewAction[]) {
   const merged: SeoReviewAction[] = [];
   const seen = new Set<string>();
+  const requiredFallback = fallback.filter((action) => action.title.startsWith("SERP-gap:"));
 
-  for (const action of [...primary, ...fallback]) {
+  for (const action of [...primary.slice(0, 2), ...requiredFallback, ...primary.slice(2), ...fallback]) {
     const key = `${action.title.toLowerCase()}|${action.targetUrl ?? ""}|${action.keyword ?? ""}`;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -416,6 +571,120 @@ function mergeActions(primary: SeoReviewAction[], fallback: SeoReviewAction[]) {
   }
 
   return merged.slice(0, 8).map((action, index) => ({ ...action, rank: index + 1 }));
+}
+
+function buildSerpActions(input: SeoReviewInput): SeoReviewAction[] {
+  const keywordTargets = new Map(
+    input.keywordPlan.keywords.map((keyword) => [normalizeText(keyword.query), keyword.targetUrl])
+  );
+
+  return input.serpComparisons
+    .filter((comparison) => comparison.configured)
+    .filter((comparison) => !isProjectBrandedTopic(comparison.query))
+    .filter((comparison) => comparison.ownRank === null || comparison.ownRank > 10)
+    .slice(0, 5)
+    .map((comparison, index) => {
+      const topResults = comparison.results.slice(0, 5);
+      const topCompetitors = topResults
+        .filter((result) => !result.isOwnDomain)
+        .slice(0, 3)
+        .map((result) => `${result.rank}. ${result.title}${result.displayLink ? ` (${result.displayLink})` : ""}`);
+      const targetUrl = keywordTargets.get(normalizeText(comparison.query));
+      const competitorPattern = inferSerpPattern(topResults);
+      return {
+        rank: index + 1,
+        priority: comparison.ownRank === null ? "high" : "medium",
+        title: `SERP-gap: ${comparison.query}`,
+        why: comparison.ownRank === null
+          ? `Egen domän syns inte i topp 10. Toppresultaten lutar mot: ${competitorPattern}.`
+          : `Egen domän ligger #${comparison.ownRank}, vilket normalt ger svag CTR. Toppresultaten lutar mot: ${competitorPattern}.`,
+        action: targetUrl
+          ? `Uppdatera ${targetUrl} så den matchar sökintentionen i SERP: tydligare title/H1, första stycket, FAQ/H2:or, exempel/case och interna länkar med "${comparison.query}" som ankare.`
+          : `Mappa "${comparison.query}" till en primär target page och skapa/uppdatera sidan mot SERP-intentionen: title/H1, första stycket, FAQ/H2:or, exempel/case och internlänkar.`,
+        expectedImpact: "Ger sidan bättre chans att gå från ingen topp-10-synlighet till faktisk ranking och impressions.",
+        evidence: [
+          `SERP provider: ${comparison.provider}${comparison.fromCache ? " (cached)" : ""}`,
+          `Own rank: ${comparison.ownRank ?? "not top 10"}`,
+          ...topCompetitors
+        ],
+        targetUrl,
+        keyword: comparison.query
+      } satisfies SeoReviewAction;
+    });
+}
+
+function buildMemoryActions(input: SeoReviewInput): SeoReviewAction[] {
+  const actions: SeoReviewAction[] = [];
+
+  for (const recurring of input.seoMemory.recurringActions.slice(0, 3)) {
+    actions.push({
+      rank: actions.length + 1,
+      priority: recurring.occurrences >= 3 ? "high" : "medium",
+      title: `Följ upp återkommande åtgärd: ${recurring.title}`,
+      why: `Åtgärden har dykt upp ${recurring.occurrences} gånger och är fortfarande ${recurring.status}.`,
+      action: recurring.recheckAfter && recurring.recheckAfter <= new Date().toISOString().slice(0, 10)
+        ? "Kontrollera om åtgärden faktiskt är genomförd. Om ja, markera den som done och följ rank/GSC. Om nej, bryt ned den till en konkret sidändring och genomför den innan nästa recheck."
+        : "Behåll åtgärden i planen, men gör den mer konkret: ange sida, rubrik/meta/internlänk och datum för recheck.",
+      expectedImpact: "Stoppar samma rekommendation från att återkomma utan beslut och gör SEO-arbetet mätbart över tid.",
+      evidence: [
+        `Status: ${recurring.status}`,
+        `Occurrences: ${recurring.occurrences}`,
+        `Last seen: ${recurring.lastSeenAt}`,
+        recurring.recheckAfter ? `Recheck after: ${recurring.recheckAfter}` : "No recheck date"
+      ],
+      targetUrl: recurring.targetUrl,
+      keyword: recurring.keyword
+    });
+  }
+
+  for (const trend of input.seoMemory.gscTrends
+    .filter((item) => item.impressionsDelta < 0 || item.positionDelta > 2 || item.ctrDelta < -0.01)
+    .slice(0, Math.max(0, 3 - actions.length))) {
+    actions.push({
+      rank: actions.length + 1,
+      priority: "medium",
+      title: `Trend försämras: ${trend.query}`,
+      why: `Jämfört med föregående körning: impressions ${formatSigned(trend.impressionsDelta)}, position ${formatPositionDelta(trend.positionDelta)}, CTR ${formatPercentDelta(trend.ctrDelta)}.`,
+      action: "Kontrollera target-sidan för queryn: skriv om title/meta för bättre klickintention, lägg queryn tydligare i H1/intro och bygg minst två interna länkar från relevanta artiklar/tjänstesidor.",
+      expectedImpact: "Motverkar försämrad synlighet och ökar chansen att fånga befintlig efterfrågan.",
+      evidence: [
+        `Impressions: ${trend.impressionsPrevious} -> ${trend.impressionsNow}`,
+        `Position: ${trend.positionPrevious.toFixed(1)} -> ${trend.positionNow.toFixed(1)}`,
+        `CTR: ${Math.round(trend.ctrPrevious * 1000) / 10}% -> ${Math.round(trend.ctrNow * 1000) / 10}%`
+      ],
+      keyword: trend.query
+    });
+  }
+
+  return actions;
+}
+
+function inferSerpPattern(results: SerpResult[]) {
+  const titles = results.slice(0, 5).map((result) => result.title.toLowerCase()).join(" ");
+  if (/\b(konsult|konsulter|rådgivning|strategi|anlita)\b/i.test(titles)) {
+    return "konsult-/rådgivningssidor med tydligt erbjudande och kommersiell avsikt";
+  }
+  if (/\b(guide|så|hur|tips|sätt|vad är|exempel)\b/i.test(titles)) {
+    return "guider och praktiska förklaringar med konkret svarsdjup";
+  }
+  if (/\b(api|integration|system|plattform|verktyg)\b/i.test(titles)) {
+    return "praktiska system-/verktygssidor med teknisk och affärsmässig nytta";
+  }
+  return "sidor med tydligare matchning mot sökintentionen än vår nuvarande target";
+}
+
+function formatSigned(value: number) {
+  return value > 0 ? `+${value}` : String(value);
+}
+
+function formatPercentDelta(value: number) {
+  const rounded = Math.round(value * 1000) / 10;
+  return rounded > 0 ? `+${rounded}pp` : `${rounded}pp`;
+}
+
+function formatPositionDelta(value: number) {
+  if (Math.abs(value) < 0.05) return "oförändrad";
+  return value < 0 ? `${value.toFixed(1)} bättre` : `+${value.toFixed(1)} sämre`;
 }
 
 function mergeStrings(primary: string[], fallback: string[], limit: number) {
@@ -499,31 +768,69 @@ function normalizeText(value: string) {
 }
 
 function buildFixBriefMarkdown(actions: SeoReviewAction[], fallback: SeoReview) {
+  const implementationActions = actions
+    .filter(isCodexImplementationAction)
+    .slice(0, 6);
+  const manualActions = actions
+    .filter((action) => !isCodexImplementationAction(action))
+    .slice(0, 6);
+  const selectedActions = implementationActions.length ? implementationActions : actions.slice(0, 6);
   const lines = [
-    "# SEO-fix brief",
+    "# Codex SEO implementation brief",
+    "",
+    "Repo: sebcastwall",
+    "Goal: implementera konkreta SEO/copy-ändringar i sajtrepot. Hoppa över manuella GSC-åtgärder som bara kräver URL Inspection.",
     "",
     fallback.executiveSummary,
     "",
-    "## Prioriterade ändringar",
-    ...actions.slice(0, 8).map((action) => [
+    "## Implementera först",
+    ...selectedActions.map((action, index) => [
       "",
-      `${action.rank}. ${action.title}`,
+      `${index + 1}. ${action.title}`,
       `Prioritet: ${action.priority}`,
       action.targetUrl ? `URL: ${action.targetUrl}` : undefined,
       action.keyword ? `Keyword: ${action.keyword}` : undefined,
       `Varför: ${action.why}`,
-      `Gör: ${action.action}`,
+      `Gör i repot: ${codexActionText(action)}`,
       `Förväntad effekt: ${action.expectedImpact}`,
       action.evidence.length ? `Bevis: ${action.evidence.join(" | ")}` : undefined
     ].filter(Boolean).join("\n")),
+    manualActions.length ? "\n## Manuella SEO-noteringar, implementera inte i kod" : undefined,
+    ...manualActions.map((action, index) => [
+      "",
+      `${index + 1}. ${action.title}`,
+      action.targetUrl ? `URL: ${action.targetUrl}` : undefined,
+      action.keyword ? `Keyword: ${action.keyword}` : undefined,
+      `Notering: ${action.why}`,
+      `Manuell åtgärd: ${action.action}`
+    ].filter(Boolean).join("\n")),
     "",
-    "## Krav",
+    "## Arbetsregler för Codex",
     "- Gör bara relevanta SEO/copy-ändringar.",
     "- Behåll teknisk struktur och befintlig design.",
-    "- Uppdatera title, meta description, H1/H2 och internlänkar där det anges.",
-    "- Kör build/typecheck efter ändringar."
-  ];
+    "- Läs befintlig implementation innan ändring.",
+    "- Uppdatera title, meta description, H1/H2, intro, FAQ/sektioner och internlänkar där briefen pekar på det.",
+    "- Lägg inte till keyword stuffing. Skriv naturligt på svenska för små och medelstora företag.",
+    "- Om flera actions gäller samma URL, gör en sammanhängande ändring på den sidan.",
+    "- Kör build/typecheck efter ändringar och sammanfatta exakt vilka filer som ändrades."
+  ].filter((line): line is string => typeof line === "string");
   return lines.join("\n");
+}
+
+function isCodexImplementationAction(action: SeoReviewAction) {
+  const text = normalizeText(`${action.title} ${action.action} ${action.why}`);
+  if (/url inspection|begar indexering|oppna url inspection|gsc/.test(text) && !/title|h1|meta|intro|internlank|copy|faq|sektion/.test(text)) {
+    return false;
+  }
+  return Boolean(action.targetUrl || action.keyword) && /uppdatera|lagg|stark|forstark|skriv|title|meta|h1|h2|intro|faq|internlank|copy|sektion|content/.test(text);
+}
+
+function codexActionText(action: SeoReviewAction) {
+  const text = normalizeText(action.action);
+  if (/url inspection|begar indexering|oppna url inspection/.test(text)) {
+    return "Gör inte GSC-delen i kod. Om URL:en är viktig: stärk sidans interna länkar och on-page relevans enligt keyword/bevis ovan.";
+  }
+  return action.action;
 }
 
 function actionForFinding(finding: SourceFinding | CrawlFinding) {
