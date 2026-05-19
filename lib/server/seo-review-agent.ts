@@ -2,10 +2,12 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import type {
   BatchConfig,
+  AiSearchReadinessReport,
   CrawlFinding,
   CrawlReport,
   GscIndexCoverageReport,
   GscQueryResult,
+  GscSearchOpportunity,
   GscUrlInspectionResult,
   KeywordPlan,
   KeywordReview,
@@ -34,6 +36,8 @@ type SeoReviewInput = {
   analyticsSummary: SiteAnalyticsSummary | null;
   searchDemandProject: SearchDemandProject | null;
   serpComparisons: SerpComparison[];
+  gscSearchOpportunities: GscSearchOpportunity[];
+  aiSearchReadiness: AiSearchReadinessReport;
   pageSeoOpportunities: PageSeoOpportunity[];
   seoMemory: SeoTrendSummary;
   demandOpportunityReview: DemandOpportunityReview | null;
@@ -112,7 +116,17 @@ function buildAgentPayload(input: SeoReviewInput) {
       siteUrl: input.gscQueryResult?.siteUrl,
       startDate: input.gscQueryResult?.startDate,
       endDate: input.gscQueryResult?.endDate,
-      rows: input.gscQueryResult?.rows.slice(0, 50) ?? []
+      rows: input.gscQueryResult?.rows.slice(0, 50) ?? [],
+      opportunities: input.gscSearchOpportunities.slice(0, 40)
+    },
+    aiSearchReadiness: {
+      source: input.aiSearchReadiness.source,
+      guideUrl: input.aiSearchReadiness.guideUrl,
+      score: input.aiSearchReadiness.score,
+      checkedPages: input.aiSearchReadiness.checkedPages,
+      issueCounts: input.aiSearchReadiness.issueCounts,
+      pages: input.aiSearchReadiness.pages.slice(0, 15),
+      notes: input.aiSearchReadiness.notes
     },
     indexing: {
       summary: {
@@ -234,6 +248,8 @@ function buildFallbackReview(input: SeoReviewInput): SeoReview {
   const demandOpportunities = input.demandOpportunityReview?.opportunities ?? [];
   const serpActions = buildSerpActions(input);
   const memoryActions = buildMemoryActions(input);
+  const gscSearchActions = buildGscSearchActions(input);
+  const aiReadinessActions = buildAiReadinessActions(input);
   const gscOpportunities = (input.gscQueryResult?.rows ?? [])
     .filter((row) => row.impressions >= 1 && row.position > 3)
     .filter((row) => !isProjectBrandedGscRow(row))
@@ -245,6 +261,20 @@ function buildFallbackReview(input: SeoReviewInput): SeoReview {
     .slice(0, 8);
   const topActions: SeoReviewAction[] = [];
   const indexingIssues = input.gscIndexCoverage.topIssues;
+
+  for (const action of gscSearchActions.slice(0, 4)) {
+    topActions.push({
+      ...action,
+      rank: topActions.length + 1
+    });
+  }
+
+  for (const action of aiReadinessActions.slice(0, 3)) {
+    topActions.push({
+      ...action,
+      rank: topActions.length + 1
+    });
+  }
 
   for (const item of indexingIssues.slice(0, 3)) {
     topActions.push({
@@ -400,8 +430,8 @@ function buildFallbackReview(input: SeoReviewInput): SeoReview {
     82
       - critical.length * 18
       - warnings.length * 5
-      - input.keywordReview.missingCount * 18
-      - input.keywordReview.weakCount * 9
+      - input.keywordReview.missingCount * 14
+      - input.keywordReview.weakCount * 3
       - (plannedKeywords.length < 5 ? 14 : 0)
       - ((input.gscQueryResult?.rows.length ?? 0) < 10 ? 4 : 0)
       - ((input.crawlReport?.pages.length ?? 0) === 0 ? 20 : 0)
@@ -433,7 +463,12 @@ function buildFallbackReview(input: SeoReviewInput): SeoReview {
       ...suggestedKeywords.slice(0, 8).map((item) => `Föreslaget keyword: ${item.query} -> ${item.targetUrl}`)
     ],
     contentOpportunities: gscOpportunities.length
-      ? gscOpportunities.map((row) => `Bygg ut innehåll för "${row.keys[1] ?? row.keys[0]}" med bättre svarsdjup och internlänkning.`)
+      ? [
+          ...input.gscSearchOpportunities.slice(0, 8).map((item) =>
+            `${item.query} på ${item.page}: ${item.recommendedAction}`
+          ),
+          ...gscOpportunities.map((row) => `Bygg ut innehåll för "${row.keys[1] ?? row.keys[0]}" med bättre svarsdjup och internlänkning.`)
+        ].slice(0, 12)
       : [
           ...keywordGaps.slice(0, 3).map((item) => `Skapa eller uppdatera target content för "${item.query}".`),
           ...suggestedKeywords.slice(0, 5).map((item) => `Planera sida eller sektion för "${item.query}" på ${item.targetUrl}.`)
@@ -442,6 +477,7 @@ function buildFallbackReview(input: SeoReviewInput): SeoReview {
     monitoringNotes: [
       `Crawlad sidor: ${input.crawlReport?.pages.length ?? 0}.`,
       `GSC-rader: ${input.gscQueryResult?.rows.length ?? 0}.`,
+      `GSC opportunities: ${input.gscSearchOpportunities.length}.`,
       `GSC URL Inspection: ${input.gscIndexCoverage.inspectedCount} URL:er, ${input.gscIndexCoverage.indexedCount} indexerade, ${input.gscIndexCoverage.issueCount} möjliga indexeringsproblem.`,
       `Keywords i plan: ${input.keywordPlan.keywords.length}.`,
       input.searchDemandProject
@@ -450,6 +486,7 @@ function buildFallbackReview(input: SeoReviewInput): SeoReview {
       input.demandOpportunityReview
         ? `Demand Agent: ${input.demandOpportunityReview.opportunities.length} prioriterade opportunities (${input.demandOpportunityReview.mode}).`
         : "Demand Agent saknas.",
+      `AI Search readiness: score ${input.aiSearchReadiness.score}/100 över ${input.aiSearchReadiness.checkedPages} sidor. Källa: ${input.aiSearchReadiness.guideUrl}.`,
       input.serpComparisons.length
         ? `SERP: ${input.serpComparisons.length} keyword-jämförelser, ${input.serpComparisons.filter((item) => item.ownRank !== null).length} med egen domän i toppresultaten.`
         : "SERP-jämförelser saknas eller är inte konfigurerade.",
@@ -613,6 +650,53 @@ function buildSerpActions(input: SeoReviewInput): SeoReviewAction[] {
     });
 }
 
+function buildGscSearchActions(input: SeoReviewInput): SeoReviewAction[] {
+  return input.gscSearchOpportunities.slice(0, 8).map((item, index) => ({
+    rank: index + 1,
+    priority: item.priority,
+    title: item.opportunityType === "striking_distance"
+      ? `Lyft GSC-query: ${item.query}`
+      : item.opportunityType === "ctr_gap"
+        ? `Förbättra CTR: ${item.query}`
+        : `Bygg bättre matchning: ${item.query}`,
+    why: `${item.impressions} impressions, ${item.clicks} klick, ${(item.ctr * 100).toFixed(2)}% CTR och snittposition ${item.position.toFixed(1)}. Detta är redan bevisad organisk synlighet, inte bara en idé från Keyword Planner.`,
+    action: item.recommendedAction,
+    expectedImpact: item.opportunityType === "striking_distance"
+      ? "Kan flytta befintlig synlighet närmare sida 1 och skapa organisk trafik utan Ads-spend."
+      : item.opportunityType === "ctr_gap"
+        ? "Kan få fler klick från impressions som redan finns."
+        : "Kan göra sidan tillräckligt relevant för att senare bedömas för Ads-test.",
+    evidence: item.evidence,
+    targetUrl: item.page,
+    keyword: item.query
+  }));
+}
+
+function buildAiReadinessActions(input: SeoReviewInput): SeoReviewAction[] {
+  return input.aiSearchReadiness.pages
+    .filter((page) => page.score < 75)
+    .slice(0, 5)
+    .map((page, index) => {
+      const issueList = page.issues.map(labelAiIssue).join(", ");
+      return {
+        rank: index + 1,
+        priority: page.priority,
+        title: `AI Search readiness: ${page.path}`,
+        why: `Google-guiden för AI Search betonar vanlig Search-kvalitet: indexerbarhet, unikt hjälpsamt innehåll, tydlig struktur och konkreta svar. Sidan får ${page.score}/100 och har brister: ${issueList || "okända"}.`,
+        action: page.recommendations.length
+          ? page.recommendations.join(" ")
+          : "Gör sidan mer konkret: förstärk title/meta/H1, lägg in praktiska H2-sektioner, exempel, FAQ och relevanta internlänkar.",
+        expectedImpact: "Gör sidan mer användbar för människor och lättare för Google Search/AI-funktioner att förstå, sammanfatta och matcha mot rätt frågor.",
+        evidence: [
+          `Readiness score: ${page.score}/100`,
+          `Guide: ${input.aiSearchReadiness.guideUrl}`,
+          ...page.evidence.slice(0, 4)
+        ],
+        targetUrl: page.url
+      } satisfies SeoReviewAction;
+    });
+}
+
 function buildMemoryActions(input: SeoReviewInput): SeoReviewAction[] {
   const actions: SeoReviewAction[] = [];
 
@@ -657,6 +741,18 @@ function buildMemoryActions(input: SeoReviewInput): SeoReviewAction[] {
   }
 
   return actions;
+}
+
+function labelAiIssue(issue: string) {
+  if (issue === "not_indexable") return "indexerbarhet";
+  if (issue === "thin_content") return "tunt innehåll";
+  if (issue === "generic_structure") return "generisk struktur";
+  if (issue === "missing_concrete_examples") return "saknar konkreta exempel";
+  if (issue === "weak_question_coverage") return "svag frågetäckning";
+  if (issue === "weak_media_support") return "svagt bild/video-stöd";
+  if (issue === "weak_internal_context") return "svag intern kontext";
+  if (issue === "weak_snippet") return "svag snippet";
+  return issue;
 }
 
 function inferSerpPattern(results: SerpResult[]) {

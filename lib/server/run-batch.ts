@@ -7,6 +7,8 @@ import { fetchSiteAnalyticsSummary } from "@/lib/server/providers/site-analytics
 import { fetchSearchDemandProject } from "@/lib/server/providers/search-demand";
 import { getKeywordPlan, importKeywords } from "@/lib/server/keyword-plan";
 import { buildKeywordReview } from "@/lib/server/keyword-review";
+import { buildGscSearchOpportunities, gscOpportunitiesToKeywordImports } from "@/lib/server/gsc-opportunities";
+import { buildAiSearchReadinessReport } from "@/lib/server/ai-search-readiness";
 import { rankDemandOpportunities } from "@/lib/server/demand-ranking-agent";
 import { generateSeoReview } from "@/lib/server/seo-review-agent";
 import { buildSeoMemoryContext, recordSeoRunMemory } from "@/lib/server/seo-memory";
@@ -19,6 +21,7 @@ import type {
   GscIndexCoverageItem,
   GscIndexCoverageReport,
   GscQueryRow,
+  GscSearchOpportunity,
   GscUrlInspectionResult,
   KeywordCandidate,
   KeywordReview,
@@ -54,13 +57,14 @@ export async function runBatch(batchId: string, options: RunBatchOptions = {}): 
 
   const siteUrl = batch.siteUrl;
   const gscProperty = batch.gscProperty;
-  const crawlReport = runPlan.crawl && siteUrl ? await safeCrawlReport(() => crawlSite(siteUrl, batch.maxPages), siteUrl) : previousCrawlReport(previousDetails);
+  const previousCrawl = previousCrawlReport(previousDetails);
+  const crawlReport = runPlan.crawl && siteUrl ? await safeCrawlReport(() => crawlSite(siteUrl, batch.maxPages), siteUrl, previousCrawl) : previousCrawl;
   const gscQueryResult = gscProperty
     ? await safeAsync(() => querySearchAnalytics({
         siteUrl: gscProperty,
         startDate: getDateOffset(28),
         endDate: getDateOffset(0),
-        rowLimit: 100,
+        rowLimit: getGscSearchAnalyticsRowLimit(),
         pageUrlPrefix: siteUrl ? normalizePageUrlPrefix(siteUrl) : undefined
       }), null)
     : null;
@@ -72,6 +76,18 @@ export async function runBatch(batchId: string, options: RunBatchOptions = {}): 
     await importKeywords({
       projectSlug,
       keywords: buildSeedKeywords(batch.siteUrl)
+    });
+    keywordPlan = await getKeywordPlan(projectSlug);
+  }
+  const gscSearchOpportunities = buildGscSearchOpportunities({
+    gscQueryResult,
+    siteUrl: batch.siteUrl,
+    limit: getGscOpportunityLimit()
+  });
+  if (gscSearchOpportunities.length) {
+    await importKeywords({
+      projectSlug,
+      keywords: gscOpportunitiesToKeywordImports({ projectSlug, opportunities: gscSearchOpportunities })
     });
     keywordPlan = await getKeywordPlan(projectSlug);
   }
@@ -113,6 +129,11 @@ export async function runBatch(batchId: string, options: RunBatchOptions = {}): 
     gscIndexItems: gscIndexCoverage.items,
     gscRows: gscQueryResult?.rows ?? []
   });
+  const aiSearchReadiness = buildAiSearchReadinessReport({
+    crawlReport,
+    gscSearchOpportunities,
+    siteUrl: batch.siteUrl
+  });
   const demandOpportunityReview = await rankDemandOpportunities({
     siteUrl: batch.siteUrl,
     searchDemandProject,
@@ -136,6 +157,8 @@ export async function runBatch(batchId: string, options: RunBatchOptions = {}): 
     analyticsSummary,
     searchDemandProject,
     serpComparisons,
+    gscSearchOpportunities,
+    aiSearchReadiness,
     pageSeoOpportunities,
     seoMemory,
     demandOpportunityReview,
@@ -178,6 +201,8 @@ export async function runBatch(batchId: string, options: RunBatchOptions = {}): 
     analyticsSummary: analyticsSummary ?? undefined,
     searchDemandProject: searchDemandProject ?? undefined,
     serpComparisons,
+    gscSearchOpportunities,
+    aiSearchReadiness,
     pageSeoOpportunities,
     seoMemory,
     seoActionItems: memoryRun.actionItems,
@@ -203,6 +228,8 @@ export async function runBatch(batchId: string, options: RunBatchOptions = {}): 
     gscUrlInspections,
     gscIndexCoverage,
     serpComparisons,
+    gscSearchOpportunities,
+    aiSearchReadiness,
     pageSeoOpportunities,
     keywordReview,
     seoMemory,
@@ -218,6 +245,14 @@ function buildRunPlan(profile: SeoRunProfile) {
   if (profile === "serp") return { source: false, crawl: false, serp: true, urlInspection: false };
   if (profile === "light") return { source: false, crawl: false, serp: false, urlInspection: false };
   return { source: true, crawl: true, serp: true, urlInspection: true };
+}
+
+function getGscSearchAnalyticsRowLimit() {
+  return parsePositiveInteger(process.env.GSC_SEARCH_ANALYTICS_ROW_LIMIT, 500, 5000);
+}
+
+function getGscOpportunityLimit() {
+  return parsePositiveInteger(process.env.GSC_OPPORTUNITY_LIMIT, 120, 500);
 }
 
 function previousSourceReport(details: BatchRunDetails | undefined, repoFullName?: string): SourceReport | null {
@@ -272,23 +307,36 @@ async function safeSourceReport(run: () => Promise<NonNullable<Awaited<ReturnTyp
   }
 }
 
-async function safeCrawlReport(run: () => Promise<NonNullable<Awaited<ReturnType<typeof crawlSite>>>>, siteUrl: string) {
+async function safeCrawlReport(
+  run: () => Promise<NonNullable<Awaited<ReturnType<typeof crawlSite>>>>,
+  siteUrl: string,
+  fallback: CrawlReport | null
+) {
   try {
     return await run();
   } catch (error) {
+    const failedFinding = {
+      id: "crawl-run-failed",
+      severity: "warning" as const,
+      category: "crawl" as const,
+      title: "Crawl misslyckades",
+      summary: "SEO Monitor kunde inte slutföra crawl under denna körning. Keyword- och sidbedömning återanvänder senaste lyckade crawl om sådan finns.",
+      url: siteUrl,
+      evidence: [formatError(error)]
+    };
+    if (fallback?.pages.length) {
+      return {
+        ...fallback,
+        checkedAt: new Date().toISOString(),
+        findings: [failedFinding, ...fallback.findings.filter((finding) => finding.id !== failedFinding.id)],
+        durationMs: 0
+      };
+    }
     return {
       pages: [],
       checkedAt: new Date().toISOString(),
       durationMs: 0,
-      findings: [{
-        id: "crawl-run-failed",
-        severity: "warning" as const,
-        category: "crawl" as const,
-        title: "Crawl misslyckades",
-        summary: "SEO Monitor kunde inte slutföra crawl under denna körning. Kontrollera om det var timeout, Cloudflare/Worker-spik eller nätverksfel innan du tolkar resultatet.",
-        url: siteUrl,
-        evidence: [formatError(error)]
-      }]
+      findings: [failedFinding]
     };
   }
 }
@@ -783,10 +831,6 @@ function safePathname(url: string) {
 }
 
 async function runSerpComparisons(input: { keywords: string[]; ownDomain?: string; limit: number; cacheTtlHours: number }) {
-  if (!isSerpProviderConfigured()) {
-    return [];
-  }
-
   const selected = input.keywords.slice(0, input.limit);
   const comparisons: SerpComparison[] = [];
 
@@ -801,12 +845,41 @@ async function runSerpComparisons(input: { keywords: string[]; ownDomain?: strin
         provider: getSerpProvider(),
         cacheTtlHours: input.cacheTtlHours
       }));
-    } catch {
-      continue;
+    } catch (error) {
+      comparisons.push(buildSerpFailureComparison(query, input.ownDomain, error));
     }
   }
 
   return comparisons;
+}
+
+function buildSerpFailureComparison(query: string, ownDomain: string | undefined, error: unknown): SerpComparison {
+  return {
+    configured: false,
+    provider: diagnosticSerpProvider(),
+    query,
+    market: "SE",
+    language: "sv",
+    ownDomain,
+    checkedAt: new Date().toISOString(),
+    ownRank: null,
+    results: [],
+    competitorResults: [],
+    observations: [
+      "SERP-jämförelsen kunde inte hämta live-resultat för detta keyword.",
+      formatError(error)
+    ],
+    limitations: [
+      "Detta är en diagnostikrad, inte en faktisk SERP.",
+      "Kontrollera BRAVE_SEARCH_API_KEY eller GOOGLE_CUSTOM_SEARCH_API_KEY/GOOGLE_CUSTOM_SEARCH_ENGINE_ID i SEO Monitor-miljön."
+    ]
+  };
+}
+
+function diagnosticSerpProvider(): SerpComparison["provider"] {
+  const provider = getSerpProvider();
+  if (provider === "brave_search" || provider === "google_custom_search") return provider;
+  return isSerpProviderConfigured() ? "brave_search" : "google_custom_search";
 }
 
 function upsertKeywordScore(scores: Map<string, { query: string; score: number }>, query: string, score: number) {

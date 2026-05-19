@@ -210,6 +210,15 @@ function extractPageSignals(url: string, status: number, html: string): CrawledP
     .filter(Boolean)
     .slice(0, 10);
   const internalLinks = extractInternalLinks(url, html);
+  const textContent = html
+    .replace(/<script\b[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style\b[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const wordCount = textContent ? textContent.split(/\s+/).filter(Boolean).length : 0;
+  const imageCount = [...html.matchAll(/<img\b/gi)].length;
+  const structuredDataTypes = extractStructuredDataTypes(html);
 
   return {
     url,
@@ -220,10 +229,43 @@ function extractPageSignals(url: string, status: number, html: string): CrawledP
     h1Count,
     h1Text,
     h2Texts,
+    wordCount,
+    imageCount,
+    structuredDataTypes,
     lang: langMatch?.[1]?.trim() ?? null,
     robots: robotsMatch?.[1]?.trim() ?? null,
     internalLinks
   };
+}
+
+function extractStructuredDataTypes(html: string) {
+  const types = new Set<string>();
+  for (const match of html.matchAll(/<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)) {
+    try {
+      const parsed = JSON.parse(decodeHtml(match[1].trim()));
+      for (const type of collectStructuredDataTypes(parsed)) {
+        types.add(type);
+      }
+    } catch {
+      continue;
+    }
+  }
+  return [...types].slice(0, 20);
+}
+
+function collectStructuredDataTypes(value: unknown): string[] {
+  if (!value || typeof value !== "object") return [];
+  if (Array.isArray(value)) return value.flatMap(collectStructuredDataTypes);
+
+  const record = value as Record<string, unknown>;
+  const ownType = record["@type"];
+  const types = Array.isArray(ownType)
+    ? ownType.filter((item): item is string => typeof item === "string")
+    : typeof ownType === "string"
+      ? [ownType]
+      : [];
+  const graph = Array.isArray(record["@graph"]) ? record["@graph"].flatMap(collectStructuredDataTypes) : [];
+  return [...types, ...graph];
 }
 
 function extractInternalLinks(currentUrl: string, html: string) {

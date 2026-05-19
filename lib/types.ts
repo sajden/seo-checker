@@ -29,6 +29,9 @@ export type CrawledPage = {
   h1Count: number;
   h1Text: string | null;
   h2Texts: string[];
+  wordCount?: number;
+  imageCount?: number;
+  structuredDataTypes?: string[];
   lang: string | null;
   robots: string | null;
   internalLinks: string[];
@@ -70,6 +73,7 @@ export type GscReport = {
   expectedEnv: string[];
   redirectUri?: string;
   hasStoredRefreshToken: boolean;
+  connectionError?: string;
 };
 
 export type GscProperty = {
@@ -92,6 +96,19 @@ export type GscQueryResult = {
   rows: GscQueryRow[];
   pageUrlPrefix?: string;
   rawRows?: number;
+};
+
+export type GscSearchOpportunity = {
+  query: string;
+  page: string;
+  clicks: number;
+  impressions: number;
+  ctr: number;
+  position: number;
+  priority: SeoReviewPriority;
+  opportunityType: "striking_distance" | "ctr_gap" | "content_gap" | "monitor";
+  recommendedAction: string;
+  evidence: string[];
 };
 
 export type GscUrlInspectionResult = {
@@ -140,6 +157,38 @@ export type GscIndexCoverageReport = {
   counts: Record<GscIndexCoverageBucket, number>;
   topIssues: GscIndexCoverageItem[];
   items: GscIndexCoverageItem[];
+  notes: string[];
+};
+
+export type AiSearchReadinessIssue =
+  | "not_indexable"
+  | "thin_content"
+  | "generic_structure"
+  | "missing_concrete_examples"
+  | "weak_question_coverage"
+  | "weak_media_support"
+  | "weak_internal_context"
+  | "weak_snippet";
+
+export type AiSearchReadinessPage = {
+  url: string;
+  path: string;
+  score: number;
+  priority: SeoReviewPriority;
+  issues: AiSearchReadinessIssue[];
+  strengths: string[];
+  recommendations: string[];
+  evidence: string[];
+};
+
+export type AiSearchReadinessReport = {
+  generatedAt: string;
+  source: "google-ai-optimization-guide";
+  guideUrl: string;
+  score: number;
+  checkedPages: number;
+  issueCounts: Record<AiSearchReadinessIssue, number>;
+  pages: AiSearchReadinessPage[];
   notes: string[];
 };
 
@@ -447,6 +496,8 @@ export type BatchRunDetails = {
   analyticsSummary?: SiteAnalyticsSummary;
   searchDemandProject?: SearchDemandProject;
   serpComparisons?: SerpComparison[];
+  gscSearchOpportunities?: GscSearchOpportunity[];
+  aiSearchReadiness?: AiSearchReadinessReport;
   pageSeoOpportunities?: PageSeoOpportunity[];
   seoMemory?: SeoTrendSummary;
   seoActionItems?: SeoActionItem[];
@@ -521,6 +572,8 @@ export type BatchRunResponse = {
   gscUrlInspections?: GscUrlInspectionResult[];
   gscIndexCoverage?: GscIndexCoverageReport;
   serpComparisons?: SerpComparison[];
+  gscSearchOpportunities?: GscSearchOpportunity[];
+  aiSearchReadiness?: AiSearchReadinessReport;
   pageSeoOpportunities?: PageSeoOpportunity[];
   keywordReview?: KeywordReview;
   seoMemory?: SeoTrendSummary;
