@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getBatch } from "@/lib/server/batches";
+import { setActiveDashboardBatch } from "@/lib/server/dashboard-adapter";
 
 export const dynamic = "force-dynamic";
 
@@ -12,9 +13,13 @@ export async function GET(_: Request, context: { params: Promise<{ jobId: string
     return NextResponse.json({ error: "Job not found." }, { status: 404 });
   }
 
+  await setActiveDashboardBatch(batch.id);
+
   return NextResponse.json({
     job: {
       id: `seo-monitor-${batch.id}`,
+      batchId: batch.id,
+      workspaceId: batch.id,
       module: "seo-monitor",
       title: batch.name,
       status: batch.lastRunSummary ? "completed" : "scheduled",

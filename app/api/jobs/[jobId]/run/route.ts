@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { runBatch } from "@/lib/server/run-batch";
+import { setActiveDashboardBatch } from "@/lib/server/dashboard-adapter";
 
 export async function POST(_: Request, context: { params: Promise<{ jobId: string }> }) {
   try {
@@ -10,6 +11,8 @@ export async function POST(_: Request, context: { params: Promise<{ jobId: strin
     if (!response) {
       return NextResponse.json({ error: "Job not found." }, { status: 404 });
     }
+
+    await setActiveDashboardBatch(batchId);
 
     return NextResponse.json(response);
   } catch (error) {

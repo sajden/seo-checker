@@ -9,6 +9,8 @@ export async function GET() {
   return NextResponse.json({
     jobs: batches.map((batch) => ({
       id: `seo-monitor-${batch.id}`,
+      batchId: batch.id,
+      workspaceId: batch.id,
       module: "seo-monitor",
       title: batch.name,
       status: batch.lastRunSummary ? "completed" : "scheduled",
