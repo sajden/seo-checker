@@ -82,6 +82,7 @@ export async function recordSeoRunMemory(input: RecordRunInput) {
     existing: store.actionItems,
     projectSlug: input.projectSlug,
     actions: input.seoReview.topActions,
+    crawlReport: input.crawlReport,
     ranAt: input.ranAt
   });
 
@@ -97,6 +98,7 @@ export async function recordSeoRunMemory(input: RecordRunInput) {
     snapshot,
     actionItems: actionItems
       .filter((item) => item.projectSlug === input.projectSlug)
+      .filter((item) => item.status === "planned" || item.status === "doing")
       .sort((a, b) => Date.parse(b.lastSeenAt) - Date.parse(a.lastSeenAt))
   };
 }
@@ -187,8 +189,9 @@ function upsertActionItems(input: {
   existing: SeoActionItem[];
   projectSlug: string;
   actions: SeoReviewAction[];
+  crawlReport: CrawlReport | null;
   ranAt: string;
-}) {
+}): SeoActionItem[] {
   const byKey = new Map(input.existing.map((item) => [actionKey(item), item]));
   const seen = new Set<string>();
 
@@ -233,10 +236,62 @@ function upsertActionItems(input: {
     });
   }
 
+  const currentCrawlErrorUrls = new Set((input.crawlReport?.findings ?? [])
+    .filter((finding) => finding.title === "URL svarar med felstatus")
+    .map((finding) => normalizeUrlForMemory(finding.url ?? ""))
+    .filter(Boolean));
+
   return [...byKey.values()].map((item) => {
     if (item.projectSlug !== input.projectSlug || seen.has(actionKey(item))) return item;
+    if (isResolvedCrawlStatusAction(item, currentCrawlErrorUrls, input.crawlReport)) {
+      return {
+        ...item,
+        status: "done",
+        completedAt: input.ranAt,
+        notes: [
+          item.notes,
+          "Automatiskt stängd: senaste crawl bekräftade inte längre HTTP-fel för URL:en."
+        ].filter(Boolean).join("\n")
+      };
+    }
+    if (isStaleAiSearchReadinessAction(item)) {
+      return {
+        ...item,
+        status: "done",
+        completedAt: input.ranAt,
+        notes: [
+          item.notes,
+          "Automatiskt stängd: senaste SEO-run bekräftade inte längre denna AI Search readiness-action."
+        ].filter(Boolean).join("\n")
+      };
+    }
     return item;
   });
+}
+
+function isStaleAiSearchReadinessAction(item: SeoActionItem) {
+  if (item.status !== "planned" && item.status !== "doing") return false;
+  return item.title.startsWith("AI Search readiness:");
+}
+
+function isResolvedCrawlStatusAction(item: SeoActionItem, currentCrawlErrorUrls: Set<string>, crawlReport: CrawlReport | null) {
+  if (!crawlReport) return false;
+  if (item.status !== "planned" && item.status !== "doing") return false;
+  if (item.title !== "URL svarar med felstatus") return false;
+  const targetUrl = normalizeUrlForMemory(item.targetUrl ?? "");
+  if (!targetUrl) return false;
+  return !currentCrawlErrorUrls.has(targetUrl);
+}
+
+function normalizeUrlForMemory(value: string) {
+  if (!value.trim()) return "";
+  try {
+    const url = new URL(value);
+    url.hash = "";
+    return url.toString().replace(/\/$/, "");
+  } catch {
+    return value.trim().replace(/\/$/, "");
+  }
 }
 
 function isMetaFollowupAction(title: string) {

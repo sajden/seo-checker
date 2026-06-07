@@ -482,7 +482,7 @@ export type BatchRunSummary = {
   sourceFilesChecked?: number;
   crawlPagesChecked?: number;
   gscRawRows?: number;
-  runProfile?: "full" | "technical" | "content" | "serp" | "light";
+  runProfile?: "full" | "technical" | "content" | "serp" | "crawl" | "light";
   ranAt: string;
 };
 
@@ -511,13 +511,13 @@ export type BatchRunDetails = {
   gscRawRows?: number;
   gscPageUrlPrefix?: string;
   gscUrlInspectionLimit?: number;
-  runProfile?: "full" | "technical" | "content" | "serp" | "light";
+  runProfile?: "full" | "technical" | "content" | "serp" | "crawl" | "light";
   checkedAt: string;
 };
 
 export type BatchRunHistoryItem = {
   ranAt: string;
-  runProfile?: "full" | "technical" | "content" | "serp" | "light";
+  runProfile?: "full" | "technical" | "content" | "serp" | "crawl" | "light";
   sourceFindings: number;
   crawlFindings: number;
   gscRows: number;
@@ -682,4 +682,90 @@ export type SeoReview = {
   technicalRisks: string[];
   monitoringNotes: string[];
   fixBriefMarkdown?: string;
+};
+
+export type WebOperatorHealthStatus = "ready" | "needs_attention" | "stale";
+export type WebOperatorExecutionMode = "autonomous" | "report_only";
+export type WebOperatorOpportunityType = "gsc_query" | "page_gap" | "demand_topic";
+export type WebOperatorActionType =
+  | "new_page"
+  | "content_update"
+  | "metadata_update"
+  | "internal_linking"
+  | "technical_fix"
+  | "ui_review"
+  | "manual_review";
+
+export type WebOperatorKnownIssue = {
+  id: string;
+  severity: Severity | "high" | "medium" | "low";
+  category: FindingCategory | "indexing" | "search_console" | "operator";
+  title: string;
+  summary: string;
+  source: "source_report" | "crawl_report" | "gsc_index_coverage" | "operator";
+  targetUrl?: string;
+  evidence: string[];
+};
+
+export type WebOperatorOpportunity = {
+  id: string;
+  type: WebOperatorOpportunityType;
+  priority: SeoReviewPriority;
+  title: string;
+  summary: string;
+  targetUrl?: string;
+  keyword?: string;
+  source: "gsc_search_opportunities" | "page_seo_opportunities" | "demand_opportunity_review";
+  evidence: string[];
+};
+
+export type WebOperatorActionCandidate = {
+  id: string;
+  priority: SeoReviewPriority;
+  executionMode: WebOperatorExecutionMode;
+  actionType: WebOperatorActionType;
+  title: string;
+  summary: string;
+  why: string;
+  expectedImpact: string;
+  targetUrl?: string;
+  keyword?: string;
+  sourceActionId?: string;
+  evidence: string[];
+  notes?: string;
+};
+
+export type WebOperatorWorkspace = {
+  id: string;
+  batchId: string;
+  jobId: string;
+  name: string;
+  projectSlug: string;
+  siteUrl?: string;
+  gscProperty?: string;
+  sourceTarget?: SourceBatchTarget;
+  generatedAt: string;
+  lastRunAt?: string;
+  runProfile?: BatchRunSummary["runProfile"];
+  summary: {
+    sourceFindings: number;
+    crawlFindings: number;
+    gscRows: number;
+    gscUrlInspections: number;
+    serpComparisons: number;
+    pageSeoOpportunities: number;
+    seoActionItems: number;
+    keywordPlan: KeywordPlanSummary;
+  };
+  health: {
+    status: WebOperatorHealthStatus;
+    reasons: string[];
+  };
+  opportunities: WebOperatorOpportunity[];
+  actionCandidates: WebOperatorActionCandidate[];
+  knownIssues: WebOperatorKnownIssue[];
+  policy: {
+    autonomousScope: string[];
+    reportOnlyScope: string[];
+  };
 };

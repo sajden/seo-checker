@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { getDataDir } from "@/lib/server/runtime-paths";
 
@@ -27,4 +27,8 @@ export async function readStoredGscOAuth(): Promise<StoredGscOAuth | null> {
 export async function writeStoredGscOAuth(payload: StoredGscOAuth) {
   await mkdir(storageDir, { recursive: true });
   await writeFile(storageFile, JSON.stringify(payload, null, 2), "utf8");
+}
+
+export async function deleteStoredGscOAuth() {
+  await rm(storageFile, { force: true });
 }

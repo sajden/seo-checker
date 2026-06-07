@@ -1,10 +1,15 @@
 import { NextResponse } from "next/server";
-import { runBatch } from "@/lib/server/run-batch";
+import { runBatch, type SeoRunProfile } from "@/lib/server/run-batch";
 
-export async function POST(_: Request, context: { params: Promise<{ batchId: string }> }) {
+const profiles = new Set(["full", "technical", "content", "serp", "crawl", "light"]);
+
+export async function POST(request: Request, context: { params: Promise<{ batchId: string }> }) {
   try {
     const { batchId } = await context.params;
-    const response = await runBatch(batchId);
+    const url = new URL(request.url);
+    const requestedProfile = url.searchParams.get("profile");
+    const profile = profiles.has(requestedProfile ?? "") ? requestedProfile as SeoRunProfile : undefined;
+    const response = await runBatch(batchId, { profile });
 
     if (!response) {
       return NextResponse.json({ error: "Batch not found." }, { status: 404 });

@@ -31,16 +31,41 @@ export async function getGscProviderReport(): Promise<GscReport> {
   const storedOAuth = await readStoredGscOAuth();
   const hasEnvRefreshToken = Boolean(process.env.GSC_REFRESH_TOKEN);
   const hasStoredRefreshToken = Boolean(storedOAuth?.refreshToken);
-  const connected = Boolean(clientConfig) && (hasEnvRefreshToken || hasStoredRefreshToken);
+  const hasRefreshToken = hasEnvRefreshToken || hasStoredRefreshToken;
 
   if (clientConfig) {
+    if (hasRefreshToken) {
+      try {
+        await getAccessToken();
+        return {
+          configured: true,
+          connected: true,
+          mode: "oauth",
+          summary: "Google Search Console OAuth 2.0 är aktiv och tokenen fungerar.",
+          expectedEnv: [...expectedEnv, "GSC_REFRESH_TOKEN"],
+          redirectUri: clientConfig.redirectUri,
+          hasStoredRefreshToken
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return {
+          configured: true,
+          connected: false,
+          mode: "oauth",
+          summary: `OAuth-token finns men fungerar inte längre. Koppla Google Search Console igen. ${message}`,
+          expectedEnv: [...expectedEnv, "GSC_REFRESH_TOKEN"],
+          redirectUri: clientConfig.redirectUri,
+          hasStoredRefreshToken,
+          connectionError: message
+        };
+      }
+    }
+
     return {
       configured: true,
-      connected,
+      connected: false,
       mode: "oauth",
-      summary: connected
-        ? "Google Search Console OAuth 2.0 är aktiv. Du kan nu lista properties och hämta Search Analytics-data i UI:t."
-        : "OAuth 2.0 är konfigurerat men inte slutfört. Koppla Google-kontot i UI:t för att börja läsa Search Console-data.",
+      summary: "OAuth 2.0 är konfigurerat men inte slutfört. Koppla Google-kontot i UI:t för att börja läsa Search Console-data.",
       expectedEnv: [...expectedEnv, "GSC_REFRESH_TOKEN"],
       redirectUri: clientConfig.redirectUri,
       hasStoredRefreshToken

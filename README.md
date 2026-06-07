@@ -24,6 +24,7 @@ Fokus ligger på frågor som:
 - GSC OAuth 2.0-flöde med callback-route och lokal tokenlagring i `DATA_DIR/gsc-oauth.json`
 - property-listning via `sites.list`
 - Search Analytics-query via UI för valt datumintervall och property
+- Manuell GSC CSV-import från Search Console-exporter när API/UI-data behöver sparas som opportunity-underlag
 - SERP-jämförelse via Google Custom Search JSON API för prioriterade keywords
 - batch-definitioner med lagring i `DATA_DIR/batches.json`
 
@@ -43,6 +44,10 @@ Fokus ligger på frågor som:
 - `GSC_REFRESH_TOKEN`
 - `DATA_DIR`
 - `GITHUB_TOKEN`
+
+## Lagring och cache
+
+SEO Monitor använder i nuläget filbaserad lagring via `DATA_DIR`, inte Supabase direkt. Se [docs/storage-and-cache.md](docs/storage-and-cache.md) för vilka filer som sparas, vad som redan cacheas och vilken Supabase/Postgres-struktur som är rimlig nästa steg.
 
 ## Miljövariabler för SERP-jämförelse
 
@@ -87,6 +92,23 @@ Importerade resultat sparas i samma `DATA_DIR/serp-history.json` som automatiska
 I Google Cloud Console ska redirect URI peka på appens callback-route, till exempel:
 
 `https://seo-api.sebcastwall.se/api/gsc/callback`
+
+### Manuell GSC CSV-import
+
+Exportera `Queries.csv`, `Pages.csv`, `Chart.csv` och `Filters.csv` från Google Search Console till samma mapp. Importera sedan:
+
+```bash
+curl -X POST http://localhost:3000/api/gsc/manual-import \
+  -H 'content-type: application/json' \
+  -d '{
+    "projectSlug": "sebcastwall",
+    "siteUrl": "https://sebcastwall.se",
+    "directory": "/mnt/c/Users/sebas/AppData/Local/Temp",
+    "importKeywordPlan": true
+  }'
+```
+
+Importen sparar en sammanfattning till `DATA_DIR/gsc-imports/sebcastwall-latest.json` och `DATA_DIR/gsc-imports/sebcastwall-latest.md`, samt lägger in prioriterade GSC-frågor i keyword-planen med `source: "gsc"`.
 
 ## Docker
 

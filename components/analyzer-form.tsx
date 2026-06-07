@@ -300,16 +300,41 @@ export function AnalyzerForm() {
     <div className="page-shell">
       <section className="hero">
         <div>
-          <p className="eyebrow">Hybrid checker</p>
-          <h1>Analyze now, schedule later, run GitHub source</h1>
+          <p className="eyebrow">SEO Monitor</p>
+          <h1>Run, inspect, schedule</h1>
           <p className="hero-copy">
-            Run ad hoc checks against a GitHub repo, connect Search Console, and create reusable batch
-            definitions with separate cadences for source, crawl and GSC.
+            Local control surface for GitHub source checks, crawl, Search Console, SERP comparison and recurring batches.
           </p>
+        </div>
+        <div className="hero-status-grid">
+          <a href="#manual" className="status-tile">
+            <span>Manual</span>
+            <strong>{isPending ? "Running" : "Ready"}</strong>
+          </a>
+          <a href="#batches" className="status-tile">
+            <span>Batches</span>
+            <strong>{batches.length}</strong>
+          </a>
+          <a href="#gsc" className="status-tile">
+            <span>GSC</span>
+            <strong>{gscStatus?.connected ? "Connected" : gscStatus?.configured ? "Ready" : "Setup"}</strong>
+          </a>
+          <a href="#serp" className="status-tile">
+            <span>SERP</span>
+            <strong>{serpComparison?.ownRank ? `Rank ${serpComparison.ownRank}` : "Check"}</strong>
+          </a>
         </div>
       </section>
 
-      <section className="panel">
+      <nav className="quick-nav" aria-label="SEO Monitor sections">
+        <a href="#manual">Manual check</a>
+        <a href="#batches">Batches</a>
+        <a href="#gsc">Search Console</a>
+        <a href="#serp">SERP</a>
+        {response ? <a href="#report">Report</a> : null}
+      </nav>
+
+      <section className="panel" id="manual">
         <div className="panel-heading">
           <div>
             <p className="eyebrow">Manual analysis</p>
@@ -390,7 +415,7 @@ export function AnalyzerForm() {
         </form>
       </section>
 
-      <section className="panel">
+      <section className="panel" id="batches">
         <div className="panel-heading">
           <div>
             <p className="eyebrow">Batch orchestration</p>
@@ -604,7 +629,7 @@ export function AnalyzerForm() {
         ) : null}
       </section>
 
-      <section className="panel">
+      <section className="panel" id="gsc">
         <div className="panel-heading">
           <div>
             <p className="eyebrow">Google Search Console</p>
@@ -730,7 +755,7 @@ export function AnalyzerForm() {
         ) : null}
       </section>
 
-      <section className="panel">
+      <section className="panel" id="serp">
         <div className="panel-heading">
           <div>
             <p className="eyebrow">SERP comparison</p>
@@ -846,7 +871,7 @@ export function AnalyzerForm() {
       ) : null}
 
       {response ? (
-        <section className="report-grid">
+        <section className="report-grid" id="report">
           <article className="panel">
             <div className="panel-heading">
               <div>

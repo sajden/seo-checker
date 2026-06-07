@@ -64,6 +64,7 @@ function scorePage(page: CrawledPage, opportunities: GscSearchOpportunity[]): Ai
   const strengths: string[] = [];
   const recommendations: string[] = [];
   const evidence: string[] = [];
+  const pageKind = classifyPageKind(page.url);
   const h2Text = page.h2Texts.join(" ").toLowerCase();
   const title = page.title ?? "";
   const meta = page.metaDescription ?? "";
@@ -89,26 +90,26 @@ function scorePage(page: CrawledPage, opportunities: GscSearchOpportunity[]): Ai
   evidence.push(`H2: ${page.h2Texts.slice(0, 6).join(" | ") || "saknas"}`);
   if (!hasPracticalStructure) {
     issues.push("generic_structure");
-    recommendations.push("Lägg in H2-sektioner som svarar på verkliga frågor: när det passar, hur flödet fungerar, vanliga misstag, kostnad/tid och jämförelser.");
+    recommendations.push(structureRecommendation(pageKind));
   } else {
     strengths.push("Rubrikstrukturen innehåller praktiska fråge- eller beslutssignaler.");
   }
 
   if (!/\b(exempel|case|scenario|flöde|workflow|order|kund|möte|crm|webshop|teams|sharepoint|fortnox|visma)\b/i.test(h2Text)) {
     issues.push("missing_concrete_examples");
-    recommendations.push("Lägg till minst ett konkret exempel eller scenario som visar hur tjänsten fungerar i ett svenskt SMB-flöde.");
+    recommendations.push(exampleRecommendation(pageKind));
   }
 
   if (!/\b(vanliga frågor|faq|vad|hur|när|vilken|varför|kostar|skillnad)\b/i.test(h2Text)) {
     issues.push("weak_question_coverage");
-    recommendations.push("Lägg till FAQ eller korta frågesektioner som matchar faktiska GSC-/kundfrågor och kan citeras som självständiga svar.");
+    recommendations.push(questionRecommendation(pageKind));
   }
 
   const imageCount = page.imageCount ?? 0;
   evidence.push(`Bilder: ${imageCount}`);
-  if (imageCount === 0 && isHighValuePage(page.url)) {
+  if (imageCount === 0 && needsMediaSupport(page.url)) {
     issues.push("weak_media_support");
-    recommendations.push("Överväg diagram, skärmbild, flödesbild eller kort video där det förklarar processen bättre än text. Gör inte dekorativa stockbilder till huvudlösningen.");
+    recommendations.push(mediaRecommendation(pageKind));
   }
 
   evidence.push(`Interna länkar ut: ${page.internalLinks.length}`);
@@ -119,7 +120,7 @@ function scorePage(page: CrawledPage, opportunities: GscSearchOpportunity[]): Ai
 
   if (title.length < 25 || meta.length < 70 || !page.h1Text) {
     issues.push("weak_snippet");
-    recommendations.push("Skärp title, meta description och H1 så sökresultatet tydligt visar problem, målgrupp och nytta utan överdrivna claims.");
+    recommendations.push(snippetRecommendation(pageKind));
   } else {
     strengths.push("Title, meta och H1 finns och kan användas som grund för snippet och intent-matchning.");
   }
@@ -174,6 +175,56 @@ function isHighValuePage(url: string) {
   } catch {
     return true;
   }
+}
+
+function needsMediaSupport(url: string) {
+  const kind = classifyPageKind(url);
+  return kind === "service" || kind === "article" || kind === "home";
+}
+
+function classifyPageKind(url: string): "home" | "service" | "article" | "articleIndex" | "about" | "contact" | "other" {
+  const pathname = safePathname(url);
+  if (pathname === "/") return "home";
+  if (pathname === "/artiklar") return "articleIndex";
+  if (pathname.startsWith("/artiklar/")) return "article";
+  if (pathname === "/om") return "about";
+  if (pathname === "/kontakt") return "contact";
+  if (pathname.startsWith("/tjanster")) return "service";
+  return "other";
+}
+
+function structureRecommendation(kind: ReturnType<typeof classifyPageKind>) {
+  if (kind === "articleIndex") return "Gör artikelarkivet mer hjälpsamt som nav: gruppera artiklar efter ämne/problem, visa korta sammanfattningar och lyft vilka frågor varje artikel besvarar.";
+  if (kind === "about") return "Gör Om-sidan tydligare för förtroende och beslut: lägg till H2:or om arbetssätt, vem du hjälper, typiska projekt och varför kunder väljer dig.";
+  if (kind === "contact") return "Gör kontaktsidan mer beslutsstödjande: förklara när man bör höra av sig, vad ett första samtal innehåller och vilken information som gör starten enkel.";
+  return "Lägg in H2-sektioner som svarar på verkliga frågor: när det passar, hur flödet fungerar, vanliga misstag, kostnad/tid och jämförelser.";
+}
+
+function exampleRecommendation(kind: ReturnType<typeof classifyPageKind>) {
+  if (kind === "articleIndex") return "Visa exempel på artikelkluster eller rekommenderade läsordningar, till exempel AI-agenter, integrationer och praktisk automation.";
+  if (kind === "about") return "Lägg till ett konkret exempel på ett typiskt uppdrag eller arbetssätt, utan att göra sidan till en tjänstelandningssida.";
+  if (kind === "contact") return "Lägg till exempel på bra första briefar och vilka typer av ärenden som passar kontaktflödet.";
+  return "Lägg till minst ett konkret exempel eller scenario som visar hur tjänsten fungerar i ett svenskt SMB-flöde.";
+}
+
+function questionRecommendation(kind: ReturnType<typeof classifyPageKind>) {
+  if (kind === "articleIndex") return "Lägg till filtrering eller korta ämnesförklaringar som matchar verkliga frågor från GSC, så arkivet leder vidare till rätt artikel.";
+  if (kind === "about") return "Lägg till korta svar på förtroendefrågor: hur samarbetet börjar, hur du jobbar, vilka kunder som passar och vad som händer efter första samtalet.";
+  if (kind === "contact") return "Lägg till korta svar på kontaktfrågor: svarstid, vad man ska skicka med och vilka typer av projekt som prioriteras.";
+  return "Lägg till FAQ eller korta frågesektioner som matchar faktiska GSC-/kundfrågor och kan citeras som självständiga svar.";
+}
+
+function mediaRecommendation(kind: ReturnType<typeof classifyPageKind>) {
+  if (kind === "articleIndex") return "Media är sekundärt på artikelarkivet. Prioritera tydliga artikelkort, ämnesgrupper och internlänkar framför dekorativa bilder.";
+  if (kind === "about") return "Om media används på Om-sidan bör det stödja förtroende, till exempel process, arbetsprov eller konkret kontext, inte stockbilder.";
+  return "Överväg diagram, skärmbild, flödesbild eller kort video där det förklarar processen bättre än text. Gör inte dekorativa stockbilder till huvudlösningen.";
+}
+
+function snippetRecommendation(kind: ReturnType<typeof classifyPageKind>) {
+  if (kind === "articleIndex") return "Skärp title, meta description och H1 så arkivet tydligt säljer vad läsaren hittar där och vilka ämnen det täcker.";
+  if (kind === "about") return "Skärp title, meta description och H1 så sidan tydligt positionerar vem du är, vad du hjälper företag med och varför det är relevant.";
+  if (kind === "contact") return "Skärp title, meta description och H1 så kontaktflödet tydligt visar vem som ska höra av sig och vad nästa steg är.";
+  return "Skärp title, meta description och H1 så sökresultatet tydligt visar problem, målgrupp och nytta utan överdrivna claims.";
 }
 
 function safePathname(url: string) {

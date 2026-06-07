@@ -45,12 +45,12 @@ export async function POST(request: Request) {
 function resolveSeoRunProfile(request: Request): SeoRunProfile {
   const url = new URL(request.url);
   const requested = url.searchParams.get("profile");
-  if (requested === "full" || requested === "technical" || requested === "content" || requested === "serp" || requested === "light") return requested;
+  if (requested === "full" || requested === "technical" || requested === "content" || requested === "serp" || requested === "crawl" || requested === "light") return requested;
 
   const weekday = new Intl.DateTimeFormat("en-US", { timeZone: "Europe/Stockholm", weekday: "short" }).format(new Date()).toLowerCase();
   if (weekday === "mon") return "technical";
   if (weekday === "tue" || weekday === "wed") return "content";
   if (weekday === "thu") return "full";
   if (weekday === "fri") return "serp";
-  return "light";
+  return "crawl";
 }

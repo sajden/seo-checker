@@ -1,5 +1,10 @@
-import { redirect } from "next/navigation";
+import { Suspense } from "react";
+import { AnalyzerForm } from "@/components/analyzer-form";
 
 export default function HomePage() {
-  redirect((process.env.DASHBOARD_URL ?? "https://dashboard.sebcastwall.se") as never);
+  return (
+    <Suspense fallback={<main className="page-shell"><section className="panel">Loading SEO Monitor...</section></main>}>
+      <AnalyzerForm />
+    </Suspense>
+  );
 }

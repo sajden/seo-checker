@@ -27,11 +27,13 @@ import type {
   KeywordReview,
   PageSeoOpportunity,
   SerpComparison,
+  SeoActionItem,
+  SeoReview,
   SourceReport,
   UpsertKeywordRequest
 } from "@/lib/types";
 
-export type SeoRunProfile = "full" | "technical" | "content" | "serp" | "light";
+export type SeoRunProfile = "full" | "technical" | "content" | "serp" | "crawl" | "light";
 
 type RunBatchOptions = {
   profile?: SeoRunProfile;
@@ -75,7 +77,7 @@ export async function runBatch(batchId: string, options: RunBatchOptions = {}): 
   if (shouldSeedKeywordPlan(keywordPlan.keywords.length)) {
     await importKeywords({
       projectSlug,
-      keywords: buildSeedKeywords(batch.siteUrl)
+      keywords: buildSeedKeywords({ siteUrl: batch.siteUrl, projectSlug })
     });
     keywordPlan = await getKeywordPlan(projectSlug);
   }
@@ -91,11 +93,16 @@ export async function runBatch(batchId: string, options: RunBatchOptions = {}): 
     });
     keywordPlan = await getKeywordPlan(projectSlug);
   }
-  const keywordReview = buildKeywordReview({
+  const keywordReview = filterKeywordReviewForWorkspace(buildKeywordReview({
     projectSlug,
     keywords: keywordPlan.keywords,
     crawlReport,
     gscQueryResult
+  }), {
+    projectSlug,
+    siteUrl: batch.siteUrl,
+    crawlPages: crawlReport?.pages ?? [],
+    gscRows: gscQueryResult?.rows ?? []
   });
   const serpKeywords = selectDailySerpKeywords({
     keywords: keywordPlan.keywords,
@@ -122,11 +129,16 @@ export async function runBatch(batchId: string, options: RunBatchOptions = {}): 
   const gscIndexCoverage = gscUrlInspections.length
     ? buildGscIndexCoverageReport(gscUrlInspections)
     : previousDetails?.gscIndexCoverage ?? buildGscIndexCoverageReport([]);
-  const pageSeoOpportunities = buildPageSeoOpportunities({
+  const pageSeoOpportunities = filterPageSeoOpportunitiesForWorkspace(buildPageSeoOpportunities({
     crawlPages: crawlReport?.pages ?? [],
     keywordReview,
     serpComparisons,
     gscIndexItems: gscIndexCoverage.items,
+    gscRows: gscQueryResult?.rows ?? []
+  }), {
+    projectSlug,
+    siteUrl: batch.siteUrl,
+    crawlPages: crawlReport?.pages ?? [],
     gscRows: gscQueryResult?.rows ?? []
   });
   const aiSearchReadiness = buildAiSearchReadinessReport({
@@ -147,7 +159,7 @@ export async function runBatch(batchId: string, options: RunBatchOptions = {}): 
     gscQueryResult,
     serpComparisons
   });
-  const seoReview = await generateSeoReview({
+  const seoReview = filterSeoReviewForWorkspace(await generateSeoReview({
     batch,
     sourceReport,
     crawlReport,
@@ -164,6 +176,11 @@ export async function runBatch(batchId: string, options: RunBatchOptions = {}): 
     demandOpportunityReview,
     keywordPlan,
     keywordReview
+  }), {
+    projectSlug,
+    siteUrl: batch.siteUrl,
+    crawlPages: crawlReport?.pages ?? [],
+    gscRows: gscQueryResult?.rows ?? []
   });
 
   const ranAt = new Date().toISOString();
@@ -178,6 +195,12 @@ export async function runBatch(batchId: string, options: RunBatchOptions = {}): 
     seoReview,
     ranAt
   });
+  const seoActionItems = filterSeoActionItemsForWorkspace(memoryRun.actionItems, {
+    projectSlug,
+    siteUrl: batch.siteUrl,
+    crawlPages: crawlReport?.pages ?? [],
+    gscRows: gscQueryResult?.rows ?? []
+  });
   const updatedBatch = await updateBatchRun(batch.id, {
     sourceFindings: sourceReport?.findings.length ?? 0,
     crawlFindings: crawlReport?.findings.length ?? 0,
@@ -185,7 +208,7 @@ export async function runBatch(batchId: string, options: RunBatchOptions = {}): 
     gscUrlInspections: gscUrlInspections.length,
     serpComparisons: serpComparisons.length,
     pageSeoOpportunities: pageSeoOpportunities.length,
-    seoActionItems: memoryRun.actionItems.length,
+    seoActionItems: seoActionItems.length,
     sourceFilesChecked: sourceReport?.filesChecked ?? 0,
     crawlPagesChecked: crawlReport?.pages.length ?? 0,
     gscRawRows: gscQueryResult?.rawRows ?? 0,
@@ -205,7 +228,7 @@ export async function runBatch(batchId: string, options: RunBatchOptions = {}): 
     aiSearchReadiness,
     pageSeoOpportunities,
     seoMemory,
-    seoActionItems: memoryRun.actionItems,
+    seoActionItems,
     demandOpportunityReview,
     keywordReview,
     seoReview,
@@ -233,7 +256,7 @@ export async function runBatch(batchId: string, options: RunBatchOptions = {}): 
     pageSeoOpportunities,
     keywordReview,
     seoMemory,
-    seoActionItems: memoryRun.actionItems,
+    seoActionItems,
     demandOpportunityReview,
     seoReview
   };
@@ -243,6 +266,7 @@ function buildRunPlan(profile: SeoRunProfile) {
   if (profile === "technical") return { source: true, crawl: true, serp: false, urlInspection: true };
   if (profile === "content") return { source: false, crawl: true, serp: true, urlInspection: false };
   if (profile === "serp") return { source: false, crawl: false, serp: true, urlInspection: false };
+  if (profile === "crawl") return { source: false, crawl: true, serp: false, urlInspection: false };
   if (profile === "light") return { source: false, crawl: false, serp: false, urlInspection: false };
   return { source: true, crawl: true, serp: true, urlInspection: true };
 }
@@ -351,8 +375,19 @@ function shouldSeedKeywordPlan(activeKeywordCount: number) {
   return activeKeywordCount < parsePositiveInteger(process.env.SEO_AUTO_SEED_KEYWORD_MIN, 8, 50);
 }
 
-function buildSeedKeywords(siteUrl?: string): UpsertKeywordRequest[] {
-  const base = normalizeSiteUrl(siteUrl ?? "https://sebcastwall.se");
+function buildSeedKeywords(input: { siteUrl?: string; projectSlug?: string }): UpsertKeywordRequest[] {
+  const projectSlug = normalizeText(input.projectSlug ?? "");
+  const base = normalizeSiteUrl(input.siteUrl ?? "https://sebcastwall.se");
+  if (projectSlug.includes("natverkskollen")) {
+    return [
+      { query: "startup events", intent: "informational", demandBucket: "unknown", competition: "unknown", targetUrl: `${base}/`, status: "targeted", source: "import", notes: "Auto-seedad av SEO Monitor för natverkskollen." },
+      { query: "startup events sverige", intent: "informational", demandBucket: "unknown", competition: "unknown", targetUrl: `${base}/events`, status: "targeted", source: "import", notes: "Auto-seedad av SEO Monitor för natverkskollen." },
+      { query: "nätverksevent företagare", intent: "informational", demandBucket: "unknown", competition: "unknown", targetUrl: `${base}/events`, status: "targeted", source: "import", notes: "Auto-seedad av SEO Monitor för natverkskollen." },
+      { query: "entreprenör event", intent: "informational", demandBucket: "unknown", competition: "unknown", targetUrl: `${base}/events`, status: "targeted", source: "import", notes: "Auto-seedad av SEO Monitor för natverkskollen." },
+      { query: "ai events sverige", intent: "informational", demandBucket: "unknown", competition: "unknown", targetUrl: `${base}/events`, status: "targeted", source: "import", notes: "Auto-seedad av SEO Monitor för natverkskollen." }
+    ];
+  }
+  if (!projectSlug.includes("sebcastwall")) return [];
   return [
     { query: "AI konsult företag", intent: "commercial", demandBucket: "unknown", competition: "unknown", targetUrl: `${base}/`, status: "targeted", source: "import", notes: "Auto-seedad av SEO Monitor som kommersiell huvudterm." },
     { query: "AI automatisering företag", intent: "commercial", demandBucket: "unknown", competition: "unknown", targetUrl: `${base}/tjanster/ai-automatisering`, status: "targeted", source: "import", notes: "Auto-seedad av SEO Monitor." },
@@ -431,6 +466,123 @@ function buildPageSeoOpportunities(input: {
   return [...pages.values()]
     .filter((page) => page.score > 0)
     .sort((a, b) => b.score - a.score || a.path.localeCompare(b.path, "sv"));
+}
+
+function filterKeywordReviewForWorkspace(review: KeywordReview, scope: WorkspaceUrlScopeInput): KeywordReview {
+  const urlScope = buildWorkspaceUrlScope(scope);
+  if (!urlScope) return review;
+
+  const opportunities = review.opportunities.filter((item) => isWorkspaceTargetAllowed(item.targetUrl, urlScope) && isWorkspaceTopicAllowed(item.query, urlScope));
+  const coveredCount = opportunities.filter((item) => item.status === "covered").length;
+  const missingCount = opportunities.filter((item) => item.status === "missing").length;
+  const weakCount = opportunities.filter((item) => item.status === "weak").length;
+
+  return {
+    ...review,
+    keywordCount: opportunities.length,
+    coveredCount,
+    missingCount,
+    weakCount,
+    opportunities,
+    summary: `${coveredCount}/${opportunities.length} keywords är täckta. ${missingCount} saknas och ${weakCount} är svaga.`
+  };
+}
+
+function filterPageSeoOpportunitiesForWorkspace(pages: PageSeoOpportunity[], scope: WorkspaceUrlScopeInput): PageSeoOpportunity[] {
+  const urlScope = buildWorkspaceUrlScope(scope);
+  if (!urlScope) return pages;
+  return pages.filter((page) => isWorkspaceTargetAllowed(page.url, urlScope));
+}
+
+function filterSeoReviewForWorkspace(review: SeoReview, scope: WorkspaceUrlScopeInput): SeoReview {
+  const urlScope = buildWorkspaceUrlScope(scope);
+  if (!urlScope) return review;
+
+  const topActions = review.topActions
+    .filter((action) => isWorkspaceTargetAllowed(action.targetUrl, urlScope) && isWorkspaceTopicAllowed(`${action.keyword ?? ""} ${action.title} ${action.action}`, urlScope))
+    .map((action, index) => ({ ...action, rank: index + 1 }));
+
+  return {
+    ...review,
+    topActions
+  };
+}
+
+function filterSeoActionItemsForWorkspace(items: SeoActionItem[], scope: WorkspaceUrlScopeInput): SeoActionItem[] {
+  const urlScope = buildWorkspaceUrlScope(scope);
+  if (!urlScope) return items;
+  return items.filter((item) => isWorkspaceTargetAllowed(item.targetUrl, urlScope) && isWorkspaceTopicAllowed(`${item.keyword ?? ""} ${item.title} ${item.action}`, urlScope));
+}
+
+type WorkspaceUrlScopeInput = {
+  projectSlug: string;
+  siteUrl?: string;
+  crawlPages: CrawledPage[];
+  gscRows: GscQueryRow[];
+};
+
+type WorkspaceUrlScope = {
+  host: string;
+  allowedPaths: Set<string>;
+  allowedTopicPattern?: RegExp;
+};
+
+function buildWorkspaceUrlScope(input: WorkspaceUrlScopeInput): WorkspaceUrlScope | null {
+  if (!normalizeText(input.projectSlug).includes("natverkskollen")) return null;
+  const host = hostnameFromUrl(input.siteUrl);
+  if (!host) return null;
+
+  const allowedPaths = new Set<string>(["/", "/events"]);
+  for (const page of input.crawlPages) {
+    const normalized = normalizeWorkspaceUrl(page.url, host);
+    if (normalized) allowedPaths.add(normalized.pathname);
+  }
+  for (const row of input.gscRows) {
+    const normalized = normalizeWorkspaceUrl(row.keys[0], host);
+    if (normalized) allowedPaths.add(normalized.pathname);
+  }
+
+  return {
+    host,
+    allowedPaths,
+    allowedTopicPattern: /\/events(?:\/|$)|startup|event|n[aä]tverk|entrepren[öo]r/i
+  };
+}
+
+function isWorkspaceTargetAllowed(targetUrl: string | undefined, scope: WorkspaceUrlScope) {
+  if (!targetUrl) return true;
+  const normalized = normalizeWorkspaceUrl(targetUrl, scope.host);
+  if (!normalized) return false;
+  if (scope.allowedPaths.has(normalized.pathname)) return true;
+  return Boolean(scope.allowedTopicPattern?.test(normalized.pathname));
+}
+
+function isWorkspaceTopicAllowed(value: string, scope: WorkspaceUrlScope) {
+  const text = normalizeText(value);
+  if (!text) return true;
+  if (scope.allowedTopicPattern?.test(text)) return true;
+  return !/\b(ai konsult|konsult|automation|automatisering|agent foretag|agent företag|agenter foretag|agenter företag|tjanst|tjänst|integration|fortnox|apputveckling|webbapp)\b/i.test(text);
+}
+
+function normalizeWorkspaceUrl(value: string, expectedHost: string) {
+  try {
+    const parsed = new URL(value);
+    if (parsed.hostname.replace(/^www\./, "") !== expectedHost) return null;
+    return {
+      pathname: parsed.pathname.replace(/\/$/, "") || "/"
+    };
+  } catch {
+    return null;
+  }
+}
+
+function hostnameFromUrl(value: string | undefined) {
+  if (!value) return "";
+  try {
+    return new URL(value).hostname.replace(/^www\./, "");
+  } catch {
+    return "";
+  }
 }
 
 function hydratePageSeoOpportunity(page: PageSeoOpportunity) {

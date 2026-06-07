@@ -807,6 +807,18 @@ function shortPageName(url: string) {
 function buildSuggestedKeywords(input: SeoReviewInput) {
   const siteUrl = normalizeSiteUrl(input.batch.siteUrl ?? "https://sebcastwall.se");
   const existing = new Set(input.keywordPlan.keywords.map((keyword) => normalizeText(keyword.query)));
+  const projectSlug = normalizeText(inferProjectSlug(input.batch.siteUrl ?? input.batch.name ?? ""));
+  if (projectSlug.includes("natverkskollen")) {
+    const natverkskollenRaw = [
+      { query: "startup events", intent: "mixed", targetUrl: `${siteUrl}/` },
+      { query: "startup events sverige", intent: "mixed", targetUrl: `${siteUrl}/events` },
+      { query: "nätverksevent företagare", intent: "mixed", targetUrl: `${siteUrl}/events` },
+      { query: "entreprenör event", intent: "mixed", targetUrl: `${siteUrl}/events` },
+      { query: "ai events sverige", intent: "mixed", targetUrl: `${siteUrl}/events` }
+    ];
+    return natverkskollenRaw.filter((item) => !existing.has(normalizeText(item.query))).slice(0, 10);
+  }
+  if (!projectSlug.includes("sebcastwall")) return [];
   const raw = [
     { query: "AI konsult företag", intent: "commercial", targetUrl: `${siteUrl}/` },
     { query: "AI automatisering företag", intent: "commercial", targetUrl: `${siteUrl}/tjanster/ai-automatisering` },
@@ -821,6 +833,15 @@ function buildSuggestedKeywords(input: SeoReviewInput) {
   ];
 
   return raw.filter((item) => !existing.has(normalizeText(item.query))).slice(0, 10);
+}
+
+function inferProjectSlug(value: string) {
+  try {
+    const host = new URL(value).hostname.replace(/^www\./, "");
+    return host.split(".")[0] || "sebcastwall";
+  } catch {
+    return value.toLowerCase().includes("sebcastwall") ? "sebcastwall" : "default";
+  }
 }
 
 function getPrioritizedSearchDemandTopics(input: SeoReviewInput) {

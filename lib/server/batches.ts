@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import type { BatchConfig, BatchRunDetails, BatchRunSummary, CreateBatchRequest } from "@/lib/types";
+import type { BatchConfig, BatchRunDetails, BatchRunSummary, CreateBatchRequest, SourceBatchTarget } from "@/lib/types";
 import { getDataDir } from "@/lib/server/runtime-paths";
 
 const storageDir = getDataDir();
@@ -44,6 +44,44 @@ export async function createBatch(input: CreateBatchRequest) {
 export async function getBatch(batchId: string) {
   const batches = await listBatches();
   return batches.find((batch) => batch.id === batchId) ?? null;
+}
+
+export async function updateBatchSourceTarget(batchId: string, sourceTarget?: SourceBatchTarget) {
+  const batches = await listBatches();
+  const now = new Date().toISOString();
+  let updatedBatch: BatchConfig | null = null;
+  const updated = batches.map((batch) => {
+    if (batch.id !== batchId) return batch;
+    updatedBatch = {
+      ...batch,
+      sourceTarget,
+      updatedAt: now
+    };
+    return updatedBatch;
+  });
+
+  if (!updatedBatch) return null;
+  await writeBatches(updated);
+  return updatedBatch;
+}
+
+export async function updateBatchGscProperty(batchId: string, gscProperty?: string) {
+  const batches = await listBatches();
+  const now = new Date().toISOString();
+  let updatedBatch: BatchConfig | null = null;
+  const updated = batches.map((batch) => {
+    if (batch.id !== batchId) return batch;
+    updatedBatch = {
+      ...batch,
+      gscProperty: gscProperty?.trim() || undefined,
+      updatedAt: now
+    };
+    return updatedBatch;
+  });
+
+  if (!updatedBatch) return null;
+  await writeBatches(updated);
+  return updatedBatch;
 }
 
 export async function updateBatchRun(batchId: string, summary: BatchRunSummary, details?: BatchRunDetails) {

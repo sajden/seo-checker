@@ -306,9 +306,21 @@ function normalizeUrl(siteUrl: string) {
 async function fetchWithRetry(url: string, init: RequestInit) {
   const attempts = Math.max(1, Math.min(5, Number(process.env.CRAWL_FETCH_RETRIES ?? "3") || 3));
   let lastResponse: Response | null = null;
+  let lastError: unknown = null;
 
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    const response = await fetch(url, init);
+    let response: Response;
+    try {
+      response = await fetch(url, init);
+    } catch (error) {
+      lastError = error;
+      if (attempt === attempts) {
+        throw error;
+      }
+      await sleep(attempt * getCrawlRetryBaseDelayMs());
+      continue;
+    }
+
     if (!shouldRetryResponse(response) || attempt === attempts) {
       return response;
     }
@@ -318,6 +330,7 @@ async function fetchWithRetry(url: string, init: RequestInit) {
     await sleep(retryAfterMs ?? attempt * getCrawlRetryBaseDelayMs());
   }
 
+  if (lastError) throw lastError;
   return lastResponse as Response;
 }
 

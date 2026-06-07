@@ -45,7 +45,7 @@ export async function ensureDashboardBatch(): Promise<BatchConfig> {
 export async function resolveDashboardBatch(input: DashboardBatchInput = {}): Promise<BatchConfig> {
   const explicitBatchId = await resolveRequestedBatchId(input);
   if (explicitBatchId) {
-    const explicitBatch = await getBatch(explicitBatchId);
+    const explicitBatch = await resolveBatchByReference(explicitBatchId);
     if (explicitBatch) {
       await setActiveDashboardBatch(explicitBatch.id);
       return explicitBatch;
@@ -92,6 +92,43 @@ async function resolveRequestedBatchId(input: DashboardBatchInput) {
     batchIdFromJobId(headerJobId);
 
   return requested?.trim() || undefined;
+}
+
+async function resolveBatchByReference(reference: string) {
+  const normalized = reference.trim();
+  if (!normalized) return null;
+
+  const directBatch = await getBatch(normalized);
+  if (directBatch) return directBatch;
+
+  const workspaceTarget = parseSeoWorkspaceReference(normalized);
+  if (!workspaceTarget) return null;
+
+  const batches = await listBatches();
+  return (
+    batches.find((batch) => batchMatchesWorkspaceTarget(batch, workspaceTarget)) ??
+    null
+  );
+}
+
+function parseSeoWorkspaceReference(reference: string) {
+  const [gscProperty, repoFullName, branch] = reference.split("__");
+  if (!gscProperty || !repoFullName) return null;
+
+  return {
+    gscProperty: gscProperty.trim(),
+    repoFullName: repoFullName.trim(),
+    branch: branch?.trim() || "main"
+  };
+}
+
+function batchMatchesWorkspaceTarget(
+  batch: BatchConfig,
+  target: { gscProperty: string; repoFullName: string; branch: string }
+) {
+  if (String(batch.gscProperty ?? "").trim() !== target.gscProperty) return false;
+  if (String(batch.sourceTarget?.repoFullName ?? "").trim() !== target.repoFullName) return false;
+  return String(batch.sourceTarget?.branch ?? "main").trim() === target.branch;
 }
 
 async function readActiveBatchId() {

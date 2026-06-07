@@ -87,6 +87,7 @@ function buildPayload(input: DemandRankingInput) {
 
 function buildFallbackDemandReview(input: DemandRankingInput): DemandOpportunityReview {
   const siteUrl = normalizeSiteUrl(input.siteUrl ?? "https://sebcastwall.se");
+  const natverkskollenSite = isNatverkskollenSite(siteUrl);
   const existingKeywords = new Set(input.keywordPlan.keywords.map((keyword) => normalizeText(keyword.query)));
   const accepted: DemandOpportunity[] = [];
   const rejected: DemandOpportunityReview["rejected"] = [];
@@ -95,6 +96,15 @@ function buildFallbackDemandReview(input: DemandRankingInput): DemandOpportunity
     const keyword = topic.preferredKeyword || topic.topic;
     const normalized = normalizeText(keyword);
     if (!normalized) continue;
+
+    if (natverkskollenSite && !isNatverkskollenTopic(normalized)) {
+      rejected.push({
+        topic: keyword,
+        reason: "Natverkskollen prioriterar event-, startup- och nätverkssökningar. Tjänste-/konsultämnen hör inte till detta workspace.",
+        evidence: [topic.source]
+      });
+      continue;
+    }
 
     if (isProjectBrandedTopic(normalized)) {
       rejected.push({
@@ -238,11 +248,27 @@ function feasibilityForTopic(topic: SearchDemandTopic, crawlReport: CrawlReport 
 
 function targetUrlForTopic(keyword: string, siteUrl: string) {
   const text = normalizeText(keyword);
+  if (isNatverkskollenSite(siteUrl)) {
+    if (isNatverkskollenTopic(text)) return `${siteUrl}/events`;
+    return `${siteUrl}/`;
+  }
   if (/\b(agent|agenter|agentic)\b/.test(text)) return `${siteUrl}/tjanster/ai-agenter`;
   if (/\b(automation|automatisering|workflow|mcp)\b/.test(text)) return `${siteUrl}/tjanster/ai-automatisering`;
   if (/\b(fortnox|visma|integration|api|crm|erp)\b/.test(text)) return `${siteUrl}/tjanster/integrationer`;
   if (/\b(chatgpt|ai studio|ai)\b/.test(text)) return `${siteUrl}/artiklar`;
   return `${siteUrl}/`;
+}
+
+function isNatverkskollenSite(siteUrl: string) {
+  try {
+    return new URL(siteUrl).hostname.replace(/^www\./, "") === "natverkskollen.se";
+  } catch {
+    return /natverkskollen/i.test(siteUrl);
+  }
+}
+
+function isNatverkskollenTopic(value: string) {
+  return /\b(event|events|startup|startups|natverk|nätverk|entreprenor|entreprenör|founder|founders|business events|ai events)\b/i.test(normalizeText(value));
 }
 
 function inferIntent(value: string) {

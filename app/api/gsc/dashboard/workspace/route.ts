@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { getBatch } from "@/lib/server/batches";
 import type { BatchConfig } from "@/lib/types";
 import {
   batchIdFromJobId,
@@ -34,7 +33,20 @@ export async function PUT(request: Request) {
     return NextResponse.json({ error: "batchId, workspaceId or jobId is required." }, { status: 400 });
   }
 
-  const batch = await getBatch(batchId);
+  let batch: BatchConfig;
+  try {
+    batch = await resolveDashboardBatch({
+      batchId: body.batchId,
+      workspaceId: body.workspaceId,
+      jobId: body.jobId
+    });
+  } catch (error) {
+    if (error instanceof DashboardBatchNotFoundError) {
+      return NextResponse.json({ error: "Workspace not found." }, { status: 404 });
+    }
+    throw error;
+  }
+
   if (!batch) {
     return NextResponse.json({ error: "Workspace not found." }, { status: 404 });
   }
