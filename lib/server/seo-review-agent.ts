@@ -598,16 +598,75 @@ function stringArrayOr(value: unknown, fallback: string[]) {
 function mergeActions(primary: SeoReviewAction[], fallback: SeoReviewAction[]) {
   const merged: SeoReviewAction[] = [];
   const seen = new Set<string>();
-  const requiredFallback = fallback.filter((action) => action.title.startsWith("SERP-gap:"));
+  const primaryActions = primary.length ? primary : [];
+  const needsFallbackSupport = primaryActions.length < 4;
+  const fallbackSupport = needsFallbackSupport
+    ? fallback
+        .filter((action) => !isWeakRepeatableAction(action))
+        .slice(0, Math.max(0, 4 - primaryActions.length))
+    : [];
 
-  for (const action of [...primary.slice(0, 2), ...requiredFallback, ...primary.slice(2), ...fallback]) {
-    const key = `${action.title.toLowerCase()}|${action.targetUrl ?? ""}|${action.keyword ?? ""}`;
+  for (const action of [...primaryActions, ...fallbackSupport]) {
+    const key = actionClusterKey(action);
     if (seen.has(key)) continue;
     seen.add(key);
     merged.push(action);
   }
 
   return merged.slice(0, 8).map((action, index) => ({ ...action, rank: index + 1 }));
+}
+
+function isWeakRepeatableAction(action: SeoReviewAction) {
+  const text = normalizeText([action.title, action.action, action.keyword ?? ""].join(" "));
+  if (text.includes("ai search readiness") && !action.targetUrl) return true;
+  if (text.includes("kontrollera indexering") && !text.includes("noindex") && !text.includes("blocked")) return true;
+  if (text.includes("stark keyword") && !hasKnownDemand(action)) return true;
+  return false;
+}
+
+function hasKnownDemand(action: SeoReviewAction) {
+  const text = normalizeText([action.why, action.evidence.join(" ")].join(" "));
+  return /\b(impressions?|klick|ctr|position|serp|topp 10|top 10|volume|volym|competition|konkurrens)\b/.test(text);
+}
+
+function actionClusterKey(action: SeoReviewAction) {
+  const target = normalizeActionTarget(action.targetUrl);
+  const keyword = normalizeKeywordCluster(action.keyword ?? action.title);
+  const kind = normalizeActionKind(action.title, action.action);
+  return [target, keyword, kind].join("|");
+}
+
+function normalizeActionTarget(value?: string) {
+  if (!value) return "";
+  try {
+    const url = new URL(value);
+    return `${url.hostname.replace(/^www\./, "")}${url.pathname.replace(/\/$/, "") || "/"}`;
+  } catch {
+    return normalizeText(value).replace(/\/$/, "");
+  }
+}
+
+function normalizeKeywordCluster(value: string) {
+  return normalizeText(value)
+    .replace(/\bserp gap\b/g, "")
+    .replace(/\bstark keyword\b/g, "")
+    .replace(/\bforbattra ctr\b/g, "")
+    .replace(/\blyft gsc query\b/g, "")
+    .replace(/\bai agenter\b/g, "ai agent")
+    .replace(/\bagenter\b/g, "agent")
+    .replace(/\bforetag\b/g, "foretag")
+    .replace(/[^a-z0-9åäö ]/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeActionKind(title: string, action: string) {
+  const text = normalizeText(`${title} ${action}`);
+  if (/indexering|url inspection|gsc/.test(text) && !/title|h1|meta|copy|faq|internlank|content/.test(text)) return "indexing";
+  if (/internlank|interna lank/.test(text)) return "internal-links";
+  if (/ny sida|skapa.*sida|landningssida/.test(text)) return "new-page";
+  if (/title|meta|h1|h2|intro|faq|copy|content|readiness|serp/.test(text)) return "content";
+  return "general";
 }
 
 function buildSerpActions(input: SeoReviewInput): SeoReviewAction[] {

@@ -201,17 +201,34 @@ function upsertActionItems(input: {
     seen.add(key);
     const existing = byKey.get(key);
     if (existing) {
+      if (isClosedAndStillLearning(existing, input.ranAt)) {
+        byKey.set(key, {
+          ...existing,
+          lastSeenAt: input.ranAt,
+          occurrences: existing.occurrences + 1,
+          sourceRunAt: input.ranAt,
+          notes: appendMemoryNote(existing.notes, `Dämpad ${input.ranAt.slice(0, 10)}: samma semantiska SEO-action dök upp igen innan recheck-datumet.`)
+        });
+        continue;
+      }
       byKey.set(key, {
         ...existing,
         priority: action.priority,
+        title: action.title,
+        status: existing.status === "done" || existing.status === "ignored" ? "planned" : existing.status,
         action: action.action,
         why: action.why,
         expectedImpact: action.expectedImpact,
         evidence: action.evidence,
+        targetUrl: action.targetUrl ?? existing.targetUrl,
+        keyword: action.keyword ?? existing.keyword,
         lastSeenAt: input.ranAt,
         recheckAfter: existing.recheckAfter ?? getDefaultRecheckDate(input.ranAt),
         occurrences: existing.occurrences + 1,
-        sourceRunAt: input.ranAt
+        sourceRunAt: input.ranAt,
+        notes: existing.status === "done" || existing.status === "ignored"
+          ? appendMemoryNote(existing.notes, `Återöppnad ${input.ranAt.slice(0, 10)} efter recheck: ny körning visar att ämnet fortfarande behöver hanteras.`)
+          : existing.notes
       });
       continue;
     }
@@ -267,6 +284,19 @@ function upsertActionItems(input: {
     }
     return item;
   });
+}
+
+function isClosedAndStillLearning(item: SeoActionItem, ranAt: string) {
+  if (item.status !== "done" && item.status !== "ignored") return false;
+  if (!item.recheckAfter) return true;
+  return item.recheckAfter > ranAt.slice(0, 10);
+}
+
+function appendMemoryNote(notes: string | undefined, note: string) {
+  const lines = [note, ...(notes ? notes.split("\n") : [])]
+    .map((line) => line.trim())
+    .filter(Boolean);
+  return [...new Set(lines)].slice(0, 8).join("\n");
 }
 
 function isStaleAiSearchReadinessAction(item: SeoActionItem) {
@@ -360,13 +390,50 @@ function serpStatus(now: number | null, previous: number | null, delta: number |
   return delta < 0 ? "improved" : "declined";
 }
 
-function actionKey(input: Pick<SeoActionItem, "projectSlug" | "title" | "targetUrl" | "keyword"> | (SeoReviewAction & { projectSlug: string })) {
+function actionKey(input: Pick<SeoActionItem, "projectSlug" | "title" | "targetUrl" | "keyword" | "action"> | (SeoReviewAction & { projectSlug: string })) {
   return [
     input.projectSlug,
-    normalizeText(input.title),
-    normalizeText(input.keyword ?? ""),
-    normalizeText(input.targetUrl ?? "")
+    normalizeUrlForActionKey(input.targetUrl ?? ""),
+    normalizeKeywordForActionKey(input.keyword ?? input.title),
+    normalizeActionKindForKey(input.title, input.action)
   ].join("|");
+}
+
+function normalizeUrlForActionKey(value: string) {
+  if (!value.trim()) return "";
+  try {
+    const url = new URL(value);
+    return `${url.hostname.replace(/^www\./, "")}${url.pathname.replace(/\/$/, "") || "/"}`;
+  } catch {
+    return normalizeText(value).replace(/\/$/, "");
+  }
+}
+
+function normalizeKeywordForActionKey(value: string) {
+  return normalizeText(value)
+    .replace(/\bserp gap\b/g, "")
+    .replace(/\bstark keyword\b/g, "")
+    .replace(/\btack keyword\b/g, "")
+    .replace(/\bopportunity content\b/g, "")
+    .replace(/\buppdatera\b/g, "")
+    .replace(/\bforbattra ranking for\b/g, "")
+    .replace(/\blyft gsc query\b/g, "")
+    .replace(/\bbygg battre matchning\b/g, "")
+    .replace(/\bai agenter\b/g, "ai agent")
+    .replace(/\bagenter\b/g, "agent")
+    .replace(/\bforetag\b/g, "foretag")
+    .replace(/[^a-z0-9 ]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeActionKindForKey(title: string, action?: string) {
+  const text = normalizeText(`${title} ${action ?? ""}`);
+  if (/indexering|url inspection|gsc/.test(text) && !/title|h1|meta|copy|faq|internlank|content/.test(text)) return "indexing";
+  if (/internlank|interna lank/.test(text)) return "internal-links";
+  if (/ny sida|skapa.*sida|landningssida/.test(text)) return "new-page";
+  if (/title|meta|h1|h2|intro|faq|copy|content|readiness|serp|keyword|query|ranking/.test(text)) return "content";
+  return "general";
 }
 
 function getDefaultRecheckDate(ranAt: string) {

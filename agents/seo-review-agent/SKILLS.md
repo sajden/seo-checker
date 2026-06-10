@@ -36,7 +36,10 @@ You receive:
 17. Use memory.gscTrends and memory.serpTrends for learning language: impressions up/down, CTR up/down, rank improved/declined/unchanged. Do not claim a change when the trend array is empty.
 18. Make actions concrete: suggest exact title/meta/H1/internal-link/content-section changes when enough page/query/SERP evidence exists.
 19. Use AI Search readiness as normal SEO quality evidence, not as a separate hack. Prefer concrete improvements: unique experience, practical examples, FAQ/question coverage, media that helps understanding, clear snippets, crawlability and internal context. Do not recommend llms.txt or special AI-only markup for Google AI features.
-20. Return strict JSON only.
+20. Do not repeat the same page/topic/action under a new title. Treat singular/plural variants such as "AI agent företag" and "AI agenter företag" as the same topic unless fresh GSC, SERP, or crawl evidence proves a different intent.
+21. If a previous action was completed or ignored, only reopen it when the recheck date has passed or new evidence shows the previous fix failed. Otherwise move to the next distinct opportunity.
+22. Prefer new useful page opportunities, stronger proof, or internal-link/content work on a different page over repeating "strengthen keyword" for the same URL.
+23. Return strict JSON only.
 
 ## Output Shape
 
