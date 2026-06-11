@@ -93,6 +93,7 @@ export async function runBatch(batchId: string, options: RunBatchOptions = {}): 
     });
     keywordPlan = await getKeywordPlan(projectSlug);
   }
+  keywordPlan = filterKeywordPlanForWorkspace(keywordPlan);
   const keywordReview = filterKeywordReviewForWorkspace(buildKeywordReview({
     projectSlug,
     keywords: keywordPlan.keywords,
@@ -400,6 +401,37 @@ function buildSeedKeywords(input: { siteUrl?: string; projectSlug?: string }): U
     { query: "Microsoft 365 automatisering", intent: "commercial", demandBucket: "unknown", competition: "unknown", targetUrl: `${base}/artiklar/ai-motesanteckningar-microsoft-365-utan-manuellt-efterarbete`, status: "targeted", source: "import", notes: "Auto-seedad av SEO Monitor." },
     { query: "Power Automate konsult", intent: "commercial", demandBucket: "unknown", competition: "unknown", targetUrl: `${base}/artiklar/ai-motesanteckningar-microsoft-365-utan-manuellt-efterarbete`, status: "targeted", source: "import", notes: "Auto-seedad av SEO Monitor." }
   ];
+}
+
+function filterKeywordPlanForWorkspace<T extends { projectSlug: string; keywords: KeywordCandidate[] }>(keywordPlan: T): T {
+  if (!normalizeText(keywordPlan.projectSlug).includes("sebcastwall")) return keywordPlan;
+
+  return {
+    ...keywordPlan,
+    keywords: keywordPlan.keywords.filter((keyword) => isSebcastwallKeywordRelevant(keyword))
+  };
+}
+
+function isSebcastwallKeywordRelevant(keyword: KeywordCandidate) {
+  if (keyword.status === "ignored") return false;
+  const queryWordCount = normalizeText(keyword.query).split(" ").filter(Boolean).length;
+  if (keyword.source !== "manual" && (keyword.query.length > 80 || queryWordCount > 7)) return false;
+
+  const haystack = normalizeText([
+    keyword.query,
+    keyword.targetUrl ?? "",
+    keyword.notes ?? ""
+  ].join(" "));
+
+  if (/\b(abicart|klarna|fortnox|fortknox|visma|business central|mailchimp|monday|zendesk|account status|help_outline)\b/.test(haystack)) {
+    return false;
+  }
+
+  if (/\b(ai|agent|automation|automatisering|kod|utbildning|kurs|workshop|app|webb|webbutveckling|webbapp|interna verktyg|internverktyg|microsoft 365|power automate|mcp|crm|faktura|bokforing)\b/.test(haystack)) {
+    return true;
+  }
+
+  return keyword.source === "manual";
 }
 
 function buildPageSeoOpportunities(input: {

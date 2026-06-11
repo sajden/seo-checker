@@ -391,11 +391,17 @@ function serpStatus(now: number | null, previous: number | null, delta: number |
 }
 
 function actionKey(input: Pick<SeoActionItem, "projectSlug" | "title" | "targetUrl" | "keyword" | "action"> | (SeoReviewAction & { projectSlug: string })) {
+  const target = normalizeUrlForActionKey(input.targetUrl ?? "");
+  const kind = normalizeActionKindForKey(input.title, input.action);
+  if (target && (kind === "content" || kind === "internal-links")) {
+    return [input.projectSlug, target, kind].join("|");
+  }
+
   return [
     input.projectSlug,
-    normalizeUrlForActionKey(input.targetUrl ?? ""),
+    target,
     normalizeKeywordForActionKey(input.keyword ?? input.title),
-    normalizeActionKindForKey(input.title, input.action)
+    kind
   ].join("|");
 }
 

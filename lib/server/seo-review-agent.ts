@@ -70,7 +70,7 @@ export async function generateSeoReview(input: SeoReviewInput): Promise<SeoRevie
     if (!response.ok) throw new Error(`OpenAI ${response.status}: ${text.slice(0, 500)}`);
     const output = extractResponseText(JSON.parse(text));
     const parsed = parseReviewJson(output);
-    return sanitizeReview({ ...parsed, mode: "llm", model, generatedAt: new Date().toISOString() }, fallback);
+    return sanitizeReview({ ...parsed, mode: "llm", model, generatedAt: new Date().toISOString() }, fallback, input.seoMemory);
   } catch (error) {
     return {
       ...fallback,
@@ -250,6 +250,7 @@ function buildFallbackReview(input: SeoReviewInput): SeoReview {
   const memoryActions = buildMemoryActions(input);
   const gscSearchActions = buildGscSearchActions(input);
   const aiReadinessActions = buildAiReadinessActions(input);
+  const shouldSuppressAction = (action: SeoReviewAction) => isRepeatedOpenAction(action, input.seoMemory);
   const gscOpportunities = (input.gscQueryResult?.rows ?? [])
     .filter((row) => row.impressions >= 1 && row.position > 3)
     .filter((row) => !isProjectBrandedGscRow(row))
@@ -269,7 +270,7 @@ function buildFallbackReview(input: SeoReviewInput): SeoReview {
     });
   }
 
-  for (const action of aiReadinessActions.slice(0, 3)) {
+  for (const action of aiReadinessActions.filter((action) => !shouldSuppressAction(action)).slice(0, 3)) {
     topActions.push({
       ...action,
       rank: topActions.length + 1
@@ -277,7 +278,7 @@ function buildFallbackReview(input: SeoReviewInput): SeoReview {
   }
 
   for (const item of indexingIssues.slice(0, 3)) {
-    topActions.push({
+    const action = {
       rank: topActions.length + 1,
       priority: item.priority === "critical" ? "critical" : item.priority === "high" ? "high" : "medium",
       title: `Kontrollera indexering: ${shortPageName(item.url)}`,
@@ -295,11 +296,12 @@ function buildFallbackReview(input: SeoReviewInput): SeoReview {
         `User canonical: ${item.userCanonical ?? "saknas"}`
       ],
       targetUrl: item.url
-    });
+    } satisfies SeoReviewAction;
+    if (!shouldSuppressAction(action)) topActions.push(action);
   }
 
   for (const item of keywordGaps.slice(0, 4)) {
-    topActions.push({
+    const action = {
       rank: topActions.length + 1,
       priority: item.status === "missing" ? "high" : "medium",
       title: item.status === "missing" ? `Täck keyword: ${item.query}` : `Stärk keyword: ${item.query}`,
@@ -309,10 +311,11 @@ function buildFallbackReview(input: SeoReviewInput): SeoReview {
       evidence: item.evidence,
       targetUrl: item.targetUrl,
       keyword: item.query
-    });
+    } satisfies SeoReviewAction;
+    if (!shouldSuppressAction(action)) topActions.push(action);
   }
 
-  for (const action of serpActions.slice(0, 3)) {
+  for (const action of serpActions.filter((action) => !shouldSuppressAction(action)).slice(0, 3)) {
     topActions.push({
       ...action,
       rank: topActions.length + 1
@@ -437,7 +440,10 @@ function buildFallbackReview(input: SeoReviewInput): SeoReview {
       - ((input.crawlReport?.pages.length ?? 0) === 0 ? 20 : 0)
   ));
 
-  const rankedActions = topActions.map((action, index) => ({ ...action, rank: index + 1 })).slice(0, 8);
+  const rankedActions = mergeActions(topActions, [])
+    .filter((action) => !isRepeatedOpenAction(action, input.seoMemory))
+    .slice(0, 8)
+    .map((action, index) => ({ ...action, rank: index + 1 }));
   const fallbackReview = {
     generatedAt: new Date().toISOString(),
     mode: "fallback",
@@ -532,9 +538,12 @@ function parseReviewJson(output: string) {
   return JSON.parse(jsonMatch ? jsonMatch[1] : output);
 }
 
-function sanitizeReview(candidate: Partial<SeoReview>, fallback: SeoReview): SeoReview {
+function sanitizeReview(candidate: Partial<SeoReview>, fallback: SeoReview, memory: SeoTrendSummary): SeoReview {
   const actions = normalizeActions(candidate.topActions, fallback.topActions);
-  const mergedActions = mergeActions(actions, fallback.topActions);
+  const mergedActions = mergeActions(actions, fallback.topActions)
+    .filter((action) => !isRepeatedOpenAction(action, memory))
+    .slice(0, 8)
+    .map((action, index) => ({ ...action, rank: index + 1 }));
   const strictScore = typeof candidate.score === "number"
     ? Math.max(0, Math.min(100, Math.round(Math.min(candidate.score, fallback.score + 8))))
     : fallback.score;
@@ -616,6 +625,21 @@ function mergeActions(primary: SeoReviewAction[], fallback: SeoReviewAction[]) {
   return merged.slice(0, 8).map((action, index) => ({ ...action, rank: index + 1 }));
 }
 
+function isRepeatedOpenAction(action: SeoReviewAction, memory: SeoTrendSummary) {
+  const target = normalizeActionTarget(action.targetUrl);
+  const keyword = normalizeKeywordCluster(action.keyword ?? action.title);
+  const kind = normalizeActionKind(action.title, action.action);
+  return memory.openActions.some((item) => {
+    if (item.status !== "planned" && item.status !== "doing") return false;
+    if (item.occurrences < 8) return false;
+    const itemTarget = normalizeActionTarget(item.targetUrl);
+    const itemKeyword = normalizeKeywordCluster(item.keyword ?? item.title);
+    const itemKind = normalizeActionKind(item.title, item.action);
+    if (target && itemTarget && target !== itemTarget) return false;
+    return itemKind === kind && (keyword === itemKeyword || Boolean(target && itemTarget && target === itemTarget));
+  });
+}
+
 function isWeakRepeatableAction(action: SeoReviewAction) {
   const text = normalizeText([action.title, action.action, action.keyword ?? ""].join(" "));
   if (text.includes("ai search readiness") && !action.targetUrl) return true;
@@ -633,6 +657,7 @@ function actionClusterKey(action: SeoReviewAction) {
   const target = normalizeActionTarget(action.targetUrl);
   const keyword = normalizeKeywordCluster(action.keyword ?? action.title);
   const kind = normalizeActionKind(action.title, action.action);
+  if (target && (kind === "content" || kind === "internal-links")) return [target, kind].join("|");
   return [target, keyword, kind].join("|");
 }
 
