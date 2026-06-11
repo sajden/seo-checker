@@ -806,6 +806,7 @@ async function postPendingActions({ workspace, targetChannelId }) {
       messageId: posted.id,
       channelId: targetChannelId,
       workspaceId: workspace?.id || null,
+      firstPostedAt: new Date().toISOString(),
       postedAt: new Date().toISOString()
     }
     state.messageToAction = state.messageToAction || {}
@@ -1700,10 +1701,12 @@ async function repostActiveActionCard(workspace, payload, targetChannelId, optio
   }
   state.activeActionByWorkspace = state.activeActionByWorkspace || {}
   state.activeActionByWorkspace[activeKey] = {
+    ...(activeRecord || {}),
     actionId: action.id,
     messageId: posted.id,
     channelId: targetChannelId,
     workspaceId: workspace?.id || null,
+    firstPostedAt: activeRecord?.firstPostedAt || activeRecord?.postedAt || new Date().toISOString(),
     postedAt: new Date().toISOString(),
     reposted: true
   }
@@ -2307,15 +2310,15 @@ function cleanupStaleRuntimeState() {
       changed = true
       continue
     }
-    const postedAt = Date.parse(active?.postedAt || active?.repostedAt || active?.lastReminderAt || '')
-    if (postedAt && now - postedAt > staleActiveActionMs) {
+    const firstPostedAt = Date.parse(active?.firstPostedAt || active?.postedAt || active?.repostedAt || active?.lastReminderAt || '')
+    if (firstPostedAt && now - firstPostedAt > staleActiveActionMs) {
       recordActionLedger({ id: actionId }, workspaceForChannel(active?.channelId || null), active?.channelId || null, 'deprioritized', {
         reason: 'stale_active_action_lock',
         recheckAfter: new Date(now + 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
       })
       delete state.activeActionByWorkspace[activeKey]
       rememberAgentLesson(`Cleared stale active card lock for ${actionId}`)
-      log('stale_active_action_lock_cleared', { actionId, activeKey, postedAt: active?.postedAt || null })
+      log('stale_active_action_lock_cleared', { actionId, activeKey, firstPostedAt: active?.firstPostedAt || active?.postedAt || null })
       changed = true
     }
   }
