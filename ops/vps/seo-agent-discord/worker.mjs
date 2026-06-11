@@ -31,6 +31,7 @@ const smartOutboundGuardEnabled = env.SEO_AGENT_SMART_OUTBOUND_GUARD !== 'false'
 const stateDir = '/home/deploy/seo-agent-discord/state'
 const statePath = join(stateDir, 'state.json')
 const agentSpecFiles = ['AGENTS.md', 'SKILLS.md', 'TOOLS.md', 'POLICIES.md', 'MEMORY.md']
+const processStartedAtMs = Date.now()
 if (!existsSync(stateDir)) mkdirSync(stateDir, { recursive: true })
 const state = loadState()
 ensureAutonomousAgentState()
@@ -2155,7 +2156,13 @@ function ensureAutonomousAgentState() {
 function cleanupStaleRuntimeState() {
   const now = Date.now()
   let changed = false
-  if (state.codeActionRunning?.startedAt && now - Date.parse(state.codeActionRunning.startedAt) > staleRunningMs) {
+  if (state.codeActionRunning?.startedAt && Date.parse(state.codeActionRunning.startedAt) < processStartedAtMs - 10 * 1000) {
+    const actionId = state.codeActionRunning.actionId || 'unknown'
+    rememberAgentLesson(`Cleared interrupted codeActionRunning lock after worker restart for ${actionId}`)
+    log('interrupted_code_action_lock_cleared_after_restart', { actionId, startedAt: state.codeActionRunning.startedAt })
+    state.codeActionRunning = null
+    changed = true
+  } else if (state.codeActionRunning?.startedAt && now - Date.parse(state.codeActionRunning.startedAt) > staleRunningMs) {
     const actionId = state.codeActionRunning.actionId || 'unknown'
     rememberAgentLesson(`Cleared stale codeActionRunning lock for ${actionId}`)
     log('stale_code_action_lock_cleared', { actionId, startedAt: state.codeActionRunning.startedAt })
