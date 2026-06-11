@@ -1307,7 +1307,9 @@ async function formatWorkspaceLlmChat({ workspace, payload, targetChannelId, gui
   const activeRecord = activeActionRecordFor(workspace, targetChannelId)
   const activeId = activeRecord?.actionId || null
   const active = activeId ? actions.find((item) => item.id === activeId) : null
+  const ledgerFallbackActions = ledgerActionsForWorkspace(workspace, targetChannelId).slice(0, 8)
   const pending = actions.filter((item) => item.status === 'pending').slice(0, 8)
+  const chatActions = pending.length ? pending : ledgerFallbackActions
   const context = {
     workspace: workspace ? {
       id: workspace.id,
@@ -1323,10 +1325,12 @@ async function formatWorkspaceLlmChat({ workspace, payload, targetChannelId, gui
     dataStatus: {
       actionsFetchError: payload.error || null,
       resourceLimitFallback: payload.resourceLimitFallback || null,
-      actionCount: actions.length
+      actionCount: actions.length,
+      ledgerFallbackCount: ledgerFallbackActions.length
     },
     activeAction: active ? compactActionForChat(active) : null,
-    pendingActions: pending.map(compactActionForChat),
+    pendingActions: chatActions.map(compactActionForChat),
+    ledgerFallbackActions: ledgerFallbackActions.map(compactActionForChat),
     userMessage: message
   }
   return runCodexWorkspaceChat(context).catch((error) => {
@@ -1346,7 +1350,8 @@ async function runCodexWorkspaceChat(context) {
     'Du är inte bara en kommandobot. Om användaren frågar vad som är smart ska du resonera utifrån mål, workspace-policy, kö, repo och datastatus.',
     'Använd workspace-kontexten. Om användaren ger riktning, bekräfta vad du sparar och hur det ändrar prioritering.',
     'Om befintlig kö inte matchar användarens riktning, säg det tydligt och föreslå att skapa research/new-page-action eller deprioritera fel action.',
-    'Om CONTEXT JSON visar actionsFetchError eller resourceLimitFallback: säg att datakällan är begränsad just nu och ge bästa nästa steg utifrån workspace-mål, inte att det saknas actions.',
+    'Om CONTEXT JSON visar actionsFetchError eller resourceLimitFallback: säg kort att live-datakällan är begränsad, men använd ledgerFallbackActions/pendingActions för konkret nästa steg.',
+    'Om pendingActions kommer från ledgerFallbackActions: säg inte att det saknas approve-ready action. Välj bästa ledger-kortet eller säg att det är ett minneskort som kan behöva repost/approve.',
     'Om pendingActions är tom men användaren frågar om nästa steg: föreslå en konkret SEO-riktning och säg vilken integration/datadel som behöver friskna till.',
     'Säg inte att du är i pilotläge. Kodautomation är aktiv om context.automation.codeAutomationEnabled är true.',
     'Du får inte låtsas att du har kört kod eller skickat mail. Föreslå approve/skip/deprioritize när det är relevant.',
@@ -1652,7 +1657,8 @@ function formatGeneralChatFallback(workspace, payload, targetChannelId, guidance
   const activeRecord = activeActionRecordFor(workspace, targetChannelId)
   const activeId = activeRecord?.actionId || null
   const active = activeId ? actions.find((item) => item.id === activeId) : null
-  const next = active || actions.find((item) => item.status === 'pending') || actions[0]
+  const ledgerFallback = ledgerActionsForWorkspace(workspace, targetChannelId)
+  const next = active || actions.find((item) => item.status === 'pending') || actions[0] || ledgerFallback[0]
   const label = workspace?.label || workspace?.id || 'workspace'
   const cardUrl = activeRecord?.messageId ? discordMessageUrl(activeRecord.channelId || targetChannelId, activeRecord.messageId) : ''
   if (!next && activeRecord?.actionId) {
@@ -2483,6 +2489,49 @@ function formatActionLedgerSummary(workspace, targetChannelId) {
     entries.length ? entries.map((item) => `${item.status || 'seen'} · ${item.title || item.key}${item.commit ? ` · ${item.commit}` : ''}`).join('\n') : 'Inga ledger-händelser för workspacet ännu.',
     lessons.length ? `\nSenaste lärdomar:\n${lessons.join('\n')}` : ''
   ].filter(Boolean).join('\n').slice(0, 1900)
+}
+
+function ledgerActionsForWorkspace(workspace, targetChannelId) {
+  const key = workspaceProfileKey(workspace, targetChannelId)
+  const profile = ensureWorkspaceProfile(workspace, targetChannelId)
+  return Object.values(state.actionLedger || {})
+    .filter((item) => String(item.workspaceKey || '') === String(key))
+    .filter((item) => item.actionId && item.title)
+    .filter((item) => !['completed', 'ignored', 'stopped'].includes(String(item.status || '')) || isLedgerRecheckDue(item))
+    .filter((item) => String(item.status || '') !== 'failed' || isLedgerRecheckDue(item))
+    .filter((item) => {
+      const text = normalizeForMatch([item.title, item.keyword, item.targetUrl, item.key].filter(Boolean).join(' '))
+      if (profile.avoid?.some((term) => text.includes(normalizeForMatch(term))) && !profile.prefer?.some((term) => text.includes(normalizeForMatch(term)))) return false
+      return true
+    })
+    .sort((a, b) => ledgerActionPriority(b, profile) - ledgerActionPriority(a, profile))
+    .map((item) => ({
+      id: item.actionId,
+      title: item.title,
+      targetUrl: item.targetUrl || '',
+      keyword: item.keyword || '',
+      status: item.status || 'memory',
+      priority: item.priority || 'medium',
+      category: item.kind || 'memory',
+      why: `Hämtad från agentens minne/ledger eftersom live action-data är begränsad. Senast status: ${item.status || 'seen'}.`,
+      recommendedAction: item.commit
+        ? `Tidigare commit finns: ${item.commit}. Reposta bara om ny recheck visar att mer behövs.`
+        : 'Reposta kortet med knappar eller approve om åtgärden fortfarande matchar målet.',
+      priorityReason: 'ledger fallback när live action-data saknas'
+    }))
+}
+
+function ledgerActionPriority(item, profile) {
+  const text = normalizeForMatch([item.title, item.keyword, item.targetUrl, item.key].filter(Boolean).join(' '))
+  let score = 0
+  if (String(item.status || '') === 'proposed' || String(item.status || '') === 'approved') score += 30
+  if (String(item.status || '') === 'deprioritized') score -= 15
+  if (/ai|agent|automatisering|automation|app|webb|utbildning|workshop/.test(text)) score += 20
+  if (/indexering|gsc|oauth/.test(text)) score += 8
+  if (profile.prefer?.some((term) => text.includes(normalizeForMatch(term)))) score += 25
+  const last = Date.parse(item.lastEventAt || item.firstSeenAt || '')
+  if (last) score += Math.max(0, 10 - Math.floor((Date.now() - last) / (7 * 24 * 60 * 60 * 1000)))
+  return score
 }
 
 async function findAction(actionId) {
