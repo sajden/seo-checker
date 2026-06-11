@@ -14,6 +14,7 @@ This directory is a tracked snapshot of the Discord/Hermes SEO agent currently d
 
 ```text
 worker.mjs       Main Discord worker, scheduler, action queue, code automation, memory ledger.
+codex-runner.mjs Executes approved code actions in repo checkouts and pushes commits.
 agent-brain.mjs  Runtime snapshot helper for agent status/debugging.
 AGENTS.md        Agent role and operating model.
 MEMORY.md        Persistent lessons and known bad patterns.
@@ -26,7 +27,7 @@ Secrets are not stored here. Runtime secrets live in `/home/deploy/seo-agent-dis
 After editing this snapshot, deploy with:
 
 ```bash
-rsync -av ops/vps/seo-agent-discord/worker.mjs ops/vps/seo-agent-discord/AGENTS.md ops/vps/seo-agent-discord/MEMORY.md deploy@178.104.240.46:/home/deploy/seo-agent-discord/
+rsync -av ops/vps/seo-agent-discord/worker.mjs ops/vps/seo-agent-discord/codex-runner.mjs ops/vps/seo-agent-discord/AGENTS.md ops/vps/seo-agent-discord/MEMORY.md deploy@178.104.240.46:/home/deploy/seo-agent-discord/
 ssh deploy@178.104.240.46 'cd /home/deploy/seo-agent-discord && node --check worker.mjs && systemctl --user restart seo-agent-discord.service && systemctl --user is-active seo-agent-discord.service'
 ```
 
@@ -52,6 +53,7 @@ The agent should:
 - suppress repeated completed/ignored action clusters until recheck,
 - clear stale running/self-repair locks automatically,
 - run code automation per repo instead of blocking all workspaces when one repo is missing,
+- auto-clone missing repo checkouts when a matching `github.com-seo-agent-<repo>` SSH host/deploy key exists,
 - record commits and diffstats so Discord can explain what was created.
 
 ## Useful Checks
@@ -61,4 +63,3 @@ ssh deploy@178.104.240.46 'systemctl --user status seo-agent-discord.service --n
 ssh deploy@178.104.240.46 'journalctl --user -u seo-agent-discord.service -n 100 --no-pager'
 ssh deploy@178.104.240.46 'node -e "const s=require(\"/home/deploy/seo-agent-discord/state/state.json\"); console.log(Object.keys(s.actionLedger||{}).length, Object.keys(s.approvedCodeActionQueue||{}).length, s.codeActionRunning)"'
 ```
-
