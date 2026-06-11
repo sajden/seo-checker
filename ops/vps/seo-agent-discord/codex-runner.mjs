@@ -13,6 +13,7 @@ if (!repoName) throw new Error('Missing repoFullName in action payload')
 const repoDir = join(workspaceRoot, repoName)
 await ensureRepoCheckout(repoDir, action.repoFullName)
 
+await recoverInterruptedWorktree(repoDir, action)
 await assertClean(repoDir)
 await run('git', ['checkout', action.branch || 'main'], repoDir)
 await run("git", ["fetch", "origin", action.branch || "main"], repoDir)
@@ -78,6 +79,32 @@ function bestBuildDir(repoDir) {
 async function assertClean(cwd) {
   const status = await run('git', ['status', '--porcelain'], cwd)
   if (status.stdout.trim()) throw new Error(`Repo is not clean: ${cwd}`)
+}
+
+async function recoverInterruptedWorktree(cwd, input) {
+  const status = await run('git', ['status', '--porcelain'], cwd)
+  if (!status.stdout.trim()) return
+  const diffStat = await run('git', ['diff', '--stat'], cwd)
+  await runBestBuild(bestBuildDir(cwd))
+  await run('git', ['add', '-A'], cwd)
+  const staged = await run('git', ['diff', '--cached', '--stat'], cwd)
+  if (!staged.stdout.trim()) {
+    await run('git', ['reset', '--hard'], cwd)
+    return
+  }
+  await run('git', ['config', 'user.name', 'SEO Agent'], cwd)
+  await run('git', ['config', 'user.email', 'seo-agent@sebcastwall.se'], cwd)
+  await run('git', ['commit', '-m', `Recover interrupted SEO agent changes\n\nPrevious action context: ${input.id || input.title || 'unknown'}`], cwd)
+  await run('git', ['push', 'origin', `HEAD:${input.branch || 'main'}`], cwd)
+  recordCodexUsage({
+    agent: 'seo-agent',
+    purpose: 'worktree_recovery',
+    workspace: input.workspaceSlug || input.projectSlug || input.repoFullName || null,
+    status: 'ok',
+    usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0, calls: 0 },
+    actionId: input.id,
+    note: `Recovered dirty worktree before action. Diff: ${String(diffStat.stdout || staged.stdout || '').slice(0, 500)}`
+  })
 }
 
 async function runBestBuild(cwd) {

@@ -20,6 +20,7 @@ const integrationDoctorEveryMs = Number(env.SEO_AGENT_INTEGRATION_DOCTOR_MS || '
 const activeActionReminderMs = Number(env.SEO_AGENT_ACTIVE_ACTION_REMINDER_MS || String(6 * 60 * 60 * 1000))
 const staleRunningMs = Number(env.SEO_AGENT_STALE_RUNNING_MS || String(2 * 60 * 60 * 1000))
 const staleQueuedApprovedMs = Number(env.SEO_AGENT_STALE_APPROVED_QUEUE_MS || String(36 * 60 * 60 * 1000))
+const staleActiveActionMs = Number(env.SEO_AGENT_STALE_ACTIVE_ACTION_MS || String(30 * 60 * 60 * 1000))
 const workspaceChannels = parseWorkspaceChannels(env.SEO_AGENT_WORKSPACE_CHANNELS || '{}')
 const defaultWorkspaceId = env.SEO_AGENT_DEFAULT_WORKSPACE_ID || ''
 const guildId = env.DISCORD_GUILD_ID || ''
@@ -570,10 +571,11 @@ async function processApprovedCodeActions(workspaces) {
         result.diffStat ? `Diff:\n\`\`\`\n${String(result.diffStat).slice(0, 1200)}\n\`\`\`` : ''
       ].filter(Boolean).join('\n'), targetChannelId)
     } catch (error) {
-      state.codeActionResults[approved.id] = { status: 'failed', failedAt: new Date().toISOString(), error: error?.message || String(error) }
-      recordActionLedger(approved, workspace, targetChannelId, 'failed', { error: error?.message || String(error) })
+      const failure = classifyCodeActionFailure(error)
+      state.codeActionResults[approved.id] = { status: failure.status, failedAt: new Date().toISOString(), error: error?.message || String(error), failure }
+      recordActionLedger(approved, workspace, targetChannelId, failure.ledgerEvent, { error: error?.message || String(error), failure })
       clearActiveAction(approved.id)
-      await sendDiscordMessage(`Kodaction misslyckades för ${workspace.label}: ${approved.title}\nFel: ${error?.message || String(error)}`, targetChannelId)
+      await sendDiscordMessage(formatCodeActionFailureMessage(workspace.label, approved.title, error, failure), targetChannelId)
     } finally {
       state.codeActionRunning = null
       saveState()
@@ -613,11 +615,12 @@ async function processQueuedApprovedCodeAction(workspaces) {
       result.diffStat ? `Diff:\n\`\`\`\n${String(result.diffStat).slice(0, 1200)}\n\`\`\`` : ''
     ].filter(Boolean).join('\n'), targetChannelId)
   } catch (error) {
-    state.codeActionResults[entry.id] = { status: 'failed', failedAt: new Date().toISOString(), error: error?.message || String(error) }
-    recordActionLedger(entry, workspace, targetChannelId, 'failed', { error: error?.message || String(error) })
+    const failure = classifyCodeActionFailure(error)
+    state.codeActionResults[entry.id] = { status: failure.status, failedAt: new Date().toISOString(), error: error?.message || String(error), failure }
+    recordActionLedger(entry, workspace, targetChannelId, failure.ledgerEvent, { error: error?.message || String(error), failure })
     delete state.approvedCodeActionQueue[entry.id]
     clearActiveAction(entry.id)
-    await sendDiscordMessage(`Kodaction misslyckades för ${workspace.label || entry.workspaceSlug}: ${entry.title}\nFel: ${error?.message || String(error)}`, targetChannelId)
+    await sendDiscordMessage(formatCodeActionFailureMessage(workspace.label || entry.workspaceSlug, entry.title, error, failure), targetChannelId)
   } finally {
     state.codeActionRunning = null
     saveState()
@@ -644,6 +647,65 @@ async function runCodexAction(action) {
     try { return JSON.parse(text.slice(jsonStart)) } catch {}
   }
   return { ok: true, stdout: text.slice(-4000) }
+}
+
+function classifyCodeActionFailure(error) {
+  const message = error?.message || String(error)
+  const text = message.toLowerCase()
+  if (text.includes('repo checkout missing') || text.includes('clone failed') || text.includes('permission denied (publickey)')) {
+    return {
+      status: 'infra_failed',
+      ledgerEvent: 'failed',
+      category: 'repo_access',
+      retryable: true,
+      operatorSummary: 'Repo-checkout eller deploy key saknas. Runnern försöker numera auto-klona om SSH-host/deploy key finns.'
+    }
+  }
+  if (text.includes('repo is not clean')) {
+    return {
+      status: 'infra_failed',
+      ledgerEvent: 'failed',
+      category: 'dirty_worktree',
+      retryable: true,
+      operatorSummary: 'Repo-checkouten är dirty. Runnern försöker numera bygga och committa avbrutna agentändringar innan ny körning.'
+    }
+  }
+  if (text.includes('codex made no changes')) {
+    return {
+      status: 'no_changes',
+      ledgerEvent: 'deprioritized',
+      category: 'no_effect',
+      retryable: false,
+      operatorSummary: 'Codex hittade ingen meningsfull ändring. Kortet bör inte loopas utan ny instruktion eller färsk SEO-data.'
+    }
+  }
+  if (text.includes('npm err') || text.includes('pnpm') || text.includes('next build') || text.includes('failed to compile') || text.includes('type error')) {
+    return {
+      status: 'build_failed',
+      ledgerEvent: 'failed',
+      category: 'build',
+      retryable: true,
+      operatorSummary: 'Build/test föll efter kodändring. Nästa steg är att låta Codex reparera buildfelet innan ny SEO-action.'
+    }
+  }
+  return {
+    status: 'failed',
+    ledgerEvent: 'failed',
+    category: 'unknown',
+    retryable: false,
+    operatorSummary: 'Okänt fel. Agenten markerar kortet som failed så det inte loopar tyst.'
+  }
+}
+
+function formatCodeActionFailureMessage(workspaceLabel, title, error, failure) {
+  const errorText = String(error?.message || error || '').slice(0, 1400)
+  return [
+    `Kodaction kunde inte slutföras för ${workspaceLabel}: ${title}`,
+    `Typ: ${failure.category}${failure.retryable ? ' (retrybar)' : ' (ej retry utan ny input)'}`,
+    `Agentens bedömning: ${failure.operatorSummary}`,
+    '',
+    `Fel:\n${errorText}`
+  ].join('\n').slice(0, 1900)
 }
 
 async function localAutomationStatus() {
@@ -1111,6 +1173,10 @@ async function handleChatMessage(content, message, targetChannelId) {
   if (/^(agent doctor|agent brain|struktur|structure)$/i.test(trimmed)) {
     const workspace = workspaceForChannel(targetChannelId)
     await sendDiscordMessage(formatAgentBrainStatus(workspace), targetChannelId)
+    return
+  }
+  if (/^(health|hälsa|halsa|agent health|drift)$/i.test(trimmed)) {
+    await sendDiscordMessage(formatAgentHealthReport(), targetChannelId)
     return
   }
   if (/^(gsc browser doctor|gsc browser|browser doctor)$/i.test(trimmed)) {
@@ -2138,6 +2204,38 @@ function formatAgentBrainStatus(workspace) {
   ].join('\n')
 }
 
+function formatAgentHealthReport() {
+  const results = Object.entries(state.codeActionResults || {})
+  const failed = results.filter(([, result]) => ['failed', 'infra_failed', 'build_failed', 'no_changes'].includes(String(result?.status || '')))
+  const completed = results.filter(([, result]) => result?.status === 'completed')
+  const unresolved = Object.values(state.platformIncidents || {}).filter((item) => !['resolved', 'archived'].includes(String(item?.status || '')))
+  const active = Object.values(state.activeActionByWorkspace || {})
+  const queue = Object.values(state.approvedCodeActionQueue || {})
+  const latestFailed = failed.slice(-5).map(([id, result]) => {
+    const failure = result.failure?.category ? ` · ${result.failure.category}` : ''
+    return `- ${String(result.status || 'failed')}${failure}: ${shortActionId(id)}`
+  })
+  const latestCompleted = completed.slice(-5).map(([id, result]) => `- ${result.result?.commit || 'commit?'}: ${shortActionId(id)}`)
+  const lessons = (state.agentLessons || []).slice(0, 5).map((item) => `- ${item.text}`)
+  return [
+    'SEO Agent health',
+    `Service-state: running=${state.codeActionRunning?.actionId ? shortActionId(state.codeActionRunning.actionId) : 'nej'}, approvedQueue=${queue.length}, activeCards=${active.length}`,
+    `Code actions: completed=${completed.length}, failed/open-failed=${failed.length}`,
+    `Platform incidents: unresolved=${unresolved.length}`,
+    `Workspaces med active card: ${active.map((item) => shortActionId(item.actionId)).join(', ') || 'inga'}`,
+    latestCompleted.length ? `\nSenaste commits:\n${latestCompleted.join('\n')}` : '',
+    latestFailed.length ? `\nSenaste fel:\n${latestFailed.join('\n')}` : '',
+    lessons.length ? `\nSenaste lärdomar:\n${lessons.join('\n')}` : '',
+    '\nTolkning: om activeCards är högt väntar agenten på beslut; om unresolved incidents är högt är Platform API/GSC-data svag; om failed växer ska runner/repo/build fixas innan fler kort approve:as.'
+  ].filter(Boolean).join('\n').slice(0, 1900)
+}
+
+function shortActionId(id) {
+  const text = String(id || '')
+  if (text.length <= 80) return text
+  return `${text.slice(0, 42)}...${text.slice(-28)}`
+}
+
 function formatStatusMessage(workspace, payload) {
   const actions = Array.isArray(payload.actions) ? payload.actions : []
   const pending = actions.filter((item) => item.status === 'pending').length
@@ -2207,7 +2305,32 @@ function cleanupStaleRuntimeState() {
       rememberAgentLesson(`Cleared active card lock for queued/resolved action ${actionId}`)
       log('active_action_lock_cleared_for_queued_or_resolved_action', { actionId, activeKey })
       changed = true
+      continue
     }
+    const postedAt = Date.parse(active?.postedAt || active?.repostedAt || active?.lastReminderAt || '')
+    if (postedAt && now - postedAt > staleActiveActionMs) {
+      recordActionLedger({ id: actionId }, workspaceForChannel(active?.channelId || null), active?.channelId || null, 'deprioritized', {
+        reason: 'stale_active_action_lock',
+        recheckAfter: new Date(now + 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+      })
+      delete state.activeActionByWorkspace[activeKey]
+      rememberAgentLesson(`Cleared stale active card lock for ${actionId}`)
+      log('stale_active_action_lock_cleared', { actionId, activeKey, postedAt: active?.postedAt || null })
+      changed = true
+    }
+  }
+  for (const [key, incident] of Object.entries(state.platformIncidents || {})) {
+    const startedAt = Date.parse(incident?.startedAt || incident?.unresolvedAt || '')
+    if (!startedAt || now - startedAt <= 7 * 24 * 60 * 60 * 1000) continue
+    state.platformIncidents[key] = { ...incident, status: incident.status === 'resolved' ? 'resolved' : 'archived', archivedAt: new Date().toISOString() }
+    changed = true
+  }
+  for (const [actionId, result] of Object.entries(state.codeActionResults || {})) {
+    if (result?.status !== 'failed') continue
+    const failedAt = Date.parse(result.failedAt || '')
+    if (!failedAt || now - failedAt <= 7 * 24 * 60 * 60 * 1000) continue
+    state.codeActionResults[actionId] = { ...result, status: 'archived_failed', archivedAt: new Date().toISOString() }
+    changed = true
   }
   if (changed) saveState()
 }
