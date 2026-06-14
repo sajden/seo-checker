@@ -159,13 +159,12 @@ async function maybeNotifyReadinessRecovery(workspace, targetChannelId, readines
   if (!previous || previous.ready || !readiness.ready) return
   const today = new Date().toISOString().slice(0, 10)
   const recoveryKey = `readiness-recovered:${workspace.id}:${today}`
-  const reason = previous.batchError || (!previous.batchAvailable ? 'SEO batch saknades' : 'workspace var inte redo')
+  const reason = humanReadinessIssue(previous)
   await sendOncePerDay(recoveryKey, targetChannelId, [
-    `SEO Agent är redo igen för ${workspace.label}.`,
-    `Fixat: ${reason}`,
-    readiness.lastRunAt ? `Senaste run: ${readiness.lastRunAt}` : '',
-    `GSC: ${workspace.gscProperty || 'saknas'} · Repo: ${workspace.repoFullName || 'saknas'} · Branch: ${workspace.branch || 'main'}`,
-    'Jag fortsätter med actions automatiskt.'
+    `SEO Agent är redo igen för ${workspace.label}. Ingen åtgärd krävs från dig.`,
+    `Tidigare problem: ${reason}`,
+    readiness.lastRunAt ? `Senaste SEO-run: ${formatDateTime(readiness.lastRunAt)}` : '',
+    'Nästa steg: jag postar ett konkret SEO-kort här när det finns något att godkänna.'
   ].filter(Boolean).join('\n'))
 }
 
@@ -190,16 +189,47 @@ async function workspaceReadiness(workspace) {
 }
 
 function formatReadinessMessage(workspace, readiness) {
-  const missing = []
-  if (!readiness.gscConfigured) missing.push('GSC property saknas')
-  if (!readiness.repoConfigured) missing.push('GitHub repo saknas')
-  if (!readiness.batchAvailable) missing.push(`SEO batch saknas${readiness.batchError ? ` (${readiness.batchError})` : ''}`)
+  const missing = readinessMissingItems(workspace, readiness)
+  const needsUserAction = !readiness.gscConfigured || !readiness.repoConfigured
+  const headline = needsUserAction
+    ? `SEO Agent behöver setup för ${workspace.label}`
+    : `SEO Agent väntar på ny SEO-data för ${workspace.label}`
+  const nextStep = needsUserAction
+    ? `Gör detta: öppna Dashboard2 -> SEO Monitor -> Workspaces/Integrations och fyll i ${missing.join(' och ')}.`
+    : 'Ingen åtgärd krävs från dig just nu. Jag försöker hämta eller starta ny SEO-run automatiskt och postar ett kort när det finns ett beslut.'
   return [
-    `SEO Agent readiness för ${workspace.label}`,
-    missing.length ? `Saknas: ${missing.join(', ')}` : 'Data finns, men senaste run behöver uppdateras.',
-    readiness.lastRunAt ? `Senaste run: ${readiness.lastRunAt}` : 'Senaste run: saknas',
-    `GSC: ${workspace.gscProperty || 'saknas'} · Repo: ${workspace.repoFullName || 'saknas'} · Branch: ${workspace.branch || 'main'}`,
+    headline,
+    nextStep,
+    `Status: ${humanReadinessIssue(readiness)}`,
+    readiness.lastRunAt ? `Senaste SEO-run: ${formatDateTime(readiness.lastRunAt)}` : 'Senaste SEO-run: saknas',
+    `Workspace: ${workspace.label} · GSC: ${workspace.gscProperty || 'saknas'} · Repo: ${workspace.repoFullName || 'saknas'}`
   ].join('\n')
+}
+
+function readinessMissingItems(workspace, readiness) {
+  const missing = []
+  if (!readiness.gscConfigured) missing.push('GSC property')
+  if (!readiness.repoConfigured) missing.push('GitHub repo')
+  if (!readiness.batchAvailable && !missing.length) missing.push('SEO batch')
+  return missing
+}
+
+function humanReadinessIssue(readiness) {
+  if (!readiness?.gscConfigured) return 'GSC property saknas.'
+  if (!readiness?.repoConfigured) return 'GitHub repo saknas.'
+  if (readiness?.batchAvailable) return 'SEO-data finns.'
+  const error = String(readiness?.batchError || '')
+  if (/seo_batch_not_found|platform_404/i.test(error)) return 'Ingen färsk SEO-batch hittades ännu.'
+  if (/502|bad gateway|platform_502/i.test(error)) return 'Platform API svarade tillfälligt med 502.'
+  if (/fetch failed|timeout|network/i.test(error)) return 'Tillfälligt nätverks- eller Platform API-fel.'
+  if (error) return 'SEO-batch kunde inte hämtas just nu.'
+  return 'SEO-batch saknas.'
+}
+
+function formatDateTime(value) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return String(value)
+  return date.toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, ' UTC')
 }
 
 async function postPendingActionsForWorkspaces(workspaces) {
