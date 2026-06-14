@@ -1270,6 +1270,11 @@ async function handleChatMessage(content, message, targetChannelId) {
     const handled = await handleUserIndexingConfirmation(workspace, targetChannelId, trimmed)
     if (handled) return
   }
+  const gscIssueHandled = await maybeHandleGscIssueMessage(trimmed, targetChannelId).catch((error) => {
+    log('gsc_issue_message_failed', { channelId: targetChannelId, error: error?.message || String(error) })
+    return false
+  })
+  if (gscIssueHandled) return
   const operatorIntentHandled = await maybeHandleOperatorIntent(trimmed, targetChannelId).catch((error) => {
     log('operator_intent_failed', { channelId: targetChannelId, error: error?.message || String(error) })
     return false
@@ -1334,6 +1339,142 @@ async function maybeHandleOperatorIntent(message, targetChannelId) {
     return true
   }
   return false
+}
+
+async function maybeHandleGscIssueMessage(message, targetChannelId) {
+  const issue = parseGscIssueMessage(message)
+  if (!issue) return false
+  const workspace = workspaceForChannel(targetChannelId)
+  if (!workspace) {
+    await sendDiscordMessage('Jag ser en GSC-varning, men kan inte koppla den till ett workspace i den här kanalen. Posta den i rätt `seo-...` workspace-kanal.', targetChannelId)
+    return true
+  }
+  const action = createGscIssueAction(issue, workspace, targetChannelId)
+  state.gscIssues = state.gscIssues || {}
+  state.gscIssues[action.id] = {
+    ...issue,
+    actionId: action.id,
+    workspaceId: workspace.id || null,
+    workspaceLabel: workspace.label || null,
+    channelId: targetChannelId,
+    receivedAt: new Date().toISOString(),
+    raw: String(message || '').slice(0, 2000)
+  }
+  ensureWorkspaceProfile(workspace, targetChannelId)
+  const review = reviewActionForPosting(action, workspace, targetChannelId, 'GSC issue från Search Console')
+  const posted = await sendDiscordMessage(formatActionMessage(action, 'GSC issue från Search Console', workspace, review), targetChannelId, actionComponents(action), { kind: 'action_card' })
+  state.postedActionIds = state.postedActionIds || {}
+  state.postedActionIds[action.id] = {
+    messageId: posted.id,
+    channelId: targetChannelId,
+    title: action.title,
+    workspaceId: workspace.id || null,
+    postedAt: new Date().toISOString()
+  }
+  state.activeActionByWorkspace = state.activeActionByWorkspace || {}
+  const activeKey = activeWorkspaceActionKey(workspace, targetChannelId)
+  state.activeActionByWorkspace[activeKey] = {
+    actionId: action.id,
+    messageId: posted.id,
+    channelId: targetChannelId,
+    workspaceId: workspace.id || null,
+    firstPostedAt: new Date().toISOString(),
+    postedAt: new Date().toISOString()
+  }
+  state.messageToAction = state.messageToAction || {}
+  state.messageToAction[posted.id] = action.id
+  recordActionLedger(action, workspace, targetChannelId, 'posted', { source: 'gsc_issue_message', issueType: issue.type, messageId: posted.id, review })
+  rememberAgentLesson(`GSC issue captured for ${workspace.label || workspace.id}: ${issue.type}`)
+  saveState()
+  return true
+}
+
+function parseGscIssueMessage(message) {
+  const text = String(message || '')
+  const isGsc = /google search console|search console|gsc|canonical|kanonisk|index(ed|ering)|noindex|sitemap|robots|404|redirect/i.test(text)
+  if (!isGsc) return null
+  if (/duplicate,\s*google chose different canonical than user|google chose different canonical|google valde annan kanonisk|annan canonical|different canonical/i.test(text)) {
+    return {
+      type: 'duplicate_google_chose_different_canonical',
+      title: 'GSC: Duplicate, Google chose different canonical than user',
+      severity: 'high',
+      affectedUrl: extractFirstUrl(text),
+      reason: 'Google ser duplicerat innehåll och väljer en annan canonical än den sajten anger.'
+    }
+  }
+  if (/alternate page with proper canonical|alternativ sida med korrekt kanonisk/i.test(text)) {
+    return {
+      type: 'alternate_page_with_proper_canonical',
+      title: 'GSC: Alternate page with proper canonical',
+      severity: 'medium',
+      affectedUrl: extractFirstUrl(text),
+      reason: 'Google ser sidan som alternativ till en canonical URL.'
+    }
+  }
+  if (/excluded by.*noindex|noindex/i.test(text)) {
+    return {
+      type: 'excluded_by_noindex',
+      title: 'GSC: Excluded by noindex',
+      severity: 'high',
+      affectedUrl: extractFirstUrl(text),
+      reason: 'Sidan blockeras från indexering med noindex.'
+    }
+  }
+  if (/not found|404/i.test(text) && /index/i.test(text)) {
+    return {
+      type: 'not_found_404',
+      title: 'GSC: 404 prevents indexing',
+      severity: 'medium',
+      affectedUrl: extractFirstUrl(text),
+      reason: 'Google hittar URL:er som returnerar 404 eller saknas.'
+    }
+  }
+  return null
+}
+
+function createGscIssueAction(issue, workspace, targetChannelId) {
+  const host = workspaceHost(workspace)
+  const path = issue.affectedUrl ? normalizeActionPath(issue.affectedUrl) : '/'
+  const id = `gsc_issue_${slugify(workspace?.label || host || targetChannelId)}_${slugify(issue.type)}_${slugify(path || 'site')}`.slice(0, 180)
+  return {
+    id,
+    title: issue.title,
+    targetUrl: issue.affectedUrl || (host ? `https://${host}/` : ''),
+    url: issue.affectedUrl || (host ? `https://${host}/` : ''),
+    keyword: null,
+    priority: issue.severity === 'high' ? 'high' : 'medium',
+    category: 'technical',
+    why: issue.reason,
+    recommendedAction: gscIssueRecommendedAction(issue),
+    status: 'pending',
+    workspaceId: workspace?.id || null,
+    workspaceSlug: workspace?.label || null,
+    projectSlug: workspace?.repoFullName || null,
+    source: 'gsc_issue_message'
+  }
+}
+
+function gscIssueRecommendedAction(issue) {
+  if (issue.type === 'duplicate_google_chose_different_canonical') {
+    return 'Undersök canonical och alias-routes i repo. Säkerställ att bara canonical URL serverar innehåll. Gör gamla alias till redirects eller sätt självcanonical korrekt. Uppdatera interna länkar så de pekar på canonical URL. Bygg, committa och posta GitHub-länk.'
+  }
+  if (issue.type === 'excluded_by_noindex') return 'Hitta noindex-källa, ta bort den om sidan ska ranka, bygg, committa och posta GitHub-länk.'
+  if (issue.type === 'not_found_404') return 'Hitta interna länkar/sitemap till 404-URL:er, redirecta eller ta bort länkar, bygg, committa och posta GitHub-länk.'
+  return 'Undersök GSC-felet i repo, gör minsta säkra tekniska SEO-fix, bygg, committa och posta GitHub-länk.'
+}
+
+function extractFirstUrl(text) {
+  const match = String(text || '').match(/https?:\/\/[^\s<>"')]+/i)
+  return match ? match[0].replace(/[.,;:]+$/, '') : ''
+}
+
+function workspaceHost(workspace) {
+  const value = String(workspace?.gscProperty || workspace?.id || workspace?.label || '')
+  const first = value.split('__')[0]
+  if (first.startsWith('sc-domain:')) return first.replace(/^sc-domain:/, '')
+  try { return new URL(first).hostname.replace(/^www\./, '') } catch {}
+  if (/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(first)) return first
+  return ''
 }
 
 async function runCodexOperatorIntent(context) {

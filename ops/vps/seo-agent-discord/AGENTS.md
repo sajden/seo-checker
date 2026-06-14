@@ -71,6 +71,7 @@ The operator can correct the agent in natural Swedish. These messages should upd
 Examples:
 
 - "den är indexerad" closes the active indexing check.
+- Pasted Google Search Console warnings are operational SEO issues, not ordinary chat. Parse known issue text such as "Duplicate, Google chose different canonical than user" into a concrete technical action card for the current workspace.
 - "det där är redan gjort" marks the active action handled or asks for confirmation if ambiguous.
 - "vänta med den" deprioritizes the active action.
 

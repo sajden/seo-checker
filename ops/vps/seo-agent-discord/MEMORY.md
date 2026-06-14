@@ -53,3 +53,4 @@ Focus on parking search intent, local/airport parking pages, indexability and co
 - Verified on 2026-06-07: `inspect-url` opened GSC URL Inspection for `https://sebcastwall.se/tjanster/ai-agenter`, and the screenshot showed `URL is on Google`.
 - Added lightweight screenshot classification with `pngjs`: green GSC URL Inspection status is classified as `indexed`.
 - Discord worker now marks stale indexing actions as handled when GSC UI verification returns `indexed` with confidence >= 0.8.
+- 2026-06-14: GSC issue text pasted in a workspace channel should become a structured `gsc_issue_*` action card. Duplicate canonical warnings should prompt a repo fix for canonical/alias routes and internal links, then build/commit/push.
