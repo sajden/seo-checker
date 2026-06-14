@@ -2577,6 +2577,10 @@ function reviewActionForPosting(action, workspace, targetChannelId, workspacePol
     score -= 80
     negatives.push('liknande action är redan genomförd')
   }
+  if (isNatverkskollenWorkspace(workspace, profile) && targetsLegacyNatverkskollenEventsAlias(action)) {
+    score -= 90
+    negatives.push('använder /events-alias; canonical ska vara /evenemang')
+  }
   if (ledger?.status === 'deprioritized' && !isLedgerRecheckDue(ledger)) {
     score -= 45
     negatives.push('du har nyligen prioriterat bort liknande action')
@@ -2616,6 +2620,18 @@ function reviewActionForPosting(action, workspace, targetChannelId, workspacePol
     risk: riskForAction(action, kind, score),
     decisionPrompt: decisionPromptForReview(recommendation)
   }
+}
+
+function isNatverkskollenWorkspace(workspace, profile) {
+  return [workspace?.label, workspace?.id, workspace?.gscProperty, workspace?.repoFullName, profile?.label]
+    .filter(Boolean)
+    .some((value) => String(value).toLowerCase().includes('natverkskollen'))
+}
+
+function targetsLegacyNatverkskollenEventsAlias(action) {
+  const url = String(action.targetUrl || action.url || '').trim()
+  const text = [action.title, action.keyword, action.why, action.recommendedAction].filter(Boolean).join(' ')
+  return /(^|\/)(events)(\/|$)/i.test(url.replace(/^https?:\/\/[^/]+/i, '')) || /\/events\b/i.test(text)
 }
 
 function priorityReasonFromReview(positives, negatives, workspacePolicy) {
