@@ -821,9 +821,15 @@ async function postPendingActions({ workspace, targetChannelId }) {
       log('action_card_guarded', { id, workspace: workspace?.label || workspace?.id || null, reason: guard.reason })
       continue
     }
-    const message = formatActionMessage(enrichedAction, actions.workspacePolicy, workspace)
+    const review = reviewActionForPosting(enrichedAction, workspace, targetChannelId, actions.workspacePolicy)
+    if (!review.ok) {
+      rememberGuardedAction(enrichedAction, workspace, targetChannelId, review.reason)
+      log('action_card_review_rejected', { id, workspace: workspace?.label || workspace?.id || null, reason: review.reason, score: review.score })
+      continue
+    }
+    const message = formatActionMessage(enrichedAction, actions.workspacePolicy, workspace, review)
     const posted = await sendDiscordMessage(message, targetChannelId, actionComponents(enrichedAction))
-    recordActionLedger(enrichedAction, workspace, targetChannelId, 'posted', { messageId: posted.id, systemKey, guard: guard.reason || 'passed' })
+    recordActionLedger(enrichedAction, workspace, targetChannelId, 'posted', { messageId: posted.id, systemKey, guard: guard.reason || 'passed', review })
     state.postedActionIds[id] = {
       messageId: posted.id,
       channelId: targetChannelId,
@@ -1715,9 +1721,10 @@ async function repostActiveActionCard(workspace, payload, targetChannelId, optio
     || actions.find((item) => item.status === 'pending')
   if (!action?.id) return null
   const enrichedAction = await enrichActionWithKeywordMetrics(action)
+  const review = reviewActionForPosting(enrichedAction, workspace, targetChannelId, payload.workspacePolicy)
   const message = [
     options.intro || 'Här är kortet jag menar:',
-    formatActionMessage(enrichedAction, payload.workspacePolicy, workspace)
+    formatActionMessage(enrichedAction, payload.workspacePolicy, workspace, review)
   ].join('\n\n')
   const posted = await sendDiscordMessage(message, targetChannelId, actionComponents(enrichedAction))
   state.postedActionIds = state.postedActionIds || {}
@@ -2508,6 +2515,138 @@ function shouldPostActionCard(action, workspace, targetChannelId) {
   return { ok: true, reason: 'passed' }
 }
 
+function reviewActionForPosting(action, workspace, targetChannelId, workspacePolicy = '') {
+  const profile = ensureWorkspaceProfile(workspace, targetChannelId)
+  const text = actionText(action)
+  const kind = actionKindForLearning(action)
+  const ledgerKey = actionLearningKey(action, workspace, targetChannelId)
+  const ledger = state.actionLedger?.[ledgerKey]
+  const targetUrl = String(action.targetUrl || action.url || '').trim()
+  const keyword = String(action.keyword || '').trim()
+  let score = 45
+  const positives = []
+  const negatives = []
+
+  if (targetUrl) {
+    score += 15
+    positives.push('har tydlig target-URL')
+  } else if (kind === 'new-page') {
+    score += 8
+    positives.push('är en ny sida/landningssida')
+  } else {
+    score -= 18
+    negatives.push('saknar tydlig target-URL')
+  }
+
+  const preferredHits = (profile.prefer || []).filter((term) => text.includes(normalizeForMatch(term)))
+  const avoidedHits = (profile.avoid || []).filter((term) => text.includes(normalizeForMatch(term)))
+  if (preferredHits.length) {
+    score += Math.min(30, preferredHits.length * 10)
+    positives.push(`matchar workspace-mål: ${preferredHits.slice(0, 3).join(', ')}`)
+  }
+  if (avoidedHits.length && !preferredHits.length) {
+    score -= 40
+    negatives.push(`drar mot lågprioriterat spår: ${avoidedHits.slice(0, 3).join(', ')}`)
+  }
+
+  if (isCodeAction(action)) {
+    score += 15
+    positives.push('kan bli en kod/commit-action')
+  } else if (isIndexingCheckAction(action)) {
+    score += 2
+    negatives.push('är kontrollarbete, inte direkt sidförbättring')
+  }
+
+  if (kind === 'content' || kind === 'new-page') score += 12
+  if (kind === 'internal-links') score += 5
+  if (kind === 'indexing') score -= 5
+
+  if (keyword) {
+    const metrics = action.keywordMetrics && typeof action.keywordMetrics === 'object' ? action.keywordMetrics : null
+    const volume = Number(metrics?.avgMonthlySearches || 0)
+    if (volume > 0) {
+      score += Math.min(20, Math.ceil(volume / 50))
+      positives.push(`har sökvolym (${volume}/mån)`)
+    } else if (/keyword|serp-gap|täck keyword|tack keyword/i.test(String(action.title || ''))) {
+      score -= 12
+      negatives.push('keyword saknar verifierad volym')
+    }
+  }
+
+  if (ledger?.status === 'completed' && !isLedgerRecheckDue(ledger)) {
+    score -= 80
+    negatives.push('liknande action är redan genomförd')
+  }
+  if (ledger?.status === 'deprioritized' && !isLedgerRecheckDue(ledger)) {
+    score -= 45
+    negatives.push('du har nyligen prioriterat bort liknande action')
+  }
+  if (ledger?.status === 'ignored' && !isLedgerRecheckDue(ledger)) {
+    score -= 55
+    negatives.push('du har nyligen skippat liknande action')
+  }
+  if (Number(ledger?.guardedCount || 0) >= 2 && !isLedgerRecheckDue(ledger)) {
+    score -= 35
+    negatives.push('har redan stoppats av agentens guard flera gånger')
+  }
+
+  const title = String(action.title || '')
+  if (title.length > 120) {
+    score -= 8
+    negatives.push('rubriken är onödigt lång')
+  }
+  if (!action.why && !action.recommendedAction) {
+    score -= 20
+    negatives.push('saknar tydlig motivering')
+  }
+
+  const recommendation = score >= 78 ? 'Approve' : score >= 55 ? 'Review' : score >= 40 ? 'Deprioritize' : 'Skip'
+  const ok = score >= 45 && recommendation !== 'Skip'
+  const reason = ok ? 'agent_review_passed' : `agent_review_rejected_${recommendation.toLowerCase()}`
+  return {
+    ok,
+    score,
+    recommendation,
+    reason,
+    kind,
+    positives: positives.slice(0, 4),
+    negatives: negatives.slice(0, 4),
+    why: action.why || priorityReasonFromReview(positives, negatives, workspacePolicy),
+    expectedWork: expectedWorkForAction(action, kind),
+    risk: riskForAction(action, kind, score),
+    decisionPrompt: decisionPromptForReview(recommendation)
+  }
+}
+
+function priorityReasonFromReview(positives, negatives, workspacePolicy) {
+  if (positives.length) return positives.join('; ')
+  if (workspacePolicy) return `matchar workspace-policy: ${String(workspacePolicy).slice(0, 160)}`
+  if (negatives.length) return `svagare kort: ${negatives.join('; ')}`
+  return 'ligger högt i SEO-kön och passerar agentens relevanskontroll'
+}
+
+function expectedWorkForAction(action, kind) {
+  if (isIndexingCheckAction(action)) return 'öppnar GSC/URL Inspection eller markerar kontrollen som hanterad'
+  if (kind === 'new-page') return 'skapar eller produktifierar en landningssida, bygger, committar och postar GitHub-länk'
+  if (kind === 'internal-links') return 'lägger relevanta interna länkar/CTA, bygger, committar och postar GitHub-länk'
+  if (kind === 'content') return 'uppdaterar copy, rubriker, metadata/CTA vid behov, bygger, committar och postar GitHub-länk'
+  return 'gör minsta säkra repoändring, bygger, committar och postar GitHub-länk'
+}
+
+function riskForAction(action, kind, score) {
+  if (isIndexingCheckAction(action)) return 'låg, ingen kodändring'
+  if (kind === 'new-page') return 'medium, ny sida och navigering kan påverka struktur'
+  if (score < 60) return 'medium, actionen behöver mänsklig bedömning innan kod'
+  return 'låg, främst content eller internlänkar'
+}
+
+function decisionPromptForReview(recommendation) {
+  if (recommendation === 'Approve') return 'Jag rekommenderar Approve.'
+  if (recommendation === 'Review') return 'Jag tycker den är rimlig, men vill att du bekräftar innan jag kodar.'
+  if (recommendation === 'Deprioritize') return 'Jag skulle normalt vänta med den här om du inte tycker den är viktig.'
+  return 'Jag rekommenderar Skip.'
+}
+
 function rememberGuardedAction(action, workspace, targetChannelId, reason) {
   recordActionLedger(action, workspace, targetChannelId, 'guarded', { reason })
   const key = actionLearningKey(action, workspace, targetChannelId)
@@ -2790,24 +2929,33 @@ function parseCommand(content) {
   }
 }
 
-function formatActionMessage(action, workspacePolicy, workspace) {
+function formatActionMessage(action, workspacePolicy, workspace, review = null) {
   if (isGscAuthAction(action)) return formatGscAuthMessage(action, workspacePolicy, workspace)
   const showKeywordAsSearchTerm = shouldUseKeywordPlannerMetrics(action)
+  const label = workspace?.label || action.workspaceSlug || action.projectSlug || 'workspace'
+  const why = review?.why || action.why || 'Passerar SEO-agentens relevanskontroll.'
+  const expectedWork = review?.expectedWork || (isCodeAction(action) ? 'gör en repoändring, bygger, committar och postar GitHub-länk' : 'hanterar kontrollen och markerar nästa steg')
+  const risk = review?.risk || 'okänd'
+  const recommendation = review?.recommendation || (isCodeAction(action) ? 'Review' : 'Review')
+  const score = Number.isFinite(Number(review?.score)) ? ` · score ${Math.round(Number(review.score))}` : ''
   const lines = [
-    `SEO action: ${action.title || 'Untitled'}`,
-    `ID: \`${action.id}\``,
-    `Workspace: ${workspace?.label || action.workspaceSlug || action.projectSlug || 'unknown'}`,
-    `Priority: ${action.priority || 'medium'}`,
+    `Nästa beslut för ${label}`,
+    '',
+    `Jag rekommenderar: ${recommendation}${score}`,
+    `Kort: ${action.title || 'Untitled'}`,
     action.targetUrl ? `URL: ${action.targetUrl}` : '',
     action.keyword ? `${showKeywordAsSearchTerm ? 'Keyword' : 'Focus'}: ${action.keyword}` : '',
     showKeywordAsSearchTerm ? formatKeywordMetricsLine(action) : '',
     '',
-    `Why: ${action.why || 'Ingen förklaring sparad.'}`,
-    `Recommended: ${action.recommendedAction || 'Review action.'}`,
-    workspacePolicy ? `Policy: ${workspacePolicy}` : '',
+    `Varför: ${String(why).slice(0, 360)}`,
+    `Vad jag gör om du godkänner: ${expectedWork}.`,
+    `Risk: ${risk}.`,
+    action.recommendedAction ? `Detalj: ${String(action.recommendedAction).slice(0, 420)}` : '',
+    review?.negatives?.length ? `Notis: ${review.negatives.join('; ')}` : '',
     '',
+    `ID: \`${action.id}\``,
     isCodeAction(action)
-      ? `Svara: \`approve ${action.id}\`, \`skip ${action.id}\`, \`deprioritize ${action.id}\` eller \`why ${action.id}\`.`
+      ? `Välj: Approve om jag ska koda och committa, Skip om irrelevant, Deprioritize om den kan vänta, eller Why för mer kontext.`
       : `Det här är en GSC/browser-check, inte en kodaction. Tryck Open in GSC för att öppna Search Console-fönstret, eller svara: \`skip ${action.id}\` när den är hanterad, \`deprioritize ${action.id}\` om den kan vänta, eller \`why ${action.id}\`.`
   ]
   return lines.filter(Boolean).join('\n').slice(0, 1900)
