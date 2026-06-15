@@ -12,7 +12,7 @@ const input = JSON.parse(readFileSync(inputPath, 'utf8'))
 const container = process.env.SEO_AGENT_GSC_FIREFOX_CONTAINER || 'seo-agent-gsc-browser-plain'
 const command = String(input.command || '').trim()
 
-if (!['doctor', 'open-property', 'inspect-url', 'observe', 'open-url', 'current-url'].includes(command)) throw new Error(`Unsupported command: ${command}`)
+if (!['doctor', 'open-property', 'inspect-url', 'observe', 'open-url', 'current-url', 'complete-oauth'].includes(command)) throw new Error(`Unsupported command: ${command}`)
 const result = await run(command, input)
 console.log(JSON.stringify(result, null, 2))
 
@@ -35,6 +35,7 @@ async function run(command, input) {
     const currentUrl = await readFirefoxCurrentUrl()
     return { ok: true, command, currentUrl }
   }
+  if (command === 'complete-oauth') return completeOauthFlow()
   assertWorkspaceUrl(input)
   const gscProperty = normalizeGscProperty(String(input.gscProperty || '').trim(), input)
   const targetUrl = String(input.targetUrl || '').trim()
@@ -146,7 +147,6 @@ async function restartFirefoxUrl(url) {
 }
 
 async function novncInspectUrl(targetUrl, strategy = 'top_search_click') {
-  await copyToClipboard(targetUrl)
   const browser = await launchChromium()
   try {
     const page = await openNovncPage(browser)
@@ -165,7 +165,7 @@ async function novncInspectUrl(targetUrl, strategy = 'top_search_click') {
     await page.waitForTimeout(500)
     await wtypeKeys(['-M', 'ctrl', '-k', 'a', '-m', 'ctrl'])
     await sleep(300)
-    await wtypeKeys(['-M', 'ctrl', '-k', 'v', '-m', 'ctrl'])
+    await wtypeText(targetUrl)
     await sleep(300)
     await wtypeKeys(['-k', 'Return'])
     await page.waitForTimeout(8000)
@@ -185,10 +185,61 @@ async function readFirefoxCurrentUrl() {
     'sleep 0.7',
     'wtype -M ctrl -k c -m ctrl',
     'sleep 1',
-    'wl-paste'
+    'url=$(wl-paste)',
+    'wtype -k Escape',
+    'printf %s "$url"'
   ].join('; ')
   const result = await runDocker(['exec', '-u', 'abc', container, 'sh', '-lc', script])
   return result.stdout.trim()
+}
+
+async function completeOauthFlow() {
+  const browser = await launchChromium()
+  const attempts = []
+  try {
+    const page = await openNovncPage(browser)
+    await page.keyboard.press('Escape').catch(() => null)
+    await page.waitForTimeout(700)
+    const actions = [
+      { name: 'account_row', type: 'click', x: 820, y: 322, wait: 4500 },
+      { name: 'unverified_app_continue', type: 'click', x: 835, y: 508, wait: 4500 },
+      { name: 'consent_scroll', type: 'wheel', deltaY: 900, wait: 1200 },
+      { name: 'consent_primary_bottom', type: 'click', x: 930, y: 640, wait: 4500 },
+      { name: 'allow_scroll', type: 'wheel', deltaY: 900, wait: 1200 },
+      { name: 'allow_primary_bottom', type: 'click', x: 930, y: 640, wait: 4500 }
+    ]
+    for (const action of actions) {
+      await wtypeKeys(['-k', 'Escape']).catch(() => null)
+      await page.waitForTimeout(500)
+      if (action.type === 'wheel') {
+        await page.mouse.wheel(0, action.deltaY)
+      } else {
+        await page.mouse.click(action.x, action.y)
+      }
+      await page.waitForTimeout(action.wait)
+      const currentUrl = await readFirefoxCurrentUrl().catch(() => '')
+      attempts.push({ step: action.name, currentUrl: safeUrlPreview(currentUrl) })
+      if (/[\?&]code=/.test(currentUrl) || /oauth\/gsc\/callback|api\/gsc\/callback/.test(currentUrl)) {
+        return { ok: true, command: 'complete-oauth', status: 'callback_reached', currentUrl, attempts }
+      }
+      if (/signin\/oauth\/error|redirect_uri_mismatch|access_denied/.test(currentUrl)) {
+        return { ok: false, command: 'complete-oauth', status: 'oauth_error', currentUrl, attempts }
+      }
+      if (/\/signin\/(?:v2\/)?(?:identifier|challenge|rejected|pwd)|\/signin\/v2\/challenge|password|2fa|twofactor/i.test(currentUrl) && !/accountchooser/i.test(currentUrl)) {
+        return { ok: false, command: 'complete-oauth', status: 'manual_login_required', currentUrl: safeUrlPreview(currentUrl), attempts }
+      }
+    }
+    const currentUrl = await readFirefoxCurrentUrl().catch(() => '')
+    return { ok: false, command: 'complete-oauth', status: 'callback_not_reached', currentUrl: safeUrlPreview(currentUrl), attempts }
+  } finally {
+    await browser.close()
+  }
+}
+
+function safeUrlPreview(value) {
+  const text = String(value || '')
+  if (!text) return ''
+  return text.replace(/([?&](code|access_token|refresh_token)=)[^&]+/gi, '$1[redacted]').slice(0, 500)
 }
 
 async function openNovncPage(browser) {
@@ -236,11 +287,11 @@ function analyzeInspectionScreenshot(path) {
   try {
     const image = PNG.sync.read(readFileSync(path))
     const greenPixels = countPixels(image, {
-      x1: 360, y1: 280, x2: 500, y2: 410,
+      x1: 360, y1: 220, x2: 520, y2: 470,
       test: (r, g, b) => g >= 115 && r <= 90 && b <= 120 && g > r * 1.6 && g > b * 1.4
     })
     const redOrangePixels = countPixels(image, {
-      x1: 360, y1: 280, x2: 500, y2: 410,
+      x1: 360, y1: 220, x2: 520, y2: 470,
       test: (r, g, b) => r >= 150 && g >= 70 && g <= 180 && b <= 90
     })
     const urlInspectionChrome = countPixels(image, {
@@ -311,21 +362,10 @@ async function focusUrlInspectionBox(targetUrl) {
   // does not click Request indexing yet.
   await wtypeKeys(['-k', 'Escape'])
   await sleep(300)
-  await copyToClipboard(targetUrl)
   await wtypeText('/')
   await sleep(300)
-  await wtypeKeys(['-M', 'ctrl', 'v', '-m', 'ctrl'])
+  await wtypeText(targetUrl)
   await sleep(300)
-  await wtypeKeys(['-k', 'Return'])
-}
-
-async function copyToClipboard(text) {
-  await runDocker(['exec', '-u', 'abc', container, 'sh', '-lc', `export XDG_RUNTIME_DIR=/config/.XDG; export WAYLAND_DISPLAY=wayland-1; printf %s ${shellQuote(text)} | wl-copy`])
-}
-
-async function wtypeUrl(url) {
-  await wtypeKeys(['-M', 'ctrl', 'l', '-m', 'ctrl'])
-  await wtypeText(url)
   await wtypeKeys(['-k', 'Return'])
 }
 

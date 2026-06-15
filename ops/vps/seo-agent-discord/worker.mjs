@@ -3309,11 +3309,38 @@ async function openGscOauthInFirefox() {
     startedAt: new Date().toISOString()
   }
   saveState()
+  const completed = await runGscFirefoxUiTool({ command: 'complete-oauth' }).catch((error) => ({ ok: false, status: 'complete_oauth_failed', error: error?.message || String(error) }))
+  const completedCode = completed.ok ? extractGscOauthCode(completed.currentUrl || '') : ''
+  if (completedCode) {
+    try {
+      const token = await exchangeGscOauthCode(completedCode)
+      if (token.refreshToken) {
+        saveGscRefreshToken(token.refreshToken)
+        const doctor = await runGscUrlInspectionApi({ command: 'doctor' }).catch((error) => ({ ok: false, error: error?.message || String(error) }))
+        state.pendingBrowserOauth = null
+        saveState()
+        return [
+          'GSC OAuth öppnades, agenten nådde callbacken själv och refresh-token är sparad.',
+          doctor.ok ? 'URL Inspection API är redo.' : `URL Inspection API är fortfarande inte redo: ${doctor.error || doctor.status || 'okänt fel'}`
+        ].join('\n')
+      }
+    } catch (error) {
+      return `GSC OAuth nådde callback, men token-växlingen misslyckades: ${error?.message || String(error)}`
+    }
+    return [
+      'GSC OAuth öppnades och agenten nådde callbacken själv.',
+      'Skriv `klart` om du vill att jag läser callbacken igen, annars sparar jag token när Discord-kommandot körs med callback-code.',
+      'Notis: om callbacken hanteras av den publika SEO API:n kan token redan vara sparad där.'
+    ].join('\n')
+  }
   return [
     'GSC OAuth är öppnad i noVNC-Firefox.',
+    completed.status === 'manual_login_required' ? 'Google kräver manuell login/2FA; jag stoppar där av säkerhetsskäl.' : '',
+    completed.status === 'callback_not_reached' ? 'Jag försökte välja konto/godkänna automatiskt men nådde inte callback ännu.' : '',
+    completed.status === 'oauth_error' ? 'Google visade OAuth-fel; be mig köra doctor om du vill se aktuell URL.' : '',
     'Om Google redan är inloggat kan agenten läsa callbacken själv när den landar på localhost.',
     'Om Google kräver manuell godkänning: gör den i Firefox-fönstret och skriv “klart” här, så läser jag callbacken och sparar token.'
-  ].join('\n')
+  ].filter(Boolean).join('\n')
 }
 
 async function readGscOauthFromFirefox(message, targetChannelId) {
