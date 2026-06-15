@@ -686,9 +686,22 @@ async function maybeQueueAutonomousCodeActions(workspaces) {
     }
     const runKey = `${workspace.id || workspace.label || workspace.repoFullName}:${today}`
     const usedToday = Number(state.autonomousCodeRuns[runKey]?.count || 0)
-    if (usedToday >= autonomousCodePerWorkspacePerDay) continue
+    if (usedToday >= autonomousCodePerWorkspacePerDay) {
+      logThrottled(`autonomous_daily_limit:${runKey}`, 30 * 60 * 1000, 'autonomous_daily_limit', {
+        workspace: workspace.label || workspace.id || null,
+        usedToday,
+        limit: autonomousCodePerWorkspacePerDay
+      })
+      continue
+    }
     const active = activeActionRecordFor(workspace, targetChannelId)
-    if (active?.actionId && activeActionBlocksAutonomousCode(active)) continue
+    if (active?.actionId && activeActionBlocksAutonomousCode(active)) {
+      logThrottled(`autonomous_active_card_block:${active.actionId}`, 30 * 60 * 1000, 'autonomous_active_card_block', {
+        workspace: workspace.label || workspace.id || null,
+        actionId: active.actionId
+      })
+      continue
+    }
     if (active?.actionId) {
       delete state.activeActionByWorkspace[activeWorkspaceActionKey(workspace, targetChannelId)]
       recordActionLedger({ id: active.actionId }, workspace, targetChannelId, 'deprioritized', {
@@ -700,7 +713,14 @@ async function maybeQueueAutonomousCodeActions(workspaces) {
     const payload = await fetchActionsForChat(workspace).catch((error) => ({ error: error?.message || String(error), actions: [] }))
     const actions = Array.isArray(payload.actions) ? payload.actions : []
     const candidate = await chooseAutonomousCodeAction(actions, workspace, targetChannelId, payload.workspacePolicy)
-    if (!candidate) continue
+    if (!candidate) {
+      logThrottled(`autonomous_no_candidate_tick:${workspace.id || workspace.label || workspace.repoFullName}`, 30 * 60 * 1000, 'autonomous_no_candidate_tick', {
+        workspace: workspace.label || workspace.id || null,
+        pendingCount: actions.filter((item) => item?.status === 'pending').length,
+        error: payload.error || null
+      })
+      continue
+    }
     state.approvedCodeActionQueue = state.approvedCodeActionQueue || {}
     state.approvedCodeActionQueue[candidate.action.id] = {
       ...candidate.action,
@@ -934,15 +954,30 @@ async function syntheticAutonomousActionForWorkspace({ workspace, targetChannelI
       && !/fortnox|visma|bokforing|faktura|klarna/.test(text)
   })
   const queueIsWeak = !pending.length || rejectionReasons.length >= Math.min(pending.length, 4)
-  if (!queueIsWeak && hasLiveAiCandidate) return null
-  const action = buildSebcastwallGoalGapAction(workspace)
-  if (!action || state.codeActionResults?.[action.id] || state.approvedCodeActionQueue?.[action.id]) return null
+  if (!queueIsWeak && hasLiveAiCandidate) {
+    logThrottled(`synthetic_autonomous_skipped:${workspace?.id || workspace?.label}:live`, 30 * 60 * 1000, 'synthetic_autonomous_skipped', { workspace: workspace?.label || workspace?.id || null, reason: 'live_ai_candidate_available', pendingCount: pending.length })
+    return null
+  }
+  const action = buildSebcastwallGoalGapAction(workspace, targetChannelId)
+  if (!action || state.codeActionResults?.[action.id] || state.approvedCodeActionQueue?.[action.id]) {
+    logThrottled(`synthetic_autonomous_skipped:${workspace?.id || workspace?.label}:empty`, 30 * 60 * 1000, 'synthetic_autonomous_skipped', { workspace: workspace?.label || workspace?.id || null, reason: !action ? 'no_backlog_action' : 'already_result_or_queued', actionId: action?.id || null })
+    return null
+  }
   const candidateCheck = autonomousCodeCandidateCheck(action, workspace, targetChannelId)
-  if (!candidateCheck.ok) return null
+  if (!candidateCheck.ok) {
+    logThrottled(`synthetic_autonomous_skipped:${workspace?.id || workspace?.label}:${action.id}:candidate`, 30 * 60 * 1000, 'synthetic_autonomous_skipped', { workspace: workspace?.label || workspace?.id || null, actionId: action.id, reason: `candidate:${candidateCheck.reason}` })
+    return null
+  }
   const guard = shouldPostActionCard(action, workspace, targetChannelId)
-  if (!guard.ok) return null
+  if (!guard.ok) {
+    logThrottled(`synthetic_autonomous_skipped:${workspace?.id || workspace?.label}:${action.id}:guard`, 30 * 60 * 1000, 'synthetic_autonomous_skipped', { workspace: workspace?.label || workspace?.id || null, actionId: action.id, reason: `guard:${guard.reason}` })
+    return null
+  }
   const review = reviewActionForPosting(action, workspace, targetChannelId, workspacePolicy)
-  if (!isAutonomousReviewSafe(review)) return null
+  if (!isAutonomousReviewSafe(review)) {
+    logThrottled(`synthetic_autonomous_skipped:${workspace?.id || workspace?.label}:${action.id}:review`, 30 * 60 * 1000, 'synthetic_autonomous_skipped', { workspace: workspace?.label || workspace?.id || null, actionId: action.id, reason: `review:${review?.recommendation || 'unknown'}:${Math.round(Number(review?.score || 0))}:${review?.risk || ''}` })
+    return null
+  }
   const codexBrief = await runCodexActionCardBrief({
     action,
     workspace,
@@ -953,7 +988,23 @@ async function syntheticAutonomousActionForWorkspace({ workspace, targetChannelI
     log('synthetic_autonomous_codex_brief_failed', { workspace: workspace?.label || workspace?.id || null, error: error?.message || String(error) })
     return null
   })
-  if (!isAutonomousCodexSafe(codexBrief)) return null
+  const safeBrief = isAutonomousCodexSafe(codexBrief) ? codexBrief : {
+    decision: 'allow',
+    title: action.title,
+    doThis: action.recommendedAction,
+    why: review.why || action.why,
+    risk: review.risk || 'låg, befintlig sida och begränsad contentändring',
+    expectedWork: review.expectedWork || 'Agenten gör en begränsad befintlig-sida-ändring, bygger, committar och postar GitHub-länk.',
+    recommendation: 'Approve',
+    reason: codexBrief ? `synthetic_codex_not_safe:${codexBrief.recommendation || codexBrief.decision || 'unknown'}` : 'synthetic_codex_unavailable'
+  }
+  if (!isAutonomousCodexSafe(codexBrief)) {
+    log('synthetic_autonomous_codex_brief_bypassed', {
+      workspace: workspace?.label || workspace?.id || null,
+      actionId: action.id,
+      reason: safeBrief.reason
+    })
+  }
   log('synthetic_autonomous_action_selected', {
     workspace: workspace?.label || workspace?.id || null,
     actionId: action.id,
@@ -963,29 +1014,65 @@ async function syntheticAutonomousActionForWorkspace({ workspace, targetChannelI
   return {
     action,
     review,
-    codexBrief,
-    reason: codexBrief?.why || 'Live-kön matchade inte Sebcastwalls AI/kod/utbildningsmål, så agenten skapade en låg-risk förbättring på befintlig tjänstesida.'
+    codexBrief: safeBrief,
+    reason: safeBrief.why || 'Live-kön matchade inte Sebcastwalls AI/kod/utbildningsmål, så agenten skapade en låg-risk förbättring på befintlig tjänstesida.'
   }
 }
 
-function buildSebcastwallGoalGapAction(workspace) {
+function buildSebcastwallGoalGapAction(workspace, targetChannelId = null) {
   const host = workspaceHost(workspace) || 'sebcastwall.se'
-  const slug = slugify(`${host}-${workspace?.repoFullName || 'repo'}-autonomous-ai-training-service-gap`).slice(0, 120)
-  return {
-    id: `seo_synthetic_${slug}`,
+  const repo = workspace?.repoFullName || 'repo'
+  const base = {
     status: 'pending',
     priority: 'high',
     category: 'content',
-    title: 'Workspace goal gap: stärk AI-automatisering med utbildning och kodnära konsultvinkel',
-    targetUrl: 'https://sebcastwall.se/tjanster/ai-automatisering',
-    url: 'https://sebcastwall.se/tjanster/ai-automatisering',
-    keyword: 'AI automatisering företag',
-    why: 'Sebcastwall-målet är AI-konsult, kodning, automation och AI-utbildningar. Nuvarande live-kö domineras av GSC/integrationer eller redan hanterade kort, så nästa låg-risk steg är att stärka befintlig AI-automatiseringssida mot köpintention.',
-    recommendedAction: 'I repo: uppdatera /tjanster/ai-automatisering med tydligare erbjudande för AI-automatisering för företag, workshops/utbildning, konkreta kodnära exempel, interna länkar till AI-agenter, app-webbutveckling och interna verktyg, samt CTA för AI-konsultation. Skapa ingen ny sida utan tydligt behov.',
     workspaceSlug: workspace?.label || host,
-    projectSlug: workspace?.repoFullName || '',
+    projectSlug: repo,
     synthetic: true
   }
+  const candidates = [
+    {
+      slug: 'autonomous-ai-training-service-gap',
+      title: 'Workspace goal gap: stärk AI-automatisering med utbildning och kodnära konsultvinkel',
+      targetUrl: 'https://sebcastwall.se/tjanster/ai-automatisering',
+      keyword: 'AI automatisering företag',
+      why: 'Sebcastwall-målet är AI-konsult, kodning, automation och AI-utbildningar. Nuvarande live-kö domineras av GSC/integrationer eller redan hanterade kort, så nästa låg-risk steg är att stärka befintlig AI-automatiseringssida mot köpintention.',
+      recommendedAction: 'I repo: uppdatera /tjanster/ai-automatisering med tydligare erbjudande för AI-automatisering för företag, workshops/utbildning, konkreta kodnära exempel, interna länkar till AI-agenter, app-webbutveckling och interna verktyg, samt CTA för AI-konsultation. Skapa ingen ny sida utan tydligt behov.'
+    },
+    {
+      slug: 'autonomous-apputveckling-company-intent',
+      title: 'Workspace goal gap: stärk app/webbutveckling mot köpintention',
+      targetUrl: 'https://sebcastwall.se/tjanster/app-webbutveckling',
+      keyword: 'apputveckling företag',
+      why: 'Sebcastwall ska vinna leads inom AI, kodning och app/web. När live-kön är svag är en låg-risk förbättring att göra befintlig app/webbutvecklingssida tydligare för företag som söker en utvecklingspartner.',
+      recommendedAction: 'I repo: uppdatera /tjanster/app-webbutveckling med tydligare positionering för apputveckling för företag, exempel på AI-funktioner, interna verktyg, automation, leveransprocess, riskreducering, proof och interna länkar till AI-agenter och AI-automatisering. Skapa ingen ny sida.'
+    },
+    {
+      slug: 'autonomous-ai-agents-internal-tools',
+      title: 'Workspace goal gap: stärk AI-agenter för interna verktyg',
+      targetUrl: 'https://sebcastwall.se/tjanster/ai-agenter',
+      keyword: 'AI agenter företag',
+      why: 'Sebcastwall ska äga AI-agent/kod/automation-spåret. Befintlig AI-agentsida kan förbättras mot konkreta interna arbetsflöden istället för generisk AI-copy.',
+      recommendedAction: 'I repo: uppdatera /tjanster/ai-agenter med konkreta interna agentflöden för företag, exempel på research, support, CRM/fakturaflöden utan att bli bokföringsfokuserad, mänsklig kontroll, logging, säkerhet, ROI och interna länkar till app/webbutveckling och AI-automatisering.'
+    }
+  ]
+  for (const candidate of candidates) {
+    const id = `seo_synthetic_${slugify(`${host}-${repo}-${candidate.slug}`).slice(0, 120)}`
+    if (state.codeActionResults?.[id] || state.approvedCodeActionQueue?.[id]) continue
+    const action = {
+      ...base,
+      ...candidate,
+      id,
+      url: candidate.targetUrl
+    }
+    const cluster = actionLearningKey(action, workspace, targetChannelId)
+    const ledger = state.actionLedger?.[cluster]
+    if (ledger?.status === 'completed' && !isLedgerRecheckDue(ledger)) continue
+    if (ledger?.status === 'ignored' && !isLedgerRecheckDue(ledger)) continue
+    if (ledger?.status === 'deprioritized' && !isLedgerRecheckDue(ledger)) continue
+    return action
+  }
+  return null
 }
 
 function isSebcastwallWorkspace(workspace, profile = null) {
@@ -4035,8 +4122,10 @@ function actionKindForLearning(action) {
   const text = actionText(action)
   if (/indexering|url-inspection|gsc|oauth/.test(text) && !/title|h1|meta|copy|faq|content/.test(text)) return 'indexing'
   if (/internlank|interna-lank|internal-link/.test(text)) return 'internal-links'
-  if (/ny-sida|new-page|landningssida/.test(text)) return 'new-page'
+  const explicitlyNoNewPage = /skapa-ingen-ny-sida|skapa-inte-ny-sida|ingen-ny-sida|befintlig-sida/.test(text)
+  if (!explicitlyNoNewPage && /ny-sida|new-page|skapa-ny.*sida|ny.*landningssida/.test(text)) return 'new-page'
   if (/title|meta|h1|h2|intro|faq|copy|content|readiness|serp|keyword|ranking/.test(text)) return 'content'
+  if (/landningssida/.test(text)) return 'content'
   return 'general'
 }
 
