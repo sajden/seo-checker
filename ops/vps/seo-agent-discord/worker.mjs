@@ -1738,7 +1738,7 @@ async function handleChatMessage(content, message, targetChannelId) {
     await sendDiscordMessage(formatCodexUsageSummary(), targetChannelId)
     return
   }
-  if (/^(vilket|vilket kort\??|visa kort(et)?\??|skicka kort(et)? igen\??|posta kort(et)? igen\??|nästa steg\??|nasta steg\??|vad är nästa steg\??|vad ar nasta steg\??)$/i.test(trimmed)) {
+  if (/^(vilket|vilket kort\??|visa kort(et)?\??|skicka kort(et)? igen\??|posta kort(et)? igen\??)$/i.test(trimmed)) {
     const workspace = workspaceForChannel(targetChannelId)
     const actions = await fetchActionsForChat(workspace)
     const activeRecord = activeActionRecordFor(workspace, targetChannelId)
@@ -1766,7 +1766,7 @@ async function handleChatMessage(content, message, targetChannelId) {
     return false
   })
   if (operatorIntentHandled) return
-  if (/gsc|search console|koppling|oauth/i.test(trimmed)) {
+  if (/^(var|vart|hur)\s+(kopplar|connectar|ansluter)\s+(jag\s+)?(gsc|search console)|^(gsc|search console)\s+(hjälp|help|koppling)$/i.test(trimmed)) {
     await sendDiscordMessage('GSC kopplas i Dashboard2 -> SEO Monitor -> Integrations -> Google Search Console. Skriv `gsc oauth` här så postar jag kopplingslänken. Om OAuth/token fallerar behandlar jag det som integrationsfel, inte som content-commit.', targetChannelId)
     return
   }
@@ -2082,7 +2082,8 @@ async function runCodexWorkspaceChat(context) {
   const promptPath = join(stateDir, 'codex-chat-prompt.md')
   const prompt = [
     'Du är SEO Agent i Discord/Hermes. Svara på svenska som en praktisk senior SEO/kod-agent.',
-    'Du kan ha vanlig konversation och strategiskt resonemang, men håll svaret konkret.',
+    'Du kan och ska ha vanlig konversation. Kommandon är genvägar, inte huvudgränssnittet. Om användaren frågar något, svara direkt först.',
+    'Du kan ha strategiskt resonemang, men håll svaret konkret.',
     'Du är inte bara en kommandobot. Om användaren frågar vad som är smart ska du resonera utifrån mål, workspace-policy, kö, repo och datastatus.',
     'Använd workspace-kontexten. Om användaren ger riktning, bekräfta vad du sparar och hur det ändrar prioritering.',
     'Om befintlig kö inte matchar användarens riktning, säg det tydligt och föreslå att skapa research/new-page-action eller deprioritera fel action.',
