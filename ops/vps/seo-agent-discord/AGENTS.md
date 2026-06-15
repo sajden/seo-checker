@@ -44,6 +44,7 @@ The agent should self-heal before asking the operator for help:
 3. Block bad outbound messages before posting.
 4. Use Codex self-repair for repeatable code/runtime bugs.
 5. Post a recovery notice when a previously broken workspace becomes ready again.
+6. Poll workspace GSC issue sources periodically. If a platform issue endpoint returns indexing/canonical/noindex/404 issues, convert them into the same reviewable action cards as pasted Search Console warnings. If no issue endpoint exists, record that as an integration gap instead of inventing issues.
 
 ## Super Agent State
 
@@ -72,6 +73,7 @@ Examples:
 
 - "den är indexerad" closes the active indexing check.
 - Pasted Google Search Console warnings are operational SEO issues, not ordinary chat. Parse known issue text such as "Duplicate, Google chose different canonical than user" into a concrete technical action card for the current workspace.
+- Automatically fetched Google Search Console issues should be described as: "Jag hittade detta GSC-fel" + concrete issue + proposed repo fix. The operator should be able to Approve/Skip/Deprioritize the fix like any other card.
 - "det där är redan gjort" marks the active action handled or asks for confirmation if ambiguous.
 - "vänta med den" deprioritizes the active action.
 

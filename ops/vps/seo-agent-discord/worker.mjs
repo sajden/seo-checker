@@ -17,6 +17,7 @@ const pollMs = Number(env.SEO_AGENT_POLL_MS || '60000')
 const dailyHourUtc = Number(env.SEO_AGENT_DAILY_HOUR_UTC || '4')
 const runCheckEveryMs = Number(env.SEO_AGENT_RUN_CHECK_MS || '900000')
 const integrationDoctorEveryMs = Number(env.SEO_AGENT_INTEGRATION_DOCTOR_MS || '21600000')
+const gscIssueCheckEveryMs = Number(env.SEO_AGENT_GSC_ISSUE_CHECK_MS || String(6 * 60 * 60 * 1000))
 const activeActionReminderMs = Number(env.SEO_AGENT_ACTIVE_ACTION_REMINDER_MS || String(6 * 60 * 60 * 1000))
 const staleRunningMs = Number(env.SEO_AGENT_STALE_RUNNING_MS || String(2 * 60 * 60 * 1000))
 const staleQueuedApprovedMs = Number(env.SEO_AGENT_STALE_APPROVED_QUEUE_MS || String(36 * 60 * 60 * 1000))
@@ -56,6 +57,7 @@ async function tick() {
   const workspaces = await listWorkspaces()
   await ensureDailyRunsForWorkspaces(workspaces)
   await postReadinessForWorkspaces(workspaces)
+  await checkGscIssuesForWorkspaces(workspaces)
   await postPendingActionsForWorkspaces(workspaces)
   await maybePrepareAutonomousCodeWork(workspaces)
   await maybeRunIntegrationDoctor(workspaces)
@@ -261,6 +263,194 @@ async function postPendingActionsForWorkspaces(workspaces) {
       log('workspace_actions_fetch_failed', { workspace: workspace.label || workspace.id, error: error?.message || String(error), selfHeal: healed })
     }
   }
+}
+
+async function checkGscIssuesForWorkspaces(workspaces) {
+  if (!automationEnabled || !workspaces.length) return
+  const now = Date.now()
+  if (state.lastGscIssueCheckAt && now - Date.parse(state.lastGscIssueCheckAt) < gscIssueCheckEveryMs) return
+  state.lastGscIssueCheckAt = new Date(now).toISOString()
+  state.gscIssueFetchStatus = state.gscIssueFetchStatus || {}
+  state.gscIssueSeen = state.gscIssueSeen || {}
+  for (const workspace of workspaces) {
+    const targetChannelId = await channelForWorkspace(workspace)
+    if (!targetChannelId || !workspace?.gscProperty) continue
+    const result = await fetchGscIssuesForWorkspace(workspace).catch((error) => ({ ok: false, issues: [], error: error?.message || String(error), source: null }))
+    state.gscIssueFetchStatus[workspace.id || workspace.label || workspace.gscProperty] = {
+      ok: result.ok,
+      source: result.source || null,
+      count: Array.isArray(result.issues) ? result.issues.length : 0,
+      error: result.error || null,
+      checkedAt: new Date().toISOString()
+    }
+    if (!result.ok) {
+      logThrottled(`gsc_issue_fetch_unavailable:${workspace.id || workspace.label || workspace.gscProperty}`, 24 * 60 * 60 * 1000, 'gsc_issue_fetch_unavailable', {
+        workspace: workspace.label || workspace.id,
+        gscProperty: workspace.gscProperty,
+        error: result.error || 'unknown'
+      })
+      continue
+    }
+    for (const rawIssue of result.issues.slice(0, 8)) {
+      const issue = normalizeGscIssue(rawIssue, workspace)
+      if (!issue) continue
+      const action = createGscIssueAction(issue, workspace, targetChannelId, { source: result.source || 'gsc_issue_poll' })
+      if (hasSeenGscIssueAction(action, workspace, issue)) continue
+      await postGscIssueAction({ action, issue, workspace, targetChannelId, sourceLabel: `GSC issue hittad automatiskt (${result.source || 'platform'})` })
+    }
+  }
+  pruneSeenGscIssues()
+  saveState()
+}
+
+async function fetchGscIssuesForWorkspace(workspace) {
+  const params = new URLSearchParams({
+    gscProperty: workspace.gscProperty || '',
+    repoFullName: workspace.repoFullName || '',
+    branch: workspace.branch || 'main',
+    limit: '25'
+  })
+  const paths = [
+    `/api/platform/seo-monitor/gsc/issues?${params.toString()}`,
+    `/api/platform/seo-monitor/gsc/indexing-issues?${params.toString()}`,
+    `/api/platform/integrations/gsc/issues?${params.toString()}`
+  ]
+  const failures = []
+  for (const path of paths) {
+    try {
+      const payload = await fetchPlatformJson(path)
+      const issues = extractGscIssuesFromPayload(payload)
+      return { ok: true, source: path.split('?')[0], issues }
+    } catch (error) {
+      failures.push(error?.message || String(error))
+    }
+  }
+  return {
+    ok: false,
+    issues: [],
+    source: null,
+    error: failures.some((failure) => /platform_404/i.test(failure))
+      ? 'no_gsc_issue_endpoint'
+      : failures.slice(0, 2).join(' | ') || 'gsc_issue_fetch_failed'
+  }
+}
+
+function extractGscIssuesFromPayload(payload) {
+  const candidates = [
+    payload?.issues,
+    payload?.gscIssues,
+    payload?.indexingIssues,
+    payload?.coverageIssues,
+    payload?.items,
+    payload?.data?.issues,
+    payload?.data?.items
+  ]
+  const found = candidates.find((value) => Array.isArray(value))
+  return found || []
+}
+
+function normalizeGscIssue(rawIssue, workspace) {
+  if (!rawIssue) return null
+  if (typeof rawIssue === 'string') return parseGscIssueMessage(rawIssue)
+  const text = [
+    rawIssue.title,
+    rawIssue.reason,
+    rawIssue.issue,
+    rawIssue.issueType,
+    rawIssue.type,
+    rawIssue.coverageState,
+    rawIssue.verdict,
+    rawIssue.status,
+    rawIssue.message,
+    rawIssue.description
+  ].filter(Boolean).join(' ')
+  const parsed = parseGscIssueMessage(text)
+  if (parsed) {
+    return {
+      ...parsed,
+      affectedUrl: rawIssue.affectedUrl || rawIssue.url || rawIssue.pageUrl || rawIssue.exampleUrl || parsed.affectedUrl || (workspaceHost(workspace) ? `https://${workspaceHost(workspace)}/` : '')
+    }
+  }
+  if (!text.trim()) return null
+  return {
+    type: slugify(rawIssue.type || rawIssue.issueType || rawIssue.reason || rawIssue.title || 'gsc_indexing_issue'),
+    title: `GSC: ${String(rawIssue.title || rawIssue.reason || rawIssue.issueType || 'Indexeringsfel').slice(0, 120)}`,
+    severity: /error|invalid|blocked|excluded|duplicate|404|noindex/i.test(text) ? 'high' : 'medium',
+    affectedUrl: rawIssue.affectedUrl || rawIssue.url || rawIssue.pageUrl || rawIssue.exampleUrl || (workspaceHost(workspace) ? `https://${workspaceHost(workspace)}/` : ''),
+    reason: String(rawIssue.reason || rawIssue.message || rawIssue.description || text).slice(0, 500)
+  }
+}
+
+async function postGscIssueAction({ action, issue, workspace, targetChannelId, sourceLabel }) {
+  state.gscIssues = state.gscIssues || {}
+  state.gscIssues[action.id] = {
+    ...issue,
+    actionId: action.id,
+    workspaceId: workspace.id || null,
+    workspaceLabel: workspace.label || null,
+    channelId: targetChannelId,
+    receivedAt: new Date().toISOString(),
+    source: action.source || 'gsc_issue_poll'
+  }
+  ensureWorkspaceProfile(workspace, targetChannelId)
+  const review = reviewActionForPosting(action, workspace, targetChannelId, sourceLabel)
+  const posted = await sendDiscordMessage(formatActionMessage(action, sourceLabel, workspace, review), targetChannelId, actionComponents(action), { kind: 'action_card' })
+  state.postedActionIds = state.postedActionIds || {}
+  state.postedActionIds[action.id] = {
+    messageId: posted.id,
+    channelId: targetChannelId,
+    title: action.title,
+    workspaceId: workspace.id || null,
+    postedAt: new Date().toISOString()
+  }
+  state.activeActionByWorkspace = state.activeActionByWorkspace || {}
+  const activeKey = activeWorkspaceActionKey(workspace, targetChannelId)
+  state.activeActionByWorkspace[activeKey] = {
+    actionId: action.id,
+    messageId: posted.id,
+    channelId: targetChannelId,
+    workspaceId: workspace.id || null,
+    firstPostedAt: new Date().toISOString(),
+    postedAt: new Date().toISOString()
+  }
+  state.messageToAction = state.messageToAction || {}
+  state.messageToAction[posted.id] = action.id
+  rememberGscIssueAction(action, workspace, issue)
+  recordActionLedger(action, workspace, targetChannelId, 'posted', { source: action.source || 'gsc_issue_poll', issueType: issue.type, messageId: posted.id, review })
+  rememberAgentLesson(`GSC issue action posted for ${workspace.label || workspace.id}: ${issue.type}`)
+}
+
+function hasSeenGscIssueAction(action, workspace, issue) {
+  const key = gscIssueSeenKey(action, workspace, issue)
+  const seenAt = state.gscIssueSeen?.[key]?.seenAt
+  return Boolean(seenAt && Date.now() - Date.parse(seenAt) < 7 * 24 * 60 * 60 * 1000)
+}
+
+function rememberGscIssueAction(action, workspace, issue) {
+  state.gscIssueSeen = state.gscIssueSeen || {}
+  state.gscIssueSeen[gscIssueSeenKey(action, workspace, issue)] = {
+    actionId: action.id,
+    workspaceId: workspace?.id || null,
+    title: action.title,
+    seenAt: new Date().toISOString()
+  }
+}
+
+function gscIssueSeenKey(action, workspace, issue) {
+  return [
+    workspace?.id || workspace?.gscProperty || workspace?.label || 'workspace',
+    issue?.type || action?.category || 'gsc',
+    normalizeActionPath(issue?.affectedUrl || action?.targetUrl || action?.url || '/')
+  ].join(':')
+}
+
+function pruneSeenGscIssues() {
+  const entries = Object.entries(state.gscIssueSeen || {})
+  const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000
+  state.gscIssueSeen = Object.fromEntries(entries.filter(([, value]) => {
+    const seenAt = Date.parse(value?.seenAt || '')
+    return seenAt && seenAt > cutoff
+  }))
 }
 
 async function selfHealPlatformActionsFetch({ workspace, targetChannelId, error }) {
@@ -1432,7 +1622,7 @@ function parseGscIssueMessage(message) {
   return null
 }
 
-function createGscIssueAction(issue, workspace, targetChannelId) {
+function createGscIssueAction(issue, workspace, targetChannelId, options = {}) {
   const host = workspaceHost(workspace)
   const path = issue.affectedUrl ? normalizeActionPath(issue.affectedUrl) : '/'
   const id = `gsc_issue_${slugify(workspace?.label || host || targetChannelId)}_${slugify(issue.type)}_${slugify(path || 'site')}`.slice(0, 180)
@@ -1450,7 +1640,7 @@ function createGscIssueAction(issue, workspace, targetChannelId) {
     workspaceId: workspace?.id || null,
     workspaceSlug: workspace?.label || null,
     projectSlug: workspace?.repoFullName || null,
-    source: 'gsc_issue_message'
+    source: options.source || 'gsc_issue_message'
   }
 }
 

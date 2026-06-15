@@ -54,3 +54,4 @@ Focus on parking search intent, local/airport parking pages, indexability and co
 - Added lightweight screenshot classification with `pngjs`: green GSC URL Inspection status is classified as `indexed`.
 - Discord worker now marks stale indexing actions as handled when GSC UI verification returns `indexed` with confidence >= 0.8.
 - 2026-06-14: GSC issue text pasted in a workspace channel should become a structured `gsc_issue_*` action card. Duplicate canonical warnings should prompt a repo fix for canonical/alias routes and internal links, then build/commit/push.
+- 2026-06-15: SEO Agent now polls for workspace GSC issue endpoints every 6h (`SEO_AGENT_GSC_ISSUE_CHECK_MS`). It tries platform routes for `gsc/issues` and `gsc/indexing-issues`, normalizes returned issues into action cards, and dedupes for 7 days. If Platform API has no issue endpoint, the agent records `no_gsc_issue_endpoint` in state instead of making up GSC findings.
