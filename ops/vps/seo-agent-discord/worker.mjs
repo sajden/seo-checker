@@ -740,6 +740,8 @@ async function repoAutomationReady(repoFullName, branch = 'main') {
     const envPath = { ...process.env, PATH: `${process.env.HOME || '/home/deploy'}/.npm-global/bin:${process.env.HOME || '/home/deploy'}/.local/bin:${process.env.PATH || ''}` }
     const status = await exec('git', ['status', '--porcelain'], { cwd: repoDir, env: envPath, timeout: 60 * 1000, maxBuffer: 1024 * 1024 })
     if (String(status.stdout || '').trim()) return { ready: false, reason: `dirty_worktree:${repoName}` }
+    await exec('git', ['fetch', 'origin', branch], { cwd: repoDir, env: envPath, timeout: 2 * 60 * 1000, maxBuffer: 1024 * 1024 })
+    await exec('git', ['merge', '--ff-only', 'FETCH_HEAD'], { cwd: repoDir, env: envPath, timeout: 2 * 60 * 1000, maxBuffer: 1024 * 1024 })
     await exec('git', ['push', '--dry-run', 'origin', `HEAD:${branch}`], { cwd: repoDir, env: envPath, timeout: 2 * 60 * 1000, maxBuffer: 1024 * 1024 })
     return { ready: true, reason: 'ready' }
   } catch (error) {
