@@ -54,6 +54,9 @@ Runtime state in `state/state.json` now has three learning layers:
 - `workspaceProfiles`: durable workspace goals, preferred topics, avoided topics and autonomy mode.
 - `actionLedger`: action lifecycle memory keyed by workspace + target/topic + action type. This links posted cards, approvals, coding starts, commits, failures, skips and guarded cards.
 - `agentLessons`: short lessons learned from guarded, completed and failed actions.
+- `keywordMaps`: target keyword -> target URL ownership per workspace.
+- `seoExperiments`: every completed SEO commit as a measurable experiment with keyword, target URL, commit hash and review date.
+- `rankingReviews`: daily workspace ranking review snapshots.
 
 The agent must consult these before posting a new card. Do not repost a completed, ignored or repeatedly guarded action before its `recheckAfter` date unless fresh evidence changes the decision.
 
@@ -66,6 +69,20 @@ Default autonomy:
 Preferred lifecycle for autonomous low-risk work:
 
 `candidate -> agent_approved -> coding_started -> completed -> monitoring -> done`
+
+For every completed SEO commit, create or update an SEO experiment:
+
+`keyword + target URL + commit + diffstat + completedAt + reviewAfter`
+
+Default review delay is 14 days. Do not repeat the same page/keyword experiment before its review date unless fresh data shows a materially different problem.
+
+Daily ranking review:
+
+- consult keyword map, live actions, action ledger and experiments,
+- identify pages/keywords without fresh experiments,
+- prefer actions that improve mapped target pages,
+- report only useful review updates, not noisy daily summaries,
+- do not run GSC URL Inspection more than the configured rate limits.
 
 Preferred lifecycle for high-risk or ambiguous work:
 

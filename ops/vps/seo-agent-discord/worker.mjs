@@ -62,6 +62,7 @@ async function tick() {
   await processDiscordReplies()
   const workspaces = await listWorkspaces()
   await ensureDailyRunsForWorkspaces(workspaces)
+  await runDailyRankingReviews(workspaces)
   await postReadinessForWorkspaces(workspaces)
   await checkGscIssuesForWorkspaces(workspaces)
   await postPendingActionsForWorkspaces(workspaces)
@@ -1272,6 +1273,7 @@ async function processApprovedCodeActions(workspaces) {
       const completedResult = { ...result, repoFullName: workspace.repoFullName, branch: workspace.branch || 'main' }
       state.codeActionResults[approved.id] = { status: 'completed', completedAt: new Date().toISOString(), result: completedResult }
       recordActionLedger(approved, workspace, targetChannelId, 'completed', { commit: result.commit || null, diffStat: result.diffStat || null, repoFullName: workspace.repoFullName })
+      recordSeoExperiment(approved, workspace, targetChannelId, completedResult, { source: 'platform_approved' })
       clearActiveAction(approved.id)
       const commitUrl = result.commit ? githubCommitUrl(workspace.repoFullName, result.commit) : ''
       const posted = await sendDiscordMessage([
@@ -1321,6 +1323,7 @@ async function processQueuedApprovedCodeAction(workspaces) {
       diffStat: result.diffStat || null,
       repoFullName: entry.repoFullName || workspace.repoFullName || null
     })
+    recordSeoExperiment(entry, workspace, targetChannelId, completedResult, { source: 'approved_queue' })
     delete state.approvedCodeActionQueue[entry.id]
     clearActiveAction(entry.id)
     const commitUrl = result.commit ? githubCommitUrl(entry.repoFullName || workspace.repoFullName, result.commit) : ''
@@ -1605,6 +1608,10 @@ async function postPendingActions({ workspace, targetChannelId }) {
     }
     const guard = shouldPostActionCard(enrichedAction, workspace, targetChannelId)
     if (!guard.ok) {
+      if (guard.reason === 'repeatedly_guarded') {
+        logThrottled(`action_card_repeatedly_guarded:${actionLearningKey(enrichedAction, workspace, targetChannelId)}`, 6 * 60 * 60 * 1000, 'action_card_repeatedly_guarded', { id, workspace: workspace?.label || workspace?.id || null })
+        continue
+      }
       rememberGuardedAction(enrichedAction, workspace, targetChannelId, guard.reason)
       log('action_card_guarded', { id, workspace: workspace?.label || workspace?.id || null, reason: guard.reason })
       continue
@@ -2103,6 +2110,12 @@ async function handleChatMessage(content, message, targetChannelId) {
   if (/^(mål|mal|workspace mål|workspace mal|goals?)$/i.test(trimmed)) {
     const workspace = workspaceForChannel(targetChannelId)
     await sendDiscordMessage(formatWorkspaceProfileMessage(workspace, targetChannelId), targetChannelId)
+    return
+  }
+  if (/^(ranking|rankning|keyword map|keyword-map|keywords?|experiment|seo experiment)$/i.test(trimmed)) {
+    const workspace = workspaceForChannel(targetChannelId)
+    const review = await buildRankingReview(workspace, targetChannelId).catch((error) => ({ ok: false, error: error?.message || String(error) }))
+    await sendDiscordMessage(review.ok ? formatRankingReviewMessage(workspace, review) : `Kunde inte bygga ranking-review: ${review.error || 'okänt fel'}`, targetChannelId)
     return
   }
   if (/^(lärdomar|lardomar|lessons?|minne|memory|ledger)$/i.test(trimmed)) {
@@ -3788,9 +3801,150 @@ function formatStatusMessage(workspace, payload, targetChannelId = null) {
 function ensureAutonomousAgentState() {
   state.workspaceProfiles = state.workspaceProfiles || {}
   state.actionLedger = state.actionLedger || {}
+  state.keywordMaps = state.keywordMaps || {}
+  state.seoExperiments = state.seoExperiments || {}
+  state.rankingReviews = state.rankingReviews || {}
   state.agentLessons = state.agentLessons || []
   state.guardedActions = state.guardedActions || {}
   migrateExistingStateToActionLedger()
+}
+
+async function runDailyRankingReviews(workspaces) {
+  if (!automationEnabled) return
+  const today = new Date().toISOString().slice(0, 10)
+  state.rankingReviews = state.rankingReviews || {}
+  for (const workspace of workspaces) {
+    const targetChannelId = await channelForWorkspace(workspace)
+    if (!targetChannelId) continue
+    const key = workspaceProfileKey(workspace, targetChannelId)
+    if (state.rankingReviews[key]?.date === today) continue
+    const review = await buildRankingReview(workspace, targetChannelId).catch((error) => ({
+      ok: false,
+      error: error?.message || String(error)
+    }))
+    state.rankingReviews[key] = {
+      date: today,
+      at: new Date().toISOString(),
+      ...review
+    }
+    if (review.ok && shouldNotifyRankingReview(review)) {
+      await sendDiscordMessage(formatRankingReviewMessage(workspace, review), targetChannelId)
+    }
+  }
+}
+
+async function buildRankingReview(workspace, targetChannelId) {
+  const profile = ensureWorkspaceProfile(workspace, targetChannelId)
+  const keywordMap = ensureKeywordMap(workspace, targetChannelId)
+  const payload = await fetchActionsForChat(workspace).catch((error) => ({ error: error?.message || String(error), actions: [] }))
+  const actions = Array.isArray(payload.actions) ? payload.actions : []
+  const workspaceKey = workspaceProfileKey(workspace, targetChannelId)
+  const experiments = Object.values(state.seoExperiments || {})
+    .filter((item) => item.workspaceKey === workspaceKey)
+    .sort((a, b) => Date.parse(b.completedAt || 0) - Date.parse(a.completedAt || 0))
+  const pendingFollowups = experiments.filter((item) => item.reviewAfter && item.reviewAfter <= new Date().toISOString().slice(0, 10) && !item.reviewedAt)
+  const unmappedActions = actions
+    .filter((action) => isCodeAction(action) && !isIndexingCheckAction(action))
+    .filter((action) => !mapKeywordForAction(action, keywordMap))
+    .slice(0, 5)
+  const weakLiveQueue = actions.length === 0 || actions.every((action) => {
+    const review = reviewActionForPosting(action, workspace, targetChannelId, payload.workspacePolicy || '')
+    return review.score < 55
+  })
+  const staleKeywordTargets = keywordMap
+    .filter((item) => item.priority !== 'low')
+    .filter((item) => {
+      const recentExperiment = experiments.find((experiment) => experiment.targetUrl === item.targetUrl || experiment.keyword === item.keyword)
+      if (!recentExperiment) return true
+      const completedAt = Date.parse(recentExperiment.completedAt || '')
+      return completedAt && Date.now() - completedAt > 30 * 24 * 60 * 60 * 1000
+    })
+    .slice(0, 5)
+  const next = selectRankingReviewNextStep({ workspace, profile, keywordMap, actions, experiments, staleKeywordTargets, weakLiveQueue, targetChannelId })
+  return {
+    ok: true,
+    profileLabel: profile.label,
+    keywordMapCount: keywordMap.length,
+    liveActionCount: actions.length,
+    experimentCount: experiments.length,
+    pendingFollowups: pendingFollowups.slice(0, 5).map((item) => ({
+      id: item.id,
+      title: item.title,
+      keyword: item.keyword,
+      targetUrl: item.targetUrl,
+      commit: item.commit,
+      reviewAfter: item.reviewAfter
+    })),
+    unmappedActionCount: unmappedActions.length,
+    staleKeywordTargets,
+    weakLiveQueue,
+    next
+  }
+}
+
+function selectRankingReviewNextStep({ workspace, profile, keywordMap, actions, experiments, staleKeywordTargets, weakLiveQueue, targetChannelId }) {
+  const actionable = actions
+    .filter((action) => isCodeAction(action) && !isIndexingCheckAction(action))
+    .map((action) => ({ action, review: reviewActionForPosting(action, workspace, targetChannelId, '') }))
+    .filter((item) => item.review.score >= 60)
+    .sort((a, b) => b.review.score - a.review.score)[0]
+  if (actionable) {
+    return {
+      type: 'live_action',
+      title: actionable.action.title || actionable.action.id,
+      actionId: actionable.action.id || '',
+      targetUrl: actionable.action.targetUrl || actionable.action.url || '',
+      keyword: actionable.action.keyword || '',
+      reason: actionable.review.positives?.join('; ') || actionable.review.why || 'bästa live-action just nu'
+    }
+  }
+  const gap = staleKeywordTargets[0] || keywordMap.find((item) => item.priority === 'high')
+  if (gap && weakLiveQueue) {
+    return {
+      type: 'keyword_gap',
+      title: `Förstärk ${gap.targetUrl} för "${gap.keyword}"`,
+      targetUrl: gap.targetUrl,
+      keyword: gap.keyword,
+      reason: 'keyword-map saknar färskt experiment eller live-kön är svag'
+    }
+  }
+  const followup = experiments.find((item) => item.reviewAfter && item.reviewAfter <= new Date().toISOString().slice(0, 10) && !item.reviewedAt)
+  if (followup) {
+    return {
+      type: 'experiment_followup',
+      title: `Följ upp experiment: ${followup.title}`,
+      targetUrl: followup.targetUrl,
+      keyword: followup.keyword,
+      commit: followup.commit,
+      reason: '14-dagars uppföljning är redo'
+    }
+  }
+  return {
+    type: 'monitor',
+    title: 'Inget starkt nytt experiment just nu',
+    reason: 'väntar på bättre live-data eller uppföljningsdatum'
+  }
+}
+
+function shouldNotifyRankingReview(review) {
+  if (!review?.ok) return false
+  if (review.pendingFollowups?.length) return true
+  if (review.weakLiveQueue && review.next?.type === 'keyword_gap') return true
+  return false
+}
+
+function formatRankingReviewMessage(workspace, review) {
+  const next = review.next || {}
+  return [
+    `Daglig ranking-review för ${workspace?.label || workspace?.id || 'workspace'}`,
+    `Keyword-map: ${review.keywordMapCount} mål · Experiment: ${review.experimentCount} · Live-actions: ${review.liveActionCount}`,
+    review.pendingFollowups?.length ? `Uppföljning redo: ${review.pendingFollowups.map((item) => `${item.keyword || item.title}${item.commit ? ` (${item.commit})` : ''}`).join(', ')}` : '',
+    `Nästa SEO-experiment: ${next.title || 'inget säkert'}`,
+    next.targetUrl ? `URL: ${next.targetUrl}` : '',
+    next.keyword ? `Keyword: ${next.keyword}` : '',
+    next.reason ? `Varför: ${next.reason}` : '',
+    'Jag använder detta för att välja kodactions; GSC/API-kontroller rate-limtas och körs inte i loop.'
+  ].filter(Boolean).join('\n').slice(0, 1900)
 }
 
 function cleanupStaleRuntimeState() {
@@ -3946,10 +4100,89 @@ function ensureWorkspaceProfile(workspace, targetChannelId = null) {
     goals: [...new Set([...(existing.goals || []), ...(defaults.goals || [])])].slice(0, 20),
     prefer: [...new Set([...(existing.prefer || []), ...(defaults.prefer || [])])].slice(0, 30),
     avoid: [...new Set([...(existing.avoid || []), ...(defaults.avoid || [])])].slice(0, 30),
+    keywordMap: mergeKeywordMap(existing.keywordMap || state.keywordMaps?.[key] || [], defaults.keywordMap || []),
     updatedAt: existing.updatedAt || new Date().toISOString()
   }
   state.workspaceProfiles[key] = profile
+  state.keywordMaps[key] = profile.keywordMap
   return profile
+}
+
+function ensureKeywordMap(workspace, targetChannelId = null) {
+  const profile = ensureWorkspaceProfile(workspace, targetChannelId)
+  const key = workspaceProfileKey(workspace, targetChannelId)
+  const current = mergeKeywordMap(state.keywordMaps?.[key] || [], profile.keywordMap || [])
+  state.keywordMaps[key] = current
+  state.workspaceProfiles[key] = { ...profile, keywordMap: current }
+  return current
+}
+
+function mergeKeywordMap(existing, defaults) {
+  const byKey = new Map()
+  for (const item of [...defaults, ...existing]) {
+    if (!item || !item.keyword) continue
+    const keyword = normalizeKeywordText(item.keyword)
+    const targetUrl = String(item.targetUrl || item.url || '').trim()
+    const key = `${keyword}:${targetUrl}`
+    byKey.set(key, {
+      keyword: item.keyword,
+      targetUrl,
+      intent: item.intent || 'commercial',
+      priority: item.priority || 'medium',
+      status: item.status || 'active',
+      notes: item.notes || ''
+    })
+  }
+  return [...byKey.values()].slice(0, 60)
+}
+
+function mapKeywordForAction(action, keywordMap) {
+  const targetUrl = String(action.targetUrl || action.url || '').trim()
+  const keyword = normalizeKeywordText(action.keyword || '')
+  return keywordMap.find((item) => {
+    const itemKeyword = normalizeKeywordText(item.keyword)
+    return (targetUrl && item.targetUrl && sameSeoUrl(item.targetUrl, targetUrl))
+      || (keyword && itemKeyword && (keyword === itemKeyword || keyword.includes(itemKeyword) || itemKeyword.includes(keyword)))
+  }) || null
+}
+
+function sameSeoUrl(a, b) {
+  return normalizeActionPath(a) === normalizeActionPath(b)
+}
+
+function recordSeoExperiment(action, workspace, targetChannelId, result, meta = {}) {
+  ensureAutonomousAgentState()
+  const workspaceKey = workspaceProfileKey(workspace, targetChannelId)
+  const keywordMap = ensureKeywordMap(workspace, targetChannelId)
+  const mapped = mapKeywordForAction(action, keywordMap)
+  const completedAt = new Date().toISOString()
+  const reviewDate = new Date(completedAt)
+  reviewDate.setDate(reviewDate.getDate() + 14)
+  const targetUrl = action.targetUrl || action.url || mapped?.targetUrl || ''
+  const keyword = action.keyword || mapped?.keyword || ''
+  const id = `${workspaceKey}:${normalizeActionPath(targetUrl) || normalizeKeywordCluster(keyword) || action.id || result?.commit || Date.now()}`.slice(0, 220)
+  state.seoExperiments[id] = {
+    ...(state.seoExperiments[id] || {}),
+    id,
+    actionId: action.id || null,
+    title: action.title || action.id || '',
+    workspaceKey,
+    workspaceLabel: workspace?.label || workspace?.id || '',
+    repoFullName: result?.repoFullName || workspace?.repoFullName || '',
+    branch: result?.branch || workspace?.branch || 'main',
+    targetUrl,
+    keyword,
+    mappedKeyword: mapped?.keyword || '',
+    intent: mapped?.intent || '',
+    priority: mapped?.priority || action.priority || '',
+    commit: result?.commit || '',
+    diffStat: result?.diffStat || '',
+    completedAt,
+    reviewAfter: reviewDate.toISOString().slice(0, 10),
+    source: meta.source || 'code_action',
+    baselineStatus: 'pending_gsc_snapshot'
+  }
+  rememberAgentLesson(`Started SEO experiment for ${workspace?.label || workspaceKey}: ${keyword || targetUrl || action.id}${result?.commit ? ` (${result.commit})` : ''}`)
 }
 
 function defaultWorkspaceProfile(workspace) {
@@ -3963,6 +4196,14 @@ function defaultWorkspaceProfile(workspace) {
       goals: ['rank higher for AI consulting, AI agents, automation, app/web and AI education leads'],
       prefer: ['AI konsult', 'AI-agenter', 'AI-automation', 'kodning', 'app/web', 'interna verktyg', 'AI-utbildningar', 'workshops'],
       avoid: ['Fortnox-only', 'Visma-only', 'Business Central-only', 'Abicart/Klarna', 'generic integration-only', 'invoice/bookkeeping-only'],
+      keywordMap: [
+        { keyword: 'AI konsult företag', targetUrl: 'https://sebcastwall.se/', intent: 'commercial', priority: 'high' },
+        { keyword: 'AI agenter företag', targetUrl: 'https://sebcastwall.se/tjanster/ai-agenter', intent: 'commercial', priority: 'high' },
+        { keyword: 'AI automatisering företag', targetUrl: 'https://sebcastwall.se/tjanster/ai-automatisering', intent: 'commercial', priority: 'high' },
+        { keyword: 'apputveckling företag', targetUrl: 'https://sebcastwall.se/tjanster/app-webbutveckling', intent: 'commercial', priority: 'high' },
+        { keyword: 'AI utbildning företag', targetUrl: 'https://sebcastwall.se/tjanster/ai-utbildning', intent: 'commercial', priority: 'medium' },
+        { keyword: 'interna AI verktyg', targetUrl: 'https://sebcastwall.se/tjanster/ai-agenter', intent: 'commercial', priority: 'medium' }
+      ],
       autonomy: 'autonomous_low_risk'
     }
   }
@@ -3974,6 +4215,11 @@ function defaultWorkspaceProfile(workspace) {
       goals: ['rank higher for startup events, networking and evergreen event landing pages'],
       prefer: ['startup events', 'nätverkande', 'entreprenörer', 'city pages', 'event category pages'],
       avoid: ['agency consulting', 'software integration', 'unrelated AI consultancy'],
+      keywordMap: [
+        { keyword: 'startup events', targetUrl: 'https://natverkskollen.se/evenemang/startup-events', intent: 'event_discovery', priority: 'high' },
+        { keyword: 'nätverksevent', targetUrl: 'https://natverkskollen.se/evenemang', intent: 'event_discovery', priority: 'high' },
+        { keyword: 'entreprenör event', targetUrl: 'https://natverkskollen.se/evenemang/entreprenor', intent: 'event_discovery', priority: 'medium' }
+      ],
       autonomy: 'autonomous_low_risk'
     }
   }
@@ -3985,6 +4231,11 @@ function defaultWorkspaceProfile(workspace) {
       goals: ['rank higher for parking intent and conversion landing pages'],
       prefer: ['parkering', 'flygplatsparkering', 'långtidsparkering', 'lokal intent', 'indexering', 'conversion'],
       avoid: ['unrelated software/AI consultancy'],
+      keywordMap: [
+        { keyword: 'flygplatsparkering', targetUrl: 'https://parkeringspolaren.se/', intent: 'commercial', priority: 'high' },
+        { keyword: 'långtidsparkering', targetUrl: 'https://parkeringspolaren.se/', intent: 'commercial', priority: 'high' },
+        { keyword: 'billig parkering', targetUrl: 'https://parkeringspolaren.se/', intent: 'commercial', priority: 'medium' }
+      ],
       autonomy: 'autonomous_low_risk'
     }
   }
@@ -3993,12 +4244,13 @@ function defaultWorkspaceProfile(workspace) {
     label: workspace?.label || workspace?.id || 'workspace',
     siteType: 'generic',
     audience: 'relevanta sökare',
-    goals: ['rank higher on relevant valuable search demand'],
-    prefer: [],
-    avoid: [],
-    autonomy: 'autonomous_low_risk'
+      goals: ['rank higher on relevant valuable search demand'],
+      prefer: [],
+      avoid: [],
+      keywordMap: [],
+      autonomy: 'autonomous_low_risk'
+    }
   }
-}
 
 function inferWorkspaceProfile(workspace) {
   const signal = [
@@ -4016,6 +4268,12 @@ function inferWorkspaceProfile(workspace) {
       goals: ['rank higher for road weather, route weather, traffic and road condition searches'],
       prefer: ['väder längs vägen', 'vägväder', 'trafikläge', 'vägförhållanden', 'ruttplanering', 'bilresa', 'halka', 'regn', 'vind', 'road conditions'],
       avoid: ['SMB', 'B2B', 'consulting', 'SaaS', 'agency', 'business workflow', 'CRM', 'invoice'],
+      keywordMap: [
+        { keyword: 'väder längs vägen', targetUrl: 'https://vagkollen.se/', intent: 'utility', priority: 'high' },
+        { keyword: 'vägväder', targetUrl: 'https://vagkollen.se/', intent: 'utility', priority: 'high' },
+        { keyword: 'trafikläge', targetUrl: 'https://vagkollen.se/', intent: 'utility', priority: 'medium' },
+        { keyword: 'vägförhållanden', targetUrl: 'https://vagkollen.se/', intent: 'utility', priority: 'medium' }
+      ],
       autonomy: 'autonomous_low_risk'
     }
   }
@@ -4027,6 +4285,10 @@ function inferWorkspaceProfile(workspace) {
       goals: ['rank higher for event discovery and event landing page searches'],
       prefer: ['events', 'startup events', 'nätverkande', 'stadssidor', 'eventkategori', 'kalender'],
       avoid: ['software consulting', 'integration-only', 'generic SaaS'],
+      keywordMap: [
+        { keyword: 'startup events', targetUrl: 'https://natverkskollen.se/evenemang/startup-events', intent: 'event_discovery', priority: 'high' },
+        { keyword: 'nätverksevent', targetUrl: 'https://natverkskollen.se/evenemang', intent: 'event_discovery', priority: 'high' }
+      ],
       autonomy: 'autonomous_low_risk'
     }
   }
@@ -4038,6 +4300,10 @@ function inferWorkspaceProfile(workspace) {
       goals: ['rank higher for parking searches and conversion landing pages'],
       prefer: ['parkering', 'flygplatsparkering', 'långtidsparkering', 'pris', 'bokning', 'lokal intent'],
       avoid: ['software consulting', 'generic AI', 'B2B workflow'],
+      keywordMap: [
+        { keyword: 'parkering', targetUrl: workspace?.siteUrl || '', intent: 'commercial', priority: 'high' },
+        { keyword: 'långtidsparkering', targetUrl: workspace?.siteUrl || '', intent: 'commercial', priority: 'medium' }
+      ],
       autonomy: 'autonomous_low_risk'
     }
   }
@@ -4049,6 +4315,10 @@ function inferWorkspaceProfile(workspace) {
       goals: ['rank higher for AI, automation and development service demand'],
       prefer: ['AI', 'automation', 'app/web', 'kodning', 'konsult', 'utbildning'],
       avoid: ['consumer travel', 'parking', 'unrelated event discovery'],
+      keywordMap: [
+        { keyword: 'AI konsult', targetUrl: workspace?.siteUrl || '', intent: 'commercial', priority: 'high' },
+        { keyword: 'AI automatisering', targetUrl: workspace?.siteUrl || '', intent: 'commercial', priority: 'medium' }
+      ],
       autonomy: 'autonomous_low_risk'
     }
   }
@@ -4059,6 +4329,7 @@ function inferWorkspaceProfile(workspace) {
     goals: ['rank higher on relevant valuable search demand'],
     prefer: [],
     avoid: [],
+    keywordMap: [],
     autonomy: 'autonomous_low_risk'
   }
 }
@@ -4352,11 +4623,13 @@ function rememberAgentLesson(text) {
 
 function formatWorkspaceProfileMessage(workspace, targetChannelId) {
   const profile = ensureWorkspaceProfile(workspace, targetChannelId)
+  const keywordMap = ensureKeywordMap(workspace, targetChannelId).slice(0, 8)
   return [
     `Workspace-mål: ${profile.label}`,
     `Mål: ${(profile.goals || []).join('; ') || 'ranka högre på relevant efterfrågan'}`,
     `Prioritera: ${(profile.prefer || []).join(', ') || 'saknas'}`,
     `Undvik: ${(profile.avoid || []).join(', ') || 'saknas'}`,
+    keywordMap.length ? `Keyword-map:\n${keywordMap.map((item) => `- ${item.keyword} -> ${item.targetUrl || 'URL saknas'} (${item.priority})`).join('\n')}` : 'Keyword-map: saknas',
     `Autonomi: ${profile.autonomy || 'autonomous_low_risk'}`
   ].join('\n').slice(0, 1900)
 }

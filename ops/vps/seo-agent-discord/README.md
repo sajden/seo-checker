@@ -57,7 +57,10 @@ rsync -av ops/vps/seo-agent-discord/agent-brain.mjs deploy@178.104.240.46:/home/
 The worker stores these long-lived structures in `state/state.json`:
 
 - `workspaceProfiles`: per-workspace goals, preferred topics, and avoid terms.
+- `keywordMaps`: keyword -> target URL ownership per workspace.
 - `actionLedger`: action lifecycle from proposed to approved, coding, completed, failed, ignored, or deprioritized.
+- `seoExperiments`: completed SEO code changes with keyword, URL, commit, diffstat and review date.
+- `rankingReviews`: daily workspace review snapshots used to choose the next SEO experiment.
 - `agentLessons`: short operational learnings from guarded output, stale locks, completed commits, and failures.
 - `guardedActions`: actions blocked before posting because they repeat, mismatch workspace goals, or are noisy.
 - `codexUsage`: tracked Codex token usage from agent runs.
@@ -71,6 +74,13 @@ The agent should:
 - auto-clone missing repo checkouts when a matching `github.com-seo-agent-<repo>` SSH host/deploy key exists,
 - fast-forward clean repo checkouts before readiness checks so a normal remote update does not look like a push failure,
 - record commits and diffstats so Discord can explain what was created.
+- treat each completed SEO commit as an experiment and review it after 14 days before repeating similar work.
+
+In a workspace channel, useful commands:
+
+- `mål` shows workspace goals and keyword map.
+- `ranking` shows the daily keyword/experiment review.
+- `commits` shows recent code actions and GitHub commit links.
 
 ## Repo Health Timer
 
