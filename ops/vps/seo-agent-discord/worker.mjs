@@ -29,6 +29,8 @@ const guildId = env.DISCORD_GUILD_ID || ''
 const autoCreateWorkspaceChannels = env.SEO_AGENT_AUTO_CREATE_CHANNELS !== 'false'
 const automationEnabled = env.SEO_AGENT_AUTONOMY_ENABLED !== 'false'
 const codeAutomationEnabled = env.SEO_AGENT_CODE_AUTOMATION_ENABLED === 'true'
+const autonomousCodeEnabled = env.SEO_AGENT_AUTONOMOUS_CODE_ENABLED !== 'false'
+const autonomousCodePerWorkspacePerDay = Number(env.SEO_AGENT_AUTONOMOUS_CODE_PER_WORKSPACE_PER_DAY || '1')
 const codexChatEnabled = env.SEO_AGENT_CODEX_CHAT_ENABLED !== 'false'
 const smartOutboundGuardEnabled = env.SEO_AGENT_SMART_OUTBOUND_GUARD !== 'false'
 const stateDir = '/home/deploy/seo-agent-discord/state'
@@ -659,8 +661,123 @@ async function maybePrepareAutonomousCodeWork(workspaces) {
   }
   if (!codeAutomationEnabled) return
   const status = state.localAutomationStatus || await localAutomationStatus()
-  if (status.codex !== 'ready') return
+  if (!status.ready) return
+  await maybeQueueAutonomousCodeActions(workspaces)
   await processApprovedCodeActions(workspaces)
+}
+
+async function maybeQueueAutonomousCodeActions(workspaces) {
+  if (!automationEnabled || !autonomousCodeEnabled || !codeAutomationEnabled || state.codeActionRunning) return
+  const today = new Date().toISOString().slice(0, 10)
+  state.autonomousCodeRuns = state.autonomousCodeRuns || {}
+  for (const workspace of workspaces) {
+    const targetChannelId = await channelForWorkspace(workspace)
+    if (!targetChannelId || !workspace.repoFullName) continue
+    const runKey = `${workspace.id || workspace.label || workspace.repoFullName}:${today}`
+    const usedToday = Number(state.autonomousCodeRuns[runKey]?.count || 0)
+    if (usedToday >= autonomousCodePerWorkspacePerDay) continue
+    const active = activeActionRecordFor(workspace, targetChannelId)
+    if (active?.actionId) continue
+    const payload = await fetchActionsForChat(workspace).catch((error) => ({ error: error?.message || String(error), actions: [] }))
+    const actions = Array.isArray(payload.actions) ? payload.actions : []
+    const candidate = await chooseAutonomousCodeAction(actions, workspace, targetChannelId, payload.workspacePolicy)
+    if (!candidate) continue
+    state.approvedCodeActionQueue = state.approvedCodeActionQueue || {}
+    state.approvedCodeActionQueue[candidate.action.id] = {
+      ...candidate.action,
+      id: candidate.action.id,
+      repoFullName: workspace.repoFullName,
+      branch: workspace.branch || candidate.action.branch || 'main',
+      workspaceSlug: workspace.label || candidate.action.workspaceSlug || candidate.action.projectSlug || null,
+      queuedAt: new Date().toISOString(),
+      channelId: targetChannelId,
+      autonomous: true,
+      autonomousReason: candidate.reason
+    }
+    state.autonomousCodeRuns[runKey] = {
+      count: usedToday + 1,
+      lastActionId: candidate.action.id,
+      lastQueuedAt: new Date().toISOString(),
+      reason: candidate.reason
+    }
+    recordActionLedger(candidate.action, workspace, targetChannelId, 'approved', {
+      source: 'autonomous_code',
+      reason: candidate.reason,
+      review: candidate.review,
+      codexBrief: candidate.codexBrief
+    })
+    clearActiveAction(candidate.action.id)
+    await sendDiscordMessage([
+      `Autopilot startar en låg-risk SEO-fix för ${workspace.label}.`,
+      `Kort: ${candidate.codexBrief?.title || candidate.action.title}`,
+      candidate.action.targetUrl ? `URL: ${candidate.action.targetUrl}` : '',
+      `Varför: ${candidate.reason}`,
+      'Jag kodar, bygger, committar och postar diff/commit här. Större ändringar kräver fortfarande ditt approve.'
+    ].filter(Boolean).join('\n').slice(0, 1900), targetChannelId)
+    saveState()
+    return
+  }
+}
+
+async function chooseAutonomousCodeAction(actions, workspace, targetChannelId, workspacePolicy = '') {
+  const pending = prioritizeActionQueue(actions.filter((item) => item?.status === 'pending'), workspace, targetChannelId)
+  for (const action of pending) {
+    if (!action?.id || state.codeActionResults?.[action.id] || state.approvedCodeActionQueue?.[action.id]) continue
+    const enrichedAction = await enrichActionWithKeywordMetrics(action)
+    if (!isAutonomousCodeCandidate(enrichedAction, workspace, targetChannelId)) continue
+    const guard = shouldPostActionCard(enrichedAction, workspace, targetChannelId)
+    if (!guard.ok) continue
+    const review = reviewActionForPosting(enrichedAction, workspace, targetChannelId, workspacePolicy)
+    if (!isAutonomousReviewSafe(review)) continue
+    const codexBrief = await runCodexActionCardBrief({
+      action: enrichedAction,
+      workspace,
+      workspacePolicy,
+      review,
+      targetChannelId
+    }).catch((error) => {
+      log('autonomous_codex_brief_failed', { actionId: enrichedAction.id, workspace: workspace?.label || workspace?.id || null, error: error?.message || String(error) })
+      return null
+    })
+    if (!isAutonomousCodexSafe(codexBrief)) continue
+    return {
+      action: enrichedAction,
+      review,
+      codexBrief,
+      reason: codexBrief?.why || review.why || 'Codex och agentens guard bedömde detta som en konkret låg-risk förbättring.'
+    }
+  }
+  return null
+}
+
+function isAutonomousCodeCandidate(action, workspace, targetChannelId) {
+  if (!isCodeAction(action)) return false
+  if (isIndexingCheckAction(action)) return false
+  const kind = actionKindForLearning(action)
+  if (!['content', 'internal-links'].includes(kind)) return false
+  if (!String(action.targetUrl || action.url || '').trim()) return false
+  if (kind === 'new-page') return false
+  const cluster = actionLearningKey(action, workspace, targetChannelId)
+  const ledger = state.actionLedger?.[cluster]
+  if (ledger?.status === 'completed' && !isLedgerRecheckDue(ledger)) return false
+  if (ledger?.status === 'deprioritized' && !isLedgerRecheckDue(ledger)) return false
+  if (ledger?.status === 'ignored' && !isLedgerRecheckDue(ledger)) return false
+  return true
+}
+
+function isAutonomousReviewSafe(review) {
+  if (!review?.ok) return false
+  if (review.recommendation !== 'Approve') return false
+  if (Number(review.score || 0) < 78) return false
+  return /^låg\b/i.test(String(review.risk || ''))
+}
+
+function isAutonomousCodexSafe(codexBrief) {
+  if (!codexBrief) return false
+  if (!['allow', 'rewrite'].includes(codexBrief.decision)) return false
+  if (codexBrief.recommendation && codexBrief.recommendation !== 'Approve') return false
+  if (codexBrief.risk && !/^låg\b/i.test(String(codexBrief.risk))) return false
+  return true
 }
 
 async function maybeRunIntegrationDoctor(workspaces) {
