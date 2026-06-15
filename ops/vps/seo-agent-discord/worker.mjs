@@ -900,16 +900,22 @@ async function processApprovedCodeActions(workspaces) {
     saveState()
     try {
       const result = await runCodexAction({ ...approved, repoFullName: workspace.repoFullName, branch: workspace.branch || 'main' })
-      state.codeActionResults[approved.id] = { status: 'completed', completedAt: new Date().toISOString(), result }
+      const completedResult = { ...result, repoFullName: workspace.repoFullName, branch: workspace.branch || 'main' }
+      state.codeActionResults[approved.id] = { status: 'completed', completedAt: new Date().toISOString(), result: completedResult }
       recordActionLedger(approved, workspace, targetChannelId, 'completed', { commit: result.commit || null, diffStat: result.diffStat || null, repoFullName: workspace.repoFullName })
       clearActiveAction(approved.id)
       const commitUrl = result.commit ? githubCommitUrl(workspace.repoFullName, result.commit) : ''
-      await sendDiscordMessage([
+      const posted = await sendDiscordMessage([
         `Kodaction klar för ${workspace.label}: ${approved.title}`,
+        `Action ID: \`${approved.id}\``,
         result.commit ? `Commit: ${result.commit}` : '',
         commitUrl ? `GitHub: ${commitUrl}` : '',
-        result.diffStat ? `Diff:\n\`\`\`\n${String(result.diffStat).slice(0, 1200)}\n\`\`\`` : ''
-      ].filter(Boolean).join('\n'), targetChannelId)
+        result.diffStat ? `Diff:\n\`\`\`\n${String(result.diffStat).slice(0, 1200)}\n\`\`\`` : '',
+        '',
+        'Om detta blev fel kan du trycka Backa så skapar jag en revert-commit.'
+      ].filter(Boolean).join('\n'), targetChannelId, rollbackComponents(), { kind: 'code_result' })
+      state.messageToAction = state.messageToAction || {}
+      state.messageToAction[posted.id] = approved.id
     } catch (error) {
       const failure = classifyCodeActionFailure(error)
       state.codeActionResults[approved.id] = { status: failure.status, failedAt: new Date().toISOString(), error: error?.message || String(error), failure }
@@ -939,7 +945,8 @@ async function processQueuedApprovedCodeAction(workspaces) {
   saveState()
   try {
     const result = await runCodexAction({ ...entry, repoFullName: entry.repoFullName || workspace.repoFullName, branch: entry.branch || workspace.branch || 'main' })
-    state.codeActionResults[entry.id] = { status: 'completed', completedAt: new Date().toISOString(), result }
+    const completedResult = { ...result, repoFullName: entry.repoFullName || workspace.repoFullName || null, branch: entry.branch || workspace.branch || 'main' }
+    state.codeActionResults[entry.id] = { status: 'completed', completedAt: new Date().toISOString(), result: completedResult }
     recordActionLedger(entry, workspace, targetChannelId, 'completed', {
       commit: result.commit || null,
       diffStat: result.diffStat || null,
@@ -948,12 +955,17 @@ async function processQueuedApprovedCodeAction(workspaces) {
     delete state.approvedCodeActionQueue[entry.id]
     clearActiveAction(entry.id)
     const commitUrl = result.commit ? githubCommitUrl(entry.repoFullName || workspace.repoFullName, result.commit) : ''
-    await sendDiscordMessage([
+    const posted = await sendDiscordMessage([
       `Kodaction klar för ${workspace.label || entry.workspaceSlug}: ${entry.title}`,
+      `Action ID: \`${entry.id}\``,
       result.commit ? `Commit: ${result.commit}` : '',
       commitUrl ? `GitHub: ${commitUrl}` : '',
-      result.diffStat ? `Diff:\n\`\`\`\n${String(result.diffStat).slice(0, 1200)}\n\`\`\`` : ''
-    ].filter(Boolean).join('\n'), targetChannelId)
+      result.diffStat ? `Diff:\n\`\`\`\n${String(result.diffStat).slice(0, 1200)}\n\`\`\`` : '',
+      '',
+      'Om detta blev fel kan du trycka Backa så skapar jag en revert-commit.'
+    ].filter(Boolean).join('\n'), targetChannelId, rollbackComponents(), { kind: 'code_result' })
+    state.messageToAction = state.messageToAction || {}
+    state.messageToAction[posted.id] = entry.id
   } catch (error) {
     const failure = classifyCodeActionFailure(error)
     state.codeActionResults[entry.id] = { status: failure.status, failedAt: new Date().toISOString(), error: error?.message || String(error), failure }
@@ -987,6 +999,103 @@ async function runCodexAction(action) {
     try { return JSON.parse(text.slice(jsonStart)) } catch {}
   }
   return { ok: true, stdout: text.slice(-4000) }
+}
+
+async function revertCompletedCodeAction(actionId, targetChannelId) {
+  const resultRecord = state.codeActionResults?.[actionId]
+  const result = resultRecord?.result || {}
+  const commit = String(result.commit || '').trim()
+  const repoFullName = String(result.repoFullName || '').trim()
+  const branch = String(result.branch || 'main').trim() || 'main'
+  if (!resultRecord || resultRecord.status !== 'completed') {
+    return { summary: `Jag hittar ingen färdig kodaction att backa för ${actionId}.` }
+  }
+  if (resultRecord.revertedAt || resultRecord.revertCommit) {
+    return { summary: `Den här actionen är redan backad: ${resultRecord.revertCommit || resultRecord.revertedAt}.` }
+  }
+  if (!commit || !repoFullName) {
+    return { summary: 'Jag saknar commit eller repo för den här actionen, så jag kan inte backa säkert.' }
+  }
+  const workspace = workspaceForChannel(targetChannelId) || { label: repoFullName, repoFullName, branch }
+  state.codeActionRunning = { actionId, startedAt: new Date().toISOString(), source: 'revert_button' }
+  saveState()
+  try {
+    const revert = await runGitRevert({ repoFullName, branch, commit, actionId })
+    state.codeActionResults[actionId] = {
+      ...resultRecord,
+      status: 'reverted',
+      revertedAt: new Date().toISOString(),
+      revertCommit: revert.revertCommit,
+      revertDiffStat: revert.diffStat
+    }
+    recordActionLedger({ id: actionId, title: `Backa ${commit}` }, workspace, targetChannelId, 'reverted', {
+      commit,
+      revertCommit: revert.revertCommit,
+      repoFullName
+    })
+    saveState()
+    const url = githubCommitUrl(repoFullName, revert.revertCommit)
+    return {
+      summary: `Backning klar. Revert-commit: ${revert.revertCommit}`,
+      publicMessage: [
+        `Backade SEO-agentens ändring för ${workspace.label || repoFullName}.`,
+        `Original commit: ${commit}`,
+        `Revert commit: ${revert.revertCommit}`,
+        url ? `GitHub: ${url}` : '',
+        revert.diffStat ? `Diff:\n\`\`\`\n${String(revert.diffStat).slice(0, 1000)}\n\`\`\`` : ''
+      ].filter(Boolean).join('\n')
+    }
+  } catch (error) {
+    log('revert_code_action_failed', { actionId, repoFullName, commit, error: error?.message || String(error) })
+    return { summary: `Backning misslyckades: ${String(error?.message || error).slice(0, 1500)}` }
+  } finally {
+    state.codeActionRunning = null
+    saveState()
+  }
+}
+
+async function runGitRevert({ repoFullName, branch, commit, actionId }) {
+  const { execFile } = await import('node:child_process')
+  const { promisify } = await import('node:util')
+  const exec = promisify(execFile)
+  const repoName = String(repoFullName || '').split('/')[1]
+  if (!repoName) throw new Error(`Invalid repoFullName: ${repoFullName}`)
+  const repoDir = `/home/deploy/seo-agent-workspaces/${repoName}`
+  const runnerEnv = { ...process.env, PATH: `${process.env.HOME || '/home/deploy'}/.npm-global/bin:${process.env.HOME || '/home/deploy'}/.local/bin:${process.env.PATH || ''}` }
+  const run = (cmd, args, cwd = repoDir) => exec(cmd, args, { cwd, env: runnerEnv, timeout: 10 * 60 * 1000, maxBuffer: 10 * 1024 * 1024 })
+  if (!existsSync(join(repoDir, '.git'))) throw new Error(`Repo checkout missing: ${repoDir}`)
+  const status = await run('git', ['status', '--porcelain'])
+  if (status.stdout.trim()) throw new Error(`Repo is not clean: ${repoDir}`)
+  await run('git', ['checkout', branch])
+  await run('git', ['fetch', 'origin', branch])
+  await run('git', ['merge', '--ff-only', 'FETCH_HEAD'])
+  await run('git', ['config', 'user.name', 'SEO Agent'])
+  await run('git', ['config', 'user.email', 'seo-agent@sebcastwall.se'])
+  await run('git', ['revert', '--no-edit', commit])
+  await runBestBuildForRepo(repoDir, run)
+  const diff = await run('git', ['show', '--stat', '--oneline', 'HEAD'])
+  await run('git', ['add', '-A'])
+  await run('git', ['commit', '--amend', '-m', `Revert SEO action ${actionId}\n\nReverts SEO agent commit: ${commit}`])
+  const revertCommit = await run('git', ['rev-parse', '--short', 'HEAD'])
+  await run('git', ['push', 'origin', `HEAD:${branch}`])
+  return { revertCommit: revertCommit.stdout.trim(), diffStat: diff.stdout }
+}
+
+async function runBestBuildForRepo(repoDir, run) {
+  const cwd = existsSync(join(repoDir, 'package.json')) ? repoDir
+    : existsSync(join(repoDir, 'web', 'package.json')) ? join(repoDir, 'web')
+    : null
+  if (!cwd) return
+  const pkg = JSON.parse(readFileSync(join(cwd, 'package.json'), 'utf8'))
+  const scripts = pkg.scripts || {}
+  if (scripts.typecheck) await runPackageScriptForRepo(cwd, 'typecheck', run)
+  if (scripts.build) await runPackageScriptForRepo(cwd, 'build', run)
+}
+
+async function runPackageScriptForRepo(cwd, script, run) {
+  if (existsSync(join(cwd, 'pnpm-lock.yaml'))) return run('pnpm', ['run', script], cwd)
+  if (existsSync(join(cwd, 'yarn.lock'))) return run('yarn', [script], cwd)
+  return run('npm', ['run', script], cwd)
 }
 
 function classifyCodeActionFailure(error) {
@@ -1382,7 +1491,7 @@ function startDiscordInteractionClient() {
     try {
       if (!interaction.isButton()) return
       const customId = String(interaction.customId || '')
-      if (!customId.startsWith('seo-decision:') && !customId.startsWith('seo-gsc-ui:')) return
+      if (!customId.startsWith('seo-decision:') && !customId.startsWith('seo-gsc-ui:') && !customId.startsWith('seo-revert:')) return
       if (String(interaction.user?.id || '') !== allowedUserId) {
         await interaction.reply({ content: 'Ignored: this Discord user is not allowed to control the SEO agent.', ephemeral: true })
         return
@@ -1399,6 +1508,14 @@ function startDiscordInteractionClient() {
         await interaction.deferReply({ ephemeral: true })
         const result = await handleGscUiButton(actionId, interaction.channelId)
         await interaction.editReply({ content: result })
+        return
+      }
+      if (customId.startsWith('seo-revert:')) {
+        await interaction.deferReply({ ephemeral: true })
+        const result = await revertCompletedCodeAction(actionId, interaction.channelId)
+        await interaction.editReply({ content: result.summary })
+        if (result.publicMessage) await sendDiscordMessage(result.publicMessage, interaction.channelId)
+        await interaction.message.edit({ components: [] }).catch(() => null)
         return
       }
 
@@ -3735,6 +3852,15 @@ function actionComponents(action) {
   return buttons.length ? [{ type: 1, components: buttons.slice(0, 5) }] : []
 }
 
+function rollbackComponents() {
+  return [{
+    type: 1,
+    components: [
+      { type: 2, custom_id: 'seo-revert:commit', label: 'Backa', style: 4 }
+    ]
+  }]
+}
+
 function formatGscAuthMessage(action, workspacePolicy, workspace) {
   const lines = [
     `GSC-koppling behöver fixas`,
@@ -3896,6 +4022,9 @@ function validateOutboundShape(content, targetChannelId, components = [], kind =
   }
   if (kind === 'decision_confirmation') {
     if (!/Decision|decision|beslut|handled|stored|approved|skipped|deprioritized|send_approved/.test(text)) return { reason: 'decision_confirmation:missing_decision', severity: 'review' }
+  }
+  if (kind === 'code_result') {
+    if (!/Kodaction klar|Commit:|GitHub:|Backa/i.test(text)) return { reason: 'code_result:missing_commit_context', severity: 'review' }
   }
   if (kind === 'status_summary') {
     if (!/status|Actions:|Nästa:|OK|FIX|OAuth|online|redo|saknas/i.test(text)) return { reason: 'status_summary:missing_status_signal', severity: 'review' }
