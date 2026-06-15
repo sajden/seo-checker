@@ -396,6 +396,7 @@ async function postGscIssueAction({ action, issue, workspace, targetChannelId, s
   ensureWorkspaceProfile(workspace, targetChannelId)
   const review = reviewActionForPosting(action, workspace, targetChannelId, sourceLabel)
   const message = await buildActionCardMessage(action, sourceLabel, workspace, review, targetChannelId)
+  if (!message) return null
   const posted = await sendDiscordMessage(message, targetChannelId, actionComponents(action), { kind: 'action_card' })
   state.postedActionIds = state.postedActionIds || {}
   state.postedActionIds[action.id] = {
@@ -1020,6 +1021,10 @@ async function postPendingActions({ workspace, targetChannelId }) {
       continue
     }
     const message = await buildActionCardMessage(enrichedAction, actions.workspacePolicy, workspace, review, targetChannelId)
+    if (!message) {
+      recordActionLedger(enrichedAction, workspace, targetChannelId, 'guarded', { systemKey, guard: 'codex_action_card_blocked', review })
+      continue
+    }
     const posted = await sendDiscordMessage(message, targetChannelId, actionComponents(enrichedAction))
     recordActionLedger(enrichedAction, workspace, targetChannelId, 'posted', { messageId: posted.id, systemKey, guard: guard.reason || 'passed', review })
     state.postedActionIds[id] = {
@@ -1555,6 +1560,7 @@ async function maybeHandleGscIssueMessage(message, targetChannelId) {
   ensureWorkspaceProfile(workspace, targetChannelId)
   const review = reviewActionForPosting(action, workspace, targetChannelId, 'GSC issue från Search Console')
   const actionMessage = await buildActionCardMessage(action, 'GSC issue från Search Console', workspace, review, targetChannelId)
+  if (!actionMessage) return true
   const posted = await sendDiscordMessage(actionMessage, targetChannelId, actionComponents(action), { kind: 'action_card' })
   state.postedActionIds = state.postedActionIds || {}
   state.postedActionIds[action.id] = {
@@ -2056,9 +2062,11 @@ async function repostActiveActionCard(workspace, payload, targetChannelId, optio
   if (!action?.id) return null
   const enrichedAction = await enrichActionWithKeywordMetrics(action)
   const review = reviewActionForPosting(enrichedAction, workspace, targetChannelId, payload.workspacePolicy)
+  const actionMessage = await buildActionCardMessage(enrichedAction, payload.workspacePolicy, workspace, review, targetChannelId)
+  if (!actionMessage) return null
   const message = [
     options.intro || 'Här är kortet jag menar:',
-    await buildActionCardMessage(enrichedAction, payload.workspacePolicy, workspace, review, targetChannelId)
+    actionMessage
   ].join('\n\n')
   const posted = await sendDiscordMessage(message, targetChannelId, actionComponents(enrichedAction))
   state.postedActionIds = state.postedActionIds || {}
@@ -3360,16 +3368,17 @@ async function buildActionCardMessage(action, workspacePolicy, workspace, review
   })
   if (codexBrief?.decision === 'block') {
     rememberGuardedAction(action, workspace, targetChannelId, `codex_action_card_blocked:${codexBrief.reason || 'unclear_action'}`)
-    return formatActionMessage(action, workspacePolicy, workspace, {
-      ...review,
-      recommendation: 'Deprioritize',
-      why: codexBrief.reason || review?.why || action?.why || 'Codex bedömde att kortet inte är tillräckligt tydligt.',
-      concreteAction: codexBrief.doThis || 'Vänta med kortet tills SEO-agenten har tydligare workspace- och målkontext.',
-      risk: 'medium, Codex bedömde att åtgärden behöver förtydligas innan kod'
+    log('codex_action_card_blocked', {
+      actionId: action?.id || null,
+      workspace: workspace?.label || workspace?.id || null,
+      reason: codexBrief.reason || codexBrief.why || 'unclear_action'
     })
+    return null
   }
   return formatActionMessage(action, workspacePolicy, workspace, {
     ...review,
+    ...(codexBrief?.decision ? { codexDecision: codexBrief.decision } : {}),
+    ...(codexBrief?.reason ? { codexReason: codexBrief.reason } : {}),
     ...(codexBrief?.title ? { actionTitle: codexBrief.title } : {}),
     ...(codexBrief?.doThis ? { concreteAction: codexBrief.doThis } : {}),
     ...(codexBrief?.why ? { why: codexBrief.why } : {}),
@@ -3470,10 +3479,12 @@ function formatActionMessage(action, workspacePolicy, workspace, review = null) 
   const risk = review?.risk || 'okänd'
   const recommendation = review?.recommendation || (isCodeAction(action) ? 'Review' : 'Review')
   const score = Number.isFinite(Number(review?.score)) ? ` · score ${Math.round(Number(review.score))}` : ''
+  const codexDecision = review?.codexDecision ? `Codex-bedömning: ${review.codexDecision}${review.codexReason ? ` (${String(review.codexReason).slice(0, 140)})` : ''}` : ''
   const lines = [
     `Nästa beslut för ${label}`,
     '',
     `Jag rekommenderar: ${recommendation}${score}`,
+    codexDecision,
     `Kort: ${title}`,
     action.targetUrl ? `URL: ${action.targetUrl}` : '',
     action.keyword ? `${showKeywordAsSearchTerm ? 'Keyword' : 'Focus'}: ${action.keyword}` : '',
