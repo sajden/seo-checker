@@ -23,11 +23,16 @@ Keep focus on events/startups/networking and evergreen event discovery pages.
 
 Focus on parking search intent, local/airport parking pages, indexability and conversion.
 
+### vagkollen.se
+
+Treat Vagkollen as a road-weather and route-planning utility for ordinary drivers in Sweden. Avoid SMB/B2B framing. Good SEO actions should improve practical travel scenarios, route weather, traffic/road conditions, safety context, timing and page clarity.
+
 ## Known Bad Patterns
 
 - Raw Codex JSON stream posted to Discord.
 - Sebcastwall actions mentioned in natverkskollen channel.
 - "Pilotläge" message after code automation is enabled.
+- Vagkollen recommendations that mention SMB flows, consulting, B2B SaaS or generic service/product copy.
 - "Batch saknas" message without follow-up recovery when batch returns.
 - Fetching 100 SEO actions can trigger Cloudflare Worker 1102 resource limits. Agent queue posting should fetch small batches; current `postPendingActions` limit is 10 and repo-only fallback is capped at 5.
 - Reposting the same target/topic/action under a new title after it has already been completed, ignored or guarded.

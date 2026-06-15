@@ -3283,7 +3283,7 @@ function formatActionMessage(action, workspacePolicy, workspace, review = null) 
   const showKeywordAsSearchTerm = shouldUseKeywordPlannerMetrics(action)
   const label = workspace?.label || action.workspaceSlug || action.projectSlug || 'workspace'
   const title = humanActionTitle(action)
-  const concreteAction = humanConcreteAction(action)
+  const concreteAction = humanConcreteAction(action, workspace)
   const why = review?.why || action.why || 'Passerar SEO-agentens relevanskontroll.'
   const expectedWork = review?.expectedWork || (isCodeAction(action) ? 'gör en repoändring, bygger, committar och postar GitHub-länk' : 'hanterar kontrollen och markerar nästa steg')
   const risk = review?.risk || 'okänd'
@@ -3322,11 +3322,18 @@ function humanActionTitle(action) {
   return title || 'SEO-action'
 }
 
-function humanConcreteAction(action) {
+function humanConcreteAction(action, workspace = null) {
   const recommended = String(action?.recommendedAction || '').trim()
   const title = String(action?.title || '').trim()
   const targetUrl = String(action?.targetUrl || action?.url || '').trim()
   if (/^ai search readiness:\s*\/?$/i.test(title)) {
+    if (isVagkollenWorkspace(workspace, action)) {
+      return [
+        targetUrl ? `Uppdatera startsidan ${targetUrl}.` : 'Uppdatera startsidan.',
+        'Gör den tydligare som en väg- och vädertjänst: konkreta rutt-/rese-scenarion, vägväder, trafikläge, halka/regn/vind och när användaren bör kolla tjänsten före eller under en resa.',
+        'Målet är att sidan ska förklara den faktiska nyttan med Vagkollen för bilresor i Sverige, inte låta som en generisk B2B- eller konsulttjänst.'
+      ].join(' ')
+    }
     return [
       targetUrl ? `Uppdatera startsidan ${targetUrl}.` : 'Uppdatera startsidan.',
       'Lägg in mer konkret hjälpsamt innehåll: exempel/scenario, tydliga use cases, fallgropar, nästa steg och interna länkar.',
@@ -3336,6 +3343,12 @@ function humanConcreteAction(action) {
   if (recommended) return recommended.slice(0, 520)
   if (targetUrl) return `Gör en fokuserad SEO-förbättring på ${targetUrl} och verifiera med build.`
   return 'Gör den minsta konkreta SEO-förbättringen som matchar kortet och verifiera med build.'
+}
+
+function isVagkollenWorkspace(workspace, action = null) {
+  return [workspace?.label, workspace?.id, workspace?.gscProperty, workspace?.repoFullName, action?.workspaceSlug, action?.projectSlug, action?.targetUrl, action?.url]
+    .filter(Boolean)
+    .some((value) => String(value).toLowerCase().includes('vagkollen'))
 }
 
 function formatKeywordMetricsLine(action) {
