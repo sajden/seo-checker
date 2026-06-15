@@ -395,7 +395,8 @@ async function postGscIssueAction({ action, issue, workspace, targetChannelId, s
   }
   ensureWorkspaceProfile(workspace, targetChannelId)
   const review = reviewActionForPosting(action, workspace, targetChannelId, sourceLabel)
-  const posted = await sendDiscordMessage(formatActionMessage(action, sourceLabel, workspace, review), targetChannelId, actionComponents(action), { kind: 'action_card' })
+  const message = await buildActionCardMessage(action, sourceLabel, workspace, review, targetChannelId)
+  const posted = await sendDiscordMessage(message, targetChannelId, actionComponents(action), { kind: 'action_card' })
   state.postedActionIds = state.postedActionIds || {}
   state.postedActionIds[action.id] = {
     messageId: posted.id,
@@ -1018,7 +1019,7 @@ async function postPendingActions({ workspace, targetChannelId }) {
       log('action_card_review_rejected', { id, workspace: workspace?.label || workspace?.id || null, reason: review.reason, score: review.score })
       continue
     }
-    const message = formatActionMessage(enrichedAction, actions.workspacePolicy, workspace, review)
+    const message = await buildActionCardMessage(enrichedAction, actions.workspacePolicy, workspace, review, targetChannelId)
     const posted = await sendDiscordMessage(message, targetChannelId, actionComponents(enrichedAction))
     recordActionLedger(enrichedAction, workspace, targetChannelId, 'posted', { messageId: posted.id, systemKey, guard: guard.reason || 'passed', review })
     state.postedActionIds[id] = {
@@ -1553,7 +1554,8 @@ async function maybeHandleGscIssueMessage(message, targetChannelId) {
   }
   ensureWorkspaceProfile(workspace, targetChannelId)
   const review = reviewActionForPosting(action, workspace, targetChannelId, 'GSC issue från Search Console')
-  const posted = await sendDiscordMessage(formatActionMessage(action, 'GSC issue från Search Console', workspace, review), targetChannelId, actionComponents(action), { kind: 'action_card' })
+  const actionMessage = await buildActionCardMessage(action, 'GSC issue från Search Console', workspace, review, targetChannelId)
+  const posted = await sendDiscordMessage(actionMessage, targetChannelId, actionComponents(action), { kind: 'action_card' })
   state.postedActionIds = state.postedActionIds || {}
   state.postedActionIds[action.id] = {
     messageId: posted.id,
@@ -2056,7 +2058,7 @@ async function repostActiveActionCard(workspace, payload, targetChannelId, optio
   const review = reviewActionForPosting(enrichedAction, workspace, targetChannelId, payload.workspacePolicy)
   const message = [
     options.intro || 'Här är kortet jag menar:',
-    formatActionMessage(enrichedAction, payload.workspacePolicy, workspace, review)
+    await buildActionCardMessage(enrichedAction, payload.workspacePolicy, workspace, review, targetChannelId)
   ].join('\n\n')
   const posted = await sendDiscordMessage(message, targetChannelId, actionComponents(enrichedAction))
   state.postedActionIds = state.postedActionIds || {}
@@ -3351,12 +3353,118 @@ function parseCommand(content) {
   }
 }
 
+async function buildActionCardMessage(action, workspacePolicy, workspace, review = null, targetChannelId = null) {
+  const codexBrief = await runCodexActionCardBrief({ action, workspace, workspacePolicy, review, targetChannelId }).catch((error) => {
+    log('codex_action_card_brief_failed', { actionId: action?.id || null, workspace: workspace?.label || workspace?.id || null, error: error?.message || String(error) })
+    return null
+  })
+  if (codexBrief?.decision === 'block') {
+    rememberGuardedAction(action, workspace, targetChannelId, `codex_action_card_blocked:${codexBrief.reason || 'unclear_action'}`)
+    return formatActionMessage(action, workspacePolicy, workspace, {
+      ...review,
+      recommendation: 'Deprioritize',
+      why: codexBrief.reason || review?.why || action?.why || 'Codex bedömde att kortet inte är tillräckligt tydligt.',
+      concreteAction: codexBrief.doThis || 'Vänta med kortet tills SEO-agenten har tydligare workspace- och målkontext.',
+      risk: 'medium, Codex bedömde att åtgärden behöver förtydligas innan kod'
+    })
+  }
+  return formatActionMessage(action, workspacePolicy, workspace, {
+    ...review,
+    ...(codexBrief?.title ? { actionTitle: codexBrief.title } : {}),
+    ...(codexBrief?.doThis ? { concreteAction: codexBrief.doThis } : {}),
+    ...(codexBrief?.why ? { why: codexBrief.why } : {}),
+    ...(codexBrief?.risk ? { risk: codexBrief.risk } : {}),
+    ...(codexBrief?.expectedWork ? { expectedWork: codexBrief.expectedWork } : {}),
+    ...(codexBrief?.recommendation ? { recommendation: codexBrief.recommendation } : {})
+  })
+}
+
+async function runCodexActionCardBrief({ action, workspace, workspacePolicy, review, targetChannelId }) {
+  if (!codexChatEnabled) return null
+  const profile = ensureWorkspaceProfile(workspace, targetChannelId)
+  const promptPath = join(stateDir, 'codex-action-card-brief.md')
+  const context = {
+    workspace: workspace ? {
+      id: workspace.id,
+      label: workspace.label,
+      gscProperty: workspace.gscProperty,
+      repoFullName: workspace.repoFullName,
+      branch: workspace.branch || 'main'
+    } : null,
+    inferredProfile: profile,
+    workspacePolicy,
+    deterministicReview: review,
+    action: compactActionForChat(action),
+    rawAction: {
+      id: action?.id,
+      title: action?.title,
+      targetUrl: action?.targetUrl || action?.url || null,
+      keyword: action?.keyword || null,
+      category: action?.category || null,
+      priority: action?.priority || null,
+      why: action?.why || null,
+      recommendedAction: action?.recommendedAction || null,
+      evidence: Array.isArray(action?.evidence) ? action.evidence.slice(0, 8) : []
+    }
+  }
+  const prompt = [
+    'Du är SEO Agentens Codex-hjärna innan ett Discord-actionkort postas.',
+    'Ditt jobb är att förstå vilken sorts sajt/workspace detta är och formulera en konkret, workspace-korrekt åtgärd.',
+    'Var smart: om det är en konsumenttjänst ska du inte använda B2B/SMB/konsultspråk. Om det är en katalog/tjänst/produkt ska åtgärden passa den typen.',
+    'Om actionen verkar fel workspace, generisk, repetitiv eller otydlig: decision=block eller rewrite med tydlig förklaring.',
+    'Returnera ENDAST JSON:',
+    '{"decision":"allow|rewrite|block","title":"kort konkret svensk titel","doThis":"en konkret mening om exakt vad som ska göras","why":"kort varför detta är rätt för just detta workspace","risk":"låg|medium + kort orsak","expectedWork":"vad agenten gör om användaren trycker Approve","recommendation":"Approve|Review|Deprioritize|Skip","reason":"kort intern orsak"}',
+    '',
+    'Regler:',
+    '- Skriv på svenska.',
+    '- Max 220 tecken i title, max 420 tecken i doThis.',
+    '- Nämn rätt domän/tjänsttyp utifrån context.',
+    '- Ingen rå JSON/tool-output i fälten.',
+    '- Låtsas inte att kod redan körts.',
+    '',
+    'AGENT SPEC:',
+    readAgentSpecs(3500),
+    '',
+    'CONTEXT JSON:',
+    JSON.stringify(context, null, 2)
+  ].join('\n')
+  writeFileSync(promptPath, prompt)
+  const result = await execCodexTracked({
+    agent: 'seo-agent',
+    purpose: 'action_card_brief',
+    workspace: workspace?.label || workspace?.id || null,
+    command: `codex exec --json --cd /home/deploy/seo-agent-discord --dangerously-bypass-approvals-and-sandbox - < ${promptPath}`,
+    timeout: 3 * 60 * 1000,
+    maxBuffer: 8 * 1024 * 1024
+  })
+  return normalizeActionCardBrief(extractCodexExecText(result.stdout || ''))
+}
+
+function normalizeActionCardBrief(text) {
+  const raw = String(text || '').trim()
+  const jsonText = raw.match(/\{[\s\S]*\}/)?.[0] || raw
+  let parsed = null
+  try { parsed = JSON.parse(jsonText) } catch { return null }
+  const decision = ['allow', 'rewrite', 'block'].includes(parsed.decision) ? parsed.decision : 'allow'
+  const recommendation = ['Approve', 'Review', 'Deprioritize', 'Skip'].includes(parsed.recommendation) ? parsed.recommendation : ''
+  return {
+    decision,
+    title: typeof parsed.title === 'string' ? parsed.title.slice(0, 220) : '',
+    doThis: typeof parsed.doThis === 'string' ? parsed.doThis.slice(0, 520) : '',
+    why: typeof parsed.why === 'string' ? parsed.why.slice(0, 420) : '',
+    risk: typeof parsed.risk === 'string' ? parsed.risk.slice(0, 180) : '',
+    expectedWork: typeof parsed.expectedWork === 'string' ? parsed.expectedWork.slice(0, 220) : '',
+    recommendation,
+    reason: typeof parsed.reason === 'string' ? parsed.reason.slice(0, 300) : ''
+  }
+}
+
 function formatActionMessage(action, workspacePolicy, workspace, review = null) {
   if (isGscAuthAction(action)) return formatGscAuthMessage(action, workspacePolicy, workspace)
   const showKeywordAsSearchTerm = shouldUseKeywordPlannerMetrics(action)
   const label = workspace?.label || action.workspaceSlug || action.projectSlug || 'workspace'
-  const title = humanActionTitle(action)
-  const concreteAction = humanConcreteAction(action, workspace)
+  const title = review?.actionTitle || humanActionTitle(action)
+  const concreteAction = review?.concreteAction || humanConcreteAction(action, workspace)
   const why = review?.why || action.why || 'Passerar SEO-agentens relevanskontroll.'
   const expectedWork = review?.expectedWork || (isCodeAction(action) ? 'gör en repoändring, bygger, committar och postar GitHub-länk' : 'hanterar kontrollen och markerar nästa steg')
   const risk = review?.risk || 'okänd'
