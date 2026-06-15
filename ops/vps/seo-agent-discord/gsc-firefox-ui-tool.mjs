@@ -102,17 +102,8 @@ function inspectionScore(inspection) {
 }
 
 async function novncNavigate(url) {
-  const browser = await launchChromium()
-  try {
-    const page = await openNovncPage(browser)
-    await page.mouse.click(600, 63)
-    await page.keyboard.press('Control+L')
-    await page.keyboard.type(url, { delay: 4 })
-    await page.keyboard.press('Enter')
-    await page.waitForTimeout(6000)
-  } finally {
-    await browser.close()
-  }
+  await restartFirefoxUrl(url)
+  await sleep(6000)
 }
 
 async function openFirefoxUrl(url) {
@@ -126,23 +117,57 @@ async function openFirefoxUrl(url) {
   await runDocker(['exec', '-u', 'abc', container, 'sh', '-lc', script])
 }
 
+async function pasteFirefoxUrl(url) {
+  const script = [
+    'export XDG_RUNTIME_DIR=/config/.XDG',
+    'export WAYLAND_DISPLAY=wayland-1',
+    `printf %s ${shellQuote(url)} | wl-copy`,
+    'sleep 0.2',
+    'wtype -M ctrl -k l -m ctrl',
+    'sleep 0.2',
+    'wtype -M ctrl -k v -m ctrl',
+    'sleep 0.2',
+    'wtype -k Return'
+  ].join('; ')
+  await runDocker(['exec', '-u', 'abc', container, 'sh', '-lc', script])
+}
+
+async function restartFirefoxUrl(url) {
+  const script = [
+    'export DISPLAY=:1',
+    'export XDG_RUNTIME_DIR=/config/.XDG',
+    'export WAYLAND_DISPLAY=wayland-1',
+    'export MOZ_ENABLE_WAYLAND=1',
+    'pkill firefox || true',
+    'sleep 2',
+    `nohup firefox ${shellQuote(url)} >/tmp/seo-agent-firefox-open.log 2>&1 &`
+  ].join('; ')
+  await runDocker(['exec', '-u', 'abc', container, 'sh', '-lc', script])
+}
+
 async function novncInspectUrl(targetUrl, strategy = 'top_search_click') {
+  await copyToClipboard(targetUrl)
   const browser = await launchChromium()
   try {
     const page = await openNovncPage(browser)
+    await page.keyboard.press('Escape').catch(() => null)
+    await page.waitForTimeout(300)
     if (strategy === 'slash_shortcut') {
       await page.keyboard.press('Escape')
       await page.keyboard.press('/')
     } else if (strategy === 'sidebar_then_top_search') {
       await page.mouse.click(100, 360)
       await page.waitForTimeout(1000)
-      await page.mouse.click(650, 116)
+      await page.mouse.click(650, 32)
     } else {
-      await page.mouse.click(650, 116)
+      await page.mouse.click(650, 32)
     }
-    await page.keyboard.press('Control+A').catch(() => null)
-    await page.keyboard.type(targetUrl, { delay: 4 })
-    await page.keyboard.press('Enter')
+    await page.waitForTimeout(500)
+    await wtypeKeys(['-M', 'ctrl', '-k', 'a', '-m', 'ctrl'])
+    await sleep(300)
+    await wtypeKeys(['-M', 'ctrl', '-k', 'v', '-m', 'ctrl'])
+    await sleep(300)
+    await wtypeKeys(['-k', 'Return'])
     await page.waitForTimeout(8000)
   } finally {
     await browser.close()
@@ -293,7 +318,7 @@ async function focusUrlInspectionBox(targetUrl) {
 }
 
 async function copyToClipboard(text) {
-  await runDocker(['exec', '-u', 'abc', container, 'sh', '-lc', `export WAYLAND_DISPLAY=/config/.XDG/wayland-1; printf %s ${shellQuote(text)} | wl-copy`])
+  await runDocker(['exec', '-u', 'abc', container, 'sh', '-lc', `export XDG_RUNTIME_DIR=/config/.XDG; export WAYLAND_DISPLAY=wayland-1; printf %s ${shellQuote(text)} | wl-copy`])
 }
 
 async function wtypeUrl(url) {
@@ -303,11 +328,11 @@ async function wtypeUrl(url) {
 }
 
 async function wtypeText(text) {
-  await runDocker(['exec', '-u', 'abc', container, 'sh', '-lc', `export WAYLAND_DISPLAY=/config/.XDG/wayland-1; wtype ${shellQuote(text)}`])
+  await runDocker(['exec', '-u', 'abc', container, 'sh', '-lc', `export XDG_RUNTIME_DIR=/config/.XDG; export WAYLAND_DISPLAY=wayland-1; wtype ${shellQuote(text)}`])
 }
 
 async function wtypeKeys(args) {
-  await runDocker(['exec', '-u', 'abc', container, 'sh', '-lc', `export WAYLAND_DISPLAY=/config/.XDG/wayland-1; wtype ${args.map(shellQuote).join(' ')}`])
+  await runDocker(['exec', '-u', 'abc', container, 'sh', '-lc', `export XDG_RUNTIME_DIR=/config/.XDG; export WAYLAND_DISPLAY=wayland-1; wtype ${args.map(shellQuote).join(' ')}`])
 }
 
 function assertWorkspaceUrl(input) {

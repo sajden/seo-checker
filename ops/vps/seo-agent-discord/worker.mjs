@@ -1962,7 +1962,7 @@ async function runGscInspectionAction(action, workspace, targetChannelId, source
     targetUrl ? `URL att inspektera: ${targetUrl}` : '',
     indexedByGsc ? `Resultat: GSC visar att URL:en är indexerad (${Number(result.inspection.confidence).toFixed(2)} confidence). Jag markerade kortet som hanterat.` : '',
     result.ok && observationPath ? `Observation sparad på VPS: ${observationPath}` : '',
-    result.ok && !indexedByGsc ? 'Nästa: kontrollera resultatet i Firefox/noVNC. Jag stänger bara kort automatiskt när GSC-bilden är tydligt indexerad.' : '',
+    result.ok && !indexedByGsc ? formatGscInspectionFollowup(result) : '',
     !result.ok ? `Fel: ${result.error || result.status || 'kunde inte öppna GSC UI'}` : ''
   ].filter(Boolean).join('\n'), targetChannelId)
   return {
@@ -1971,6 +1971,24 @@ async function runGscInspectionAction(action, workspace, targetChannelId, source
     error: result.error || result.status || '',
     observationPath
   }
+}
+
+function formatGscInspectionFollowup(result) {
+  const status = result?.inspection?.status || 'unknown'
+  const reason = result?.inspection?.reason || ''
+  const attempts = Array.isArray(result?.attempts) ? result.attempts : []
+  if (status === 'not_indexed_or_warning') {
+    return 'Resultat: GSC visar en indexeringsvarning. Jag lämnar kortet öppet så agenten kan föreslå repo-fix eller markera som hanterat efter kontroll.'
+  }
+  if (/url_not_in_property/i.test(reason)) {
+    return 'Fel: GSC säger att URL:en inte ligger i vald property. Jag behandlar det som workspace/property-matchningsfel, inte som content-fix.'
+  }
+  const attemptedStrategies = attempts.map((attempt) => attempt.strategy).filter(Boolean).join(', ')
+  return [
+    'Fel: jag kunde öppna GSC, men URL Inspection gav inget säkert resultat.',
+    attemptedStrategies ? `Försökta UI-strategier: ${attemptedStrategies}.` : '',
+    'Det här är ett browser-/UI-automationsfel tills motsatsen är bevisad, inte ett krav på att koppla om GSC OAuth.'
+  ].filter(Boolean).join('\n')
 }
 
 async function findActionForWorkspace(actionId, targetChannelId) {
