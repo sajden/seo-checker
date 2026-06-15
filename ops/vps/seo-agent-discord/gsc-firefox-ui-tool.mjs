@@ -27,7 +27,7 @@ async function run(command, input) {
   if (command === 'open-url') {
     const url = String(input.url || '').trim()
     if (!/^https?:\/\//i.test(url)) return { ok: false, command, error: 'valid_url_required' }
-    await openFirefoxUrl(url)
+    await restartFirefoxUrl(url)
     await sleep(3000)
     return { ok: true, command, opened: url, currentUrl: await readFirefoxCurrentUrl().catch(() => '') }
   }
@@ -179,10 +179,12 @@ async function readFirefoxCurrentUrl() {
     'export XDG_RUNTIME_DIR=/config/.XDG',
     'export WAYLAND_DISPLAY=wayland-1',
     'wl-copy --clear 2>/dev/null || true',
+    'wtype -k Escape',
+    'sleep 0.5',
     'wtype -M ctrl -k l -m ctrl',
-    'sleep 0.2',
+    'sleep 0.7',
     'wtype -M ctrl -k c -m ctrl',
-    'sleep 0.4',
+    'sleep 1',
     'wl-paste'
   ].join('; ')
   const result = await runDocker(['exec', '-u', 'abc', container, 'sh', '-lc', script])

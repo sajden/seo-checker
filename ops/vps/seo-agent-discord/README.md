@@ -37,6 +37,8 @@ In Discord, ask the SEO agent for `gsc oauth` to generate the agent-specific OAu
 
 `gsc oauth` now tries to open the flow in the agent's noVNC Firefox first. If Google requires manual approval, finish it in Firefox and write `klart`; the agent reads the current Firefox callback URL and stores the token. `gsc read browser` forces the same callback read.
 
+The known registered redirect URI for the agent GSC OAuth client is `https://seo-api.sebcastwall.se/api/gsc/callback`. Avoid localhost redirect URIs for the VPS agent unless they are explicitly registered in Google Cloud Console.
+
 ## Deploy
 
 After editing this snapshot, deploy with:
