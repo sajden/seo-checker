@@ -22,6 +22,7 @@ const activeActionReminderMs = Number(env.SEO_AGENT_ACTIVE_ACTION_REMINDER_MS ||
 const staleRunningMs = Number(env.SEO_AGENT_STALE_RUNNING_MS || String(2 * 60 * 60 * 1000))
 const staleQueuedApprovedMs = Number(env.SEO_AGENT_STALE_APPROVED_QUEUE_MS || String(36 * 60 * 60 * 1000))
 const staleActiveActionMs = Number(env.SEO_AGENT_STALE_ACTIVE_ACTION_MS || String(30 * 60 * 60 * 1000))
+const autonomousActiveBlockMs = Number(env.SEO_AGENT_AUTONOMOUS_ACTIVE_BLOCK_MS || String(6 * 60 * 60 * 1000))
 const stalePlatformIncidentMs = Number(env.SEO_AGENT_STALE_PLATFORM_INCIDENT_MS || String(48 * 60 * 60 * 1000))
 const workspaceChannels = parseWorkspaceChannels(env.SEO_AGENT_WORKSPACE_CHANNELS || '{}')
 const defaultWorkspaceId = env.SEO_AGENT_DEFAULT_WORKSPACE_ID || ''
@@ -662,6 +663,7 @@ async function maybePrepareAutonomousCodeWork(workspaces) {
   if (!codeAutomationEnabled) return
   const status = state.localAutomationStatus || await localAutomationStatus()
   if (status.codex !== 'ready') return
+  await recoverRetryableCodeFailures(workspaces)
   await maybeQueueAutonomousCodeActions(workspaces)
   await processApprovedCodeActions(workspaces)
 }
@@ -686,7 +688,15 @@ async function maybeQueueAutonomousCodeActions(workspaces) {
     const usedToday = Number(state.autonomousCodeRuns[runKey]?.count || 0)
     if (usedToday >= autonomousCodePerWorkspacePerDay) continue
     const active = activeActionRecordFor(workspace, targetChannelId)
-    if (active?.actionId) continue
+    if (active?.actionId && activeActionBlocksAutonomousCode(active)) continue
+    if (active?.actionId) {
+      delete state.activeActionByWorkspace[activeWorkspaceActionKey(workspace, targetChannelId)]
+      recordActionLedger({ id: active.actionId }, workspace, targetChannelId, 'deprioritized', {
+        reason: 'autonomous_active_card_timeout',
+        recheckAfter: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+      })
+      log('autonomous_active_card_timeout_cleared', { actionId: active.actionId, workspace: workspace.label || workspace.id || null })
+    }
     const payload = await fetchActionsForChat(workspace).catch((error) => ({ error: error?.message || String(error), actions: [] }))
     const actions = Array.isArray(payload.actions) ? payload.actions : []
     const candidate = await chooseAutonomousCodeAction(actions, workspace, targetChannelId, payload.workspacePolicy)
@@ -725,6 +735,88 @@ async function maybeQueueAutonomousCodeActions(workspaces) {
     ].filter(Boolean).join('\n').slice(0, 1900), targetChannelId)
     saveState()
     return
+  }
+}
+
+function activeActionBlocksAutonomousCode(active) {
+  const startedAt = Date.parse(active?.firstPostedAt || active?.postedAt || active?.repostedAt || active?.lastReminderAt || '')
+  if (!startedAt) return false
+  return Date.now() - startedAt < autonomousActiveBlockMs
+}
+
+async function recoverRetryableCodeFailures(workspaces) {
+  if (!automationEnabled || !autonomousCodeEnabled || !codeAutomationEnabled || state.codeActionRunning) return
+  state.codeActionResults = state.codeActionResults || {}
+  state.approvedCodeActionQueue = state.approvedCodeActionQueue || {}
+  for (const [actionId, result] of Object.entries(state.codeActionResults)) {
+    const failure = result?.failure || {}
+    if (!['infra_failed'].includes(result?.status)) continue
+    if (!failure.retryable || failure.category !== 'repo_access') continue
+    if (state.approvedCodeActionQueue[actionId]) continue
+    const failedAt = Date.parse(result.failedAt || '')
+    if (failedAt && Date.now() - failedAt < 10 * 60 * 1000) continue
+    const workspace = workspaceForFailedAction(actionId, workspaces)
+    if (!workspace?.repoFullName) continue
+    const repoReady = await repoAutomationReady(workspace.repoFullName, workspace.branch || 'main')
+    if (!repoReady.ready) continue
+    const targetChannelId = await channelForWorkspace(workspace)
+    const action = await actionForRetry(actionId, workspace, targetChannelId)
+    if (!action || !isCodeAction(action)) continue
+    delete state.codeActionResults[actionId]
+    state.approvedCodeActionQueue[actionId] = {
+      ...action,
+      id: actionId,
+      repoFullName: workspace.repoFullName,
+      branch: workspace.branch || action.branch || 'main',
+      workspaceSlug: workspace.label || action.workspaceSlug || action.projectSlug || null,
+      queuedAt: new Date().toISOString(),
+      channelId: targetChannelId,
+      autonomous: true,
+      retryAfterSelfRepair: true,
+      autonomousReason: 'Tidigare kodaction stoppades av repo-access/checkout, men repo är redo nu.'
+    }
+    recordActionLedger(action, workspace, targetChannelId, 'approved', {
+      source: 'retryable_failure_recovered',
+      reason: 'repo_access_ready_after_failure'
+    })
+    await sendDiscordMessage([
+      `Jag återupptar en tidigare stoppad SEO-fix för ${workspace.label}.`,
+      `Kort: ${action.title || actionId}`,
+      'Orsak: repo-checkout/deploy access är redo nu, så jag kör kodautomation istället för att låta kortet fastna.'
+    ].join('\n').slice(0, 1900), targetChannelId)
+    saveState()
+    return
+  }
+}
+
+function workspaceForFailedAction(actionId, workspaces) {
+  const lowered = String(actionId || '').toLowerCase()
+  const ledger = Object.values(state.actionLedger || {}).find((item) => item?.actionId === actionId)
+  return workspaces.find((workspace) => {
+    const haystack = `${workspace.id || ''} ${workspace.label || ''} ${workspace.gscProperty || ''} ${workspace.repoFullName || ''}`.toLowerCase()
+    return lowered.includes(slugify(workspaceHost(workspace))) || lowered.includes(slugify(workspace.label || '')) || (ledger?.workspaceKey && haystack.includes(String(ledger.workspaceKey).toLowerCase().split('__')[0]))
+  }) || null
+}
+
+async function actionForRetry(actionId, workspace, targetChannelId) {
+  const payload = await fetchActionsForChat(workspace).catch(() => ({ actions: [] }))
+  const live = Array.isArray(payload.actions) ? payload.actions.find((item) => item?.id === actionId) : null
+  if (live) return live
+  const ledger = Object.values(state.actionLedger || {}).find((item) => item?.actionId === actionId)
+  if (!ledger) return fallbackActionFromState(actionId, targetChannelId)
+  return {
+    id: actionId,
+    title: ledger.title || actionId,
+    targetUrl: ledger.targetUrl || null,
+    url: ledger.targetUrl || null,
+    keyword: ledger.keyword || null,
+    recommendedAction: 'Återuppta tidigare godkänd låg-risk SEO-fix efter att repo-access/checkout reparerats.',
+    why: 'Tidigare körning stoppades av infrafel, inte av SEO- eller buildfel.',
+    priority: 'high',
+    category: 'content',
+    status: 'approved',
+    workspaceSlug: workspace?.label || null,
+    projectSlug: workspace?.repoFullName || null
   }
 }
 
