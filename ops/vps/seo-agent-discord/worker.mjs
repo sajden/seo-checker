@@ -4887,18 +4887,37 @@ function workspaceForChannel(targetChannelId) {
     .filter(([, mappedChannelId]) => mappedChannelId === targetChannelId)
     .map(([key]) => key)
   if (!keys.length) return null
-  const gscProperty = keys.find((key) => key.startsWith('sc-domain:'))
-    || keys.find((key) => /^https?:\/\//i.test(key) && !key.includes('__'))
-    || keys.find((key) => /^https?:\/\//i.test(key))
-    || ''
-  const repoFullName = keys.find((key) => /^[^\s/:]+\/[^\s/]+$/.test(key)) || ''
-  const labelKey = keys.find((key) => !key.startsWith('sc-domain:') && !/^https?:\/\//i.test(key) && !key.includes('/')) || gscProperty || repoFullName || keys[0]
+  const parsed = keys.map(parseWorkspaceChannelKey)
+  const gscProperty = parsed.find((item) => item.gscProperty)?.gscProperty || ''
+  const repoFullName = parsed.find((item) => item.repoFullName)?.repoFullName || ''
+  const branch = parsed.find((item) => item.branch)?.branch || 'main'
+  const labelKey = parsed.find((item) => item.label)?.label || gscProperty || repoFullName || keys[0]
   const site = normalizeGscPropertyHost(gscProperty)
   return {
-    id: `${gscProperty || labelKey}__${repoFullName || ''}__main`,
+    id: `${gscProperty || labelKey}__${repoFullName || ''}__${branch}`,
     label: site || labelKey,
     gscProperty: gscProperty || undefined,
     repoFullName: repoFullName || undefined,
+    branch
+  }
+}
+
+function parseWorkspaceChannelKey(key) {
+  const raw = String(key || '').trim()
+  const parts = raw.split('__')
+  if (parts.length >= 2) {
+    const [propertyOrLabel, repoFullName, branch] = parts
+    return {
+      label: propertyOrLabel && !propertyOrLabel.startsWith('sc-domain:') && !/^https?:\/\//i.test(propertyOrLabel) ? propertyOrLabel : '',
+      gscProperty: propertyOrLabel && (propertyOrLabel.startsWith('sc-domain:') || /^https?:\/\//i.test(propertyOrLabel)) ? propertyOrLabel : '',
+      repoFullName: repoFullName || '',
+      branch: branch || 'main'
+    }
+  }
+  return {
+    label: !raw.startsWith('sc-domain:') && !/^https?:\/\//i.test(raw) && !/^[^\s/:]+\/[^\s/]+$/.test(raw) ? raw : '',
+    gscProperty: raw.startsWith('sc-domain:') || /^https?:\/\//i.test(raw) ? raw : '',
+    repoFullName: /^[^\s/:]+\/[^\s/]+$/.test(raw) ? raw : '',
     branch: 'main'
   }
 }
