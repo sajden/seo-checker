@@ -32,6 +32,8 @@ rsync -av ops/vps/seo-agent-discord/worker.mjs ops/vps/seo-agent-discord/codex-r
 ssh deploy@178.104.240.46 'cd /home/deploy/seo-agent-discord && node --check worker.mjs && systemctl --user restart seo-agent-discord.service && systemctl --user is-active seo-agent-discord.service'
 ```
 
+Do not deploy this directory with `rsync --delete`. The live runtime also contains untracked operational files such as `.env`, `node_modules`, browser tools, and the `state` symlink to the Hetzner volume. Deleting those will break the agent or make it start with empty memory.
+
 If `agent-brain.mjs` changes:
 
 ```bash

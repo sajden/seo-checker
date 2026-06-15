@@ -843,14 +843,36 @@ async function repoAutomationReady(repoFullName, branch = 'main') {
 
 async function chooseAutonomousCodeAction(actions, workspace, targetChannelId, workspacePolicy = '') {
   const pending = prioritizeActionQueue(actions.filter((item) => item?.status === 'pending'), workspace, targetChannelId)
+  const rejectionReasons = []
   for (const action of pending) {
-    if (!action?.id || state.codeActionResults?.[action.id] || state.approvedCodeActionQueue?.[action.id]) continue
+    if (!action?.id) {
+      rejectionReasons.push({ title: action?.title || 'untitled', reason: 'missing_action_id' })
+      continue
+    }
+    if (state.codeActionResults?.[action.id]) {
+      rejectionReasons.push({ id: action.id, title: action.title || action.id, reason: `already_result:${state.codeActionResults[action.id]?.status || 'done'}` })
+      continue
+    }
+    if (state.approvedCodeActionQueue?.[action.id]) {
+      rejectionReasons.push({ id: action.id, title: action.title || action.id, reason: 'already_queued' })
+      continue
+    }
     const enrichedAction = await enrichActionWithKeywordMetrics(action)
-    if (!isAutonomousCodeCandidate(enrichedAction, workspace, targetChannelId)) continue
+    const candidateCheck = autonomousCodeCandidateCheck(enrichedAction, workspace, targetChannelId)
+    if (!candidateCheck.ok) {
+      rejectionReasons.push({ id: enrichedAction.id, title: enrichedAction.title || enrichedAction.id, reason: candidateCheck.reason })
+      continue
+    }
     const guard = shouldPostActionCard(enrichedAction, workspace, targetChannelId)
-    if (!guard.ok) continue
+    if (!guard.ok) {
+      rejectionReasons.push({ id: enrichedAction.id, title: enrichedAction.title || enrichedAction.id, reason: `guard:${guard.reason}` })
+      continue
+    }
     const review = reviewActionForPosting(enrichedAction, workspace, targetChannelId, workspacePolicy)
-    if (!isAutonomousReviewSafe(review)) continue
+    if (!isAutonomousReviewSafe(review)) {
+      rejectionReasons.push({ id: enrichedAction.id, title: enrichedAction.title || enrichedAction.id, reason: `review:${review?.recommendation || 'unknown'}:${Math.round(Number(review?.score || 0))}:${review?.risk || ''}` })
+      continue
+    }
     const codexBrief = await runCodexActionCardBrief({
       action: enrichedAction,
       workspace,
@@ -861,7 +883,10 @@ async function chooseAutonomousCodeAction(actions, workspace, targetChannelId, w
       log('autonomous_codex_brief_failed', { actionId: enrichedAction.id, workspace: workspace?.label || workspace?.id || null, error: error?.message || String(error) })
       return null
     })
-    if (!isAutonomousCodexSafe(codexBrief)) continue
+    if (!isAutonomousCodexSafe(codexBrief)) {
+      rejectionReasons.push({ id: enrichedAction.id, title: enrichedAction.title || enrichedAction.id, reason: `codex:${codexBrief?.recommendation || codexBrief?.decision || 'blocked'}` })
+      continue
+    }
     return {
       action: enrichedAction,
       review,
@@ -869,22 +894,120 @@ async function chooseAutonomousCodeAction(actions, workspace, targetChannelId, w
       reason: codexBrief?.why || review.why || 'Codex och agentens guard bedömde detta som en konkret låg-risk förbättring.'
     }
   }
+  const synthetic = await syntheticAutonomousActionForWorkspace({
+    workspace,
+    targetChannelId,
+    pending,
+    rejectionReasons,
+    workspacePolicy
+  })
+  if (synthetic) return synthetic
+  rememberNoAutonomousCandidate(workspace, targetChannelId, pending, rejectionReasons)
   return null
 }
 
 function isAutonomousCodeCandidate(action, workspace, targetChannelId) {
-  if (!isCodeAction(action)) return false
-  if (isIndexingCheckAction(action)) return false
+  return autonomousCodeCandidateCheck(action, workspace, targetChannelId).ok
+}
+
+function autonomousCodeCandidateCheck(action, workspace, targetChannelId) {
+  if (!isCodeAction(action)) return { ok: false, reason: 'not_code_action' }
+  if (isIndexingCheckAction(action)) return { ok: false, reason: 'indexing_or_gsc_check' }
   const kind = actionKindForLearning(action)
-  if (!['content', 'internal-links'].includes(kind)) return false
-  if (!String(action.targetUrl || action.url || '').trim()) return false
-  if (kind === 'new-page') return false
+  if (!['content', 'internal-links'].includes(kind)) return { ok: false, reason: `unsupported_kind:${kind}` }
+  if (!String(action.targetUrl || action.url || '').trim()) return { ok: false, reason: 'missing_target_url' }
+  if (kind === 'new-page') return { ok: false, reason: 'new_page_needs_human_approval' }
   const cluster = actionLearningKey(action, workspace, targetChannelId)
   const ledger = state.actionLedger?.[cluster]
-  if (ledger?.status === 'completed' && !isLedgerRecheckDue(ledger)) return false
-  if (ledger?.status === 'deprioritized' && !isLedgerRecheckDue(ledger)) return false
-  if (ledger?.status === 'ignored' && !isLedgerRecheckDue(ledger)) return false
-  return true
+  if (ledger?.status === 'completed' && !isLedgerRecheckDue(ledger)) return { ok: false, reason: 'already_completed_waiting_recheck' }
+  if (ledger?.status === 'deprioritized' && !isLedgerRecheckDue(ledger)) return { ok: false, reason: 'recently_deprioritized_waiting_recheck' }
+  if (ledger?.status === 'ignored' && !isLedgerRecheckDue(ledger)) return { ok: false, reason: 'recently_ignored_waiting_recheck' }
+  return { ok: true, reason: 'candidate' }
+}
+
+async function syntheticAutonomousActionForWorkspace({ workspace, targetChannelId, pending, rejectionReasons, workspacePolicy }) {
+  const profile = ensureWorkspaceProfile(workspace, targetChannelId)
+  if (!isSebcastwallWorkspace(workspace, profile)) return null
+  const hasLiveAiCandidate = pending.some((action) => {
+    const text = actionText(action)
+    return /ai|agent|automation|automatisering|kodning|utbildning|workshop|app|webbutveckling/.test(text)
+      && !/fortnox|visma|bokforing|faktura|klarna/.test(text)
+  })
+  const queueIsWeak = !pending.length || rejectionReasons.length >= Math.min(pending.length, 4)
+  if (!queueIsWeak && hasLiveAiCandidate) return null
+  const action = buildSebcastwallGoalGapAction(workspace)
+  if (!action || state.codeActionResults?.[action.id] || state.approvedCodeActionQueue?.[action.id]) return null
+  const candidateCheck = autonomousCodeCandidateCheck(action, workspace, targetChannelId)
+  if (!candidateCheck.ok) return null
+  const guard = shouldPostActionCard(action, workspace, targetChannelId)
+  if (!guard.ok) return null
+  const review = reviewActionForPosting(action, workspace, targetChannelId, workspacePolicy)
+  if (!isAutonomousReviewSafe(review)) return null
+  const codexBrief = await runCodexActionCardBrief({
+    action,
+    workspace,
+    workspacePolicy,
+    review,
+    targetChannelId
+  }).catch((error) => {
+    log('synthetic_autonomous_codex_brief_failed', { workspace: workspace?.label || workspace?.id || null, error: error?.message || String(error) })
+    return null
+  })
+  if (!isAutonomousCodexSafe(codexBrief)) return null
+  log('synthetic_autonomous_action_selected', {
+    workspace: workspace?.label || workspace?.id || null,
+    actionId: action.id,
+    rejectedLiveActions: rejectionReasons.slice(0, 8)
+  })
+  rememberAgentLesson(`Created synthetic Sebcastwall goal-gap action because live queue did not match AI/kod/utbildning focus.`)
+  return {
+    action,
+    review,
+    codexBrief,
+    reason: codexBrief?.why || 'Live-kön matchade inte Sebcastwalls AI/kod/utbildningsmål, så agenten skapade en låg-risk förbättring på befintlig tjänstesida.'
+  }
+}
+
+function buildSebcastwallGoalGapAction(workspace) {
+  const host = workspaceHost(workspace) || 'sebcastwall.se'
+  const slug = slugify(`${host}-${workspace?.repoFullName || 'repo'}-autonomous-ai-training-service-gap`).slice(0, 120)
+  return {
+    id: `seo_synthetic_${slug}`,
+    status: 'pending',
+    priority: 'high',
+    category: 'content',
+    title: 'Workspace goal gap: stärk AI-automatisering med utbildning och kodnära konsultvinkel',
+    targetUrl: 'https://sebcastwall.se/tjanster/ai-automatisering',
+    url: 'https://sebcastwall.se/tjanster/ai-automatisering',
+    keyword: 'AI automatisering företag',
+    why: 'Sebcastwall-målet är AI-konsult, kodning, automation och AI-utbildningar. Nuvarande live-kö domineras av GSC/integrationer eller redan hanterade kort, så nästa låg-risk steg är att stärka befintlig AI-automatiseringssida mot köpintention.',
+    recommendedAction: 'I repo: uppdatera /tjanster/ai-automatisering med tydligare erbjudande för AI-automatisering för företag, workshops/utbildning, konkreta kodnära exempel, interna länkar till AI-agenter, app-webbutveckling och interna verktyg, samt CTA för AI-konsultation. Skapa ingen ny sida utan tydligt behov.',
+    workspaceSlug: workspace?.label || host,
+    projectSlug: workspace?.repoFullName || '',
+    synthetic: true
+  }
+}
+
+function isSebcastwallWorkspace(workspace, profile = null) {
+  return [workspace?.label, workspace?.id, workspace?.gscProperty, workspace?.repoFullName, profile?.label]
+    .filter(Boolean)
+    .some((value) => String(value).toLowerCase().includes('sebcastwall'))
+}
+
+function rememberNoAutonomousCandidate(workspace, targetChannelId, pending, rejectionReasons) {
+  const key = workspaceProfileKey(workspace, targetChannelId)
+  state.noAutonomousCandidate = state.noAutonomousCandidate || {}
+  const now = new Date().toISOString()
+  state.noAutonomousCandidate[key] = {
+    at: now,
+    pendingCount: pending.length,
+    reasons: rejectionReasons.slice(0, 12)
+  }
+  logThrottled(`no_autonomous_candidate:${key}`, 6 * 60 * 60 * 1000, 'no_autonomous_candidate', {
+    workspace: workspace?.label || workspace?.id || null,
+    pendingCount: pending.length,
+    reasons: rejectionReasons.slice(0, 8)
+  })
 }
 
 function isAutonomousReviewSafe(review) {
@@ -4459,12 +4582,12 @@ function detectOutboundMessageIssue(content, targetChannelId) {
   const lower = trimmed.toLowerCase()
   const knownSites = ['sebcastwall.se', 'natverkskollen.se', 'parkeringspolaren.se']
   for (const site of knownSites) {
-    if (label && site !== label && lower.includes(site)) return { reason: `cross_workspace_reference:${site}_in_${label}` }
+    if (label && !label.includes(site) && lower.includes(site)) return { reason: `cross_workspace_reference:${site}_in_${label}` }
   }
   const repo = String(workspace?.repoFullName || '').toLowerCase()
   const knownRepos = ['sajden/sebcastwall', 'sajden/natverkskollen', 'sajden/parkeringspolaren-web']
   for (const knownRepo of knownRepos) {
-    if (repo && knownRepo !== repo && lower.includes(knownRepo)) return { reason: `cross_workspace_repo:${knownRepo}_in_${repo}` }
+    if (repo && !repo.includes(knownRepo) && lower.includes(knownRepo)) return { reason: `cross_workspace_repo:${knownRepo}_in_${repo}` }
   }
   return null
 }

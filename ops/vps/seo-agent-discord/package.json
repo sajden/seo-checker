@@ -1,0 +1,9 @@
+{
+  "type": "module",
+  "private": true,
+  "dependencies": {
+    "discord.js": "^14.19.3",
+    "playwright": "^1.52.0",
+    "pngjs": "^7.0.0"
+  }
+}
