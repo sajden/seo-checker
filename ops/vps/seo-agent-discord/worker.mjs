@@ -70,7 +70,7 @@ async function tick() {
 async function postStartupOnce() {
   if (state.startedAt) return
   state.startedAt = new Date().toISOString()
-  await sendDiscordMessage('SEO Agent är online. Jag postar SEO-actions här och lyssnar på `approve <id>`, `skip <id>`, `deprioritize <id>` och `why <id>` från allowlistad användare.')
+  await sendDiscordMessage('SEO Agent är online. Jag postar SEO-actions här med knappar och svarar som vanlig chat. Om något är oklart ställer jag följdfrågor innan jag gör ändringar.')
   saveState()
 }
 
@@ -861,7 +861,7 @@ async function buildIntegrationDoctorReport(workspaces) {
       label: 'Google Search Console OAuth',
       ok: Boolean(gscPayload?.connected ?? gscPayload?.hasStoredRefreshToken),
       status: gscPayload ? String(gscPayload.connected ?? gscPayload.hasStoredRefreshToken ? 'connected' : gscPayload.status ?? 'not_connected') : settledErrorMessage(gsc),
-      fix: 'Skriv `gsc oauth` i Discord eller koppla om i Dashboard2 -> SEO Monitor -> Integrations.'
+      fix: 'Be agenten koppla om Search Console här i chatten, eller koppla om i Dashboard2 -> SEO Monitor -> Integrations.'
     },
     {
       key: 'google_ads',
@@ -871,10 +871,10 @@ async function buildIntegrationDoctorReport(workspaces) {
       fix: googleAdsRepair?.ok
         ? `Självreparerad via lokal OAuth-token (${googleAdsRepair.keywordPlannerStatus || 'ready'}).`
         : googleAdsRepair?.attempted
-          ? `Agenten försökte självreparera men misslyckades: ${googleAdsRepair.error}. Skriv \`google ads oauth\` om tokenen är ogiltig.`
+          ? `Agenten försökte självreparera men misslyckades: ${googleAdsRepair.error}. Be mig koppla om Google Ads om tokenen är ogiltig.`
           : googleAdsPayload?.error
-            ? `Skriv \`google ads oauth\`. Fel: ${googleAdsPayload.error}`
-            : 'Skriv `google ads oauth` för att skapa ny refresh token.'
+            ? `Be mig koppla om Google Ads. Fel: ${googleAdsPayload.error}`
+            : 'Be mig koppla Google Ads så skapar jag ett nytt OAuth-flöde.'
     },
     {
       key: 'codex',
@@ -907,7 +907,7 @@ function formatIntegrationDoctorMessage(report, onlyProblems = false) {
     '',
     ...checks.map((check) => `${check.ok ? 'OK' : 'FIX'} ${check.label}: ${check.status}${check.ok ? '' : `\nFix: ${check.fix}`}`),
     '',
-    'Kommandon: `google ads oauth`, `gsc oauth`, `doctor`.'
+    'Du kan be mig koppla om Google Ads eller Search Console direkt i chatten om något är rött.'
   ].join('\n').slice(0, 1900)
 }
 
@@ -1459,38 +1459,8 @@ async function processDiscordRepliesForChannel(targetChannelId) {
     state.seenMessageIds[messageId] = true
     if (message.author?.bot) continue
     if (String(message.author?.id || '') !== allowedUserId) continue
-    const command = parseCommand(String(message.content || ''))
-    if (command) await handleCommand(command, message, targetChannelId)
-    else await handleChatMessage(String(message.content || ''), message, targetChannelId)
+    await handleChatMessage(String(message.content || ''), message, targetChannelId)
   }
-}
-
-async function handleCommand(command, message, targetChannelId) {
-  if (command.decision === 'why') {
-    const action = await findAction(command.actionId)
-    if (!action) {
-      await sendDiscordMessage(`Hittar inte action \`${command.actionId}\`.`, targetChannelId)
-      return
-    }
-    await sendDiscordMessage(`Varför \`${action.id}\`:\n${action.why || 'Ingen förklaring sparad.'}\n\nRekommenderad action: ${action.recommendedAction || 'Ingen action sparad.'}`, targetChannelId)
-    return
-  }
-
-  const result = await saveActionDecision({
-    actionId: command.actionId,
-    decision: command.decision,
-    reason: command.reason || null,
-    source: 'discord',
-    discordMessageId: message.id,
-    discordChannelId: targetChannelId,
-  })
-  recordDecisionInLedger(command.actionId, command.decision, targetChannelId, { source: 'discord_command', reason: command.reason || null })
-  if (command.decision === 'approved') {
-    await rememberApprovedCodeAction(command.actionId, targetChannelId)
-    clearActiveAction(command.actionId)
-  } else clearActiveAction(command.actionId)
-  await sendDiscordMessage(command.decision === 'approved' ? `Approve sparad för \`${result.decision?.actionId || command.actionId}\`. Jag startar kodautomation på nästa agent-tick och postar commit/diff här.` : `Sparat beslut: \`${command.decision}\` för \`${result.decision?.actionId || command.actionId}\`.`, targetChannelId)
-  log('decision_saved', { actionId: command.actionId, decision: command.decision })
 }
 
 function extractActionIdFromDiscordMessage(message) {
@@ -1540,7 +1510,7 @@ function startDiscordInteractionClient() {
 
       const actionId = state.messageToAction?.[interaction.message?.id] || extractActionIdFromDiscordMessage(interaction.message)
       if (!actionId) {
-        await interaction.reply({ content: 'Jag hittar inte action-id för den här knappen. Jag kunde inte heller läsa ID:t ur meddelandetexten. Skriv `vilket kort?` så postar jag om kortet med ny knapp.', ephemeral: true })
+        await interaction.reply({ content: 'Jag hittar inte action-id för den här knappen. Be mig posta om det aktiva kortet, så skickar jag en ny knapp.', ephemeral: true })
         return
       }
       state.messageToAction = state.messageToAction || {}
@@ -1767,7 +1737,7 @@ async function handleChatMessage(content, message, targetChannelId) {
   })
   if (operatorIntentHandled) return
   if (/^(var|vart|hur)\s+(kopplar|connectar|ansluter)\s+(jag\s+)?(gsc|search console)|^(gsc|search console)\s+(hjälp|help|koppling)$/i.test(trimmed)) {
-    await sendDiscordMessage('GSC kopplas i Dashboard2 -> SEO Monitor -> Integrations -> Google Search Console. Skriv `gsc oauth` här så postar jag kopplingslänken. Om OAuth/token fallerar behandlar jag det som integrationsfel, inte som content-commit.', targetChannelId)
+    await sendDiscordMessage('GSC kopplas i Dashboard2 -> SEO Monitor -> Integrations -> Google Search Console. Om du vill kan jag posta kopplingslänken här när du ber mig koppla Search Console. Om OAuth/token fallerar behandlar jag det som integrationsfel, inte som content-commit.', targetChannelId)
     return
   }
   const workspace = workspaceForChannel(targetChannelId)
@@ -1790,7 +1760,24 @@ async function maybeHandleOperatorIntent(message, targetChannelId) {
   const activeId = activeRecord?.actionId || null
   const active = activeId ? actions.find((item) => String(item.id || '') === String(activeId)) : null
   if (!active) return false
-  if (!isIndexingCheckAction(active) && !/klar|klart|fixad|fixat|gjord|gjort|hanterad|hanterat|index|google|vänta|vanta|irrelevant|skippa|hoppa/i.test(message)) return false
+  const directDecision = directNaturalDecisionForActiveAction(message)
+  if (directDecision) {
+    await saveActionDecision({
+      actionId: active.id,
+      decision: directDecision.decision,
+      reason: `${directDecision.reason}: ${String(message || '').slice(0, 240)}`,
+      source: 'discord_natural_chat',
+      discordMessageId: null,
+      discordChannelId: targetChannelId
+    })
+    recordDecisionInLedger(active.id, directDecision.decision, targetChannelId, { source: 'discord_natural_chat', reason: directDecision.reason })
+    if (directDecision.decision === 'approved') await rememberApprovedCodeAction(active.id, targetChannelId)
+    clearActiveAction(active.id)
+    saveState()
+    await sendDiscordMessage(directDecision.confirmation(active), targetChannelId)
+    return true
+  }
+  if (!isIndexingCheckAction(active) && !/klar|klart|fixad|fixat|gjord|gjort|hanterad|hanterat|index|google|vänta|vanta|irrelevant|skippa|hoppa|kör|kor|gör|gor|fixa|godkänn|godkann|ta den/i.test(message)) return false
   const intent = await runCodexOperatorIntent({ workspace, activeAction: compactActionForChat(active), message })
   if (intent.intent === 'confirm_indexed' && isIndexingCheckAction(active)) {
     await handleUserIndexingConfirmation(workspace, targetChannelId, message)
@@ -1825,6 +1812,33 @@ async function maybeHandleOperatorIntent(message, targetChannelId) {
     return true
   }
   return false
+}
+
+function directNaturalDecisionForActiveAction(message) {
+  const text = String(message || '').trim().toLowerCase()
+  if (!text) return null
+  if (/\b(kör|kor|gör|gor|fixa|bygg|ta den|godkänn|godkann|ja kör|ja kor|ja gör|ja gor)\b/.test(text)) {
+    return {
+      decision: 'approved',
+      reason: 'User approved active card in natural language',
+      confirmation: (action) => `Jag tar det aktiva kortet nu: ${action.title || action.id}. Jag kör kodautomation och postar commit/diff när den är klar.`
+    }
+  }
+  if (/\b(skip|skippa|hoppa över|hoppa over|ignorera|inte relevant|fel kort|nej)\b/.test(text)) {
+    return {
+      decision: 'skipped',
+      reason: 'User skipped active card in natural language',
+      confirmation: (action) => `Jag hoppar över det aktiva kortet: ${action.title || action.id}. Jag går vidare till nästa bättre SEO-action.`
+    }
+  }
+  if (/\b(vänta|vanta|senare|inte nu|prioritera bort|deprioritera|kan vänta|kan vanta)\b/.test(text)) {
+    return {
+      decision: 'deprioritized',
+      reason: 'User deprioritized active card in natural language',
+      confirmation: (action) => `Jag prioriterar ned det aktiva kortet tills vidare: ${action.title || action.id}.`
+    }
+  }
+  return null
 }
 
 async function maybeHandleGscIssueMessage(message, targetChannelId) {
@@ -2082,7 +2096,7 @@ async function runCodexWorkspaceChat(context) {
   const promptPath = join(stateDir, 'codex-chat-prompt.md')
   const prompt = [
     'Du är SEO Agent i Discord/Hermes. Svara på svenska som en praktisk senior SEO/kod-agent.',
-    'Du kan och ska ha vanlig konversation. Kommandon är genvägar, inte huvudgränssnittet. Om användaren frågar något, svara direkt först.',
+    'Du kan och ska ha vanlig konversation. Textkommandon är inte användargränssnittet. Om användaren frågar något, svara direkt först.',
     'Du kan ha strategiskt resonemang, men håll svaret konkret.',
     'Du är inte bara en kommandobot. Om användaren frågar vad som är smart ska du resonera utifrån mål, workspace-policy, kö, repo och datastatus.',
     'Använd workspace-kontexten. Om användaren ger riktning, bekräfta vad du sparar och hur det ändrar prioritering.',
@@ -2093,8 +2107,8 @@ async function runCodexWorkspaceChat(context) {
     'Om completedActiveAction finns: säg att kortet redan är kodat/committat, länka commit, sammanfatta vad som ändrades och föreslå Backa bara om användaren inte gillar ändringen.',
     'Om användaren frågar om en redan skapad commit eller “vad hände”: använd recentCompletedCodeActions före att föreslå nya kommandon.',
     'Säg inte att du är i pilotläge. Kodautomation är aktiv om context.automation.codeAutomationEnabled är true.',
-    'Du får inte låtsas att du har kört kod eller skickat mail. Föreslå approve/skip/deprioritize när det är relevant.',
-    'Inkludera max ett konkret kommando, t.ex. approve <id> eller deprioritize <id>, om ett kort bör ageras.',
+    'Du får inte låtsas att du har kört kod eller skickat mail.',
+    'Nämn inte textkommandon som approve/skip/status/doctor/why. Om beslut behövs: säg att användaren kan trycka knappen eller skriva vanlig svenska som “kör den”, “hoppa över” eller “vänta med den”.',
     '',
     'AGENT SPEC:',
     readAgentSpecs(),
@@ -2112,7 +2126,7 @@ async function runCodexWorkspaceChat(context) {
     maxBuffer: 8 * 1024 * 1024
   })
   const output = extractCodexExecText(result.stdout || '')
-  return (output || 'Jag kunde inte formulera ett Codex-svar just nu. Skriv `status` för kö eller använd approve/skip/deprioritize.').slice(0, 1900)
+  return (output || 'Jag kunde inte formulera ett Codex-svar just nu. Jag kan fortfarande läsa kön och svara igen om du frågar vad nästa rimliga steg är.').slice(0, 1900)
 }
 
 function extractCodexExecText(stdout) {
@@ -2411,18 +2425,18 @@ function formatGeneralChatFallback(workspace, payload, targetChannelId, guidance
     return [
       `Nästa steg för ${label}: jag väntar fortfarande på beslut på det aktiva kortet.`,
       `Kort-ID: \`${activeRecord.actionId}\``,
-      cardUrl ? `Kort: ${cardUrl}` : 'Kort: skriv `vilket kort?` så postar jag det igen med knappar.',
-      'Jag hittar inte kortet i senaste topp-listan från SEO Monitor, men det är fortfarande markerat som aktivt i agentens kö. Approve/Skip/Deprioritize på kortet löser kön.'
+      cardUrl ? `Kort: ${cardUrl}` : 'Jag kan posta kortet igen med knappar om du ber om det.',
+      'Jag hittar inte kortet i senaste topp-listan från SEO Monitor, men det är fortfarande markerat som aktivt i agentens kö. Säg vad du vill göra med det i vanlig svenska, eller använd knapparna om kortet syns.'
     ].join('\n').slice(0, 1900)
   }
-  if (!next) return `Nästa steg för ${label}: jag hittar ingen pending SEO-action just nu. Kör \`status\` för kö eller \`doctor\` om du vill kontrollera integrationer.`
+  if (!next) return `Nästa steg för ${label}: jag hittar ingen pending SEO-action just nu. Jag kan kontrollera kön och integrationerna om du ber mig kolla varför det är tomt.`
   const why = next.priorityReason || next.why || 'Den ligger högst i aktuell SEO-kö.'
   return [
     `Nästa steg för ${label}: ${next.title}.`,
-    cardUrl ? `Kort: ${cardUrl}` : 'Kort: skriv `vilket kort?` så postar jag det igen med knappar.',
+    cardUrl ? `Kort: ${cardUrl}` : 'Jag kan posta kortet igen med knappar om du vill.',
     `Varför: ${String(why).slice(0, 260)}`,
-    'Jag väntar på ditt beslut på kortet: Approve om du vill att jag kodar den, Skip om den är irrelevant, Deprioritize om den kan vänta.',
-    'Vill du se vad som redan skapats: skriv `commits`.'
+    'Jag väntar på ditt beslut på kortet. Säg till i vanlig svenska om jag ska köra den, hoppa över den eller vänta med den.',
+    'Jag kan också sammanfatta tidigare commits om du frågar vad som redan skapats.'
   ].join('\n').slice(0, 1900)
 }
 
@@ -2469,7 +2483,7 @@ function formatCompletedActionAnswer(workspace, actionId, resultRecord) {
     item.commitUrl ? `GitHub: ${item.commitUrl}` : '',
     item.diffStat ? `Diff:\n${String(item.diffStat).slice(0, 500)}` : '',
     item.summary ? `Sammanfattning: ${String(item.summary).slice(0, 280)}` : '',
-    'Nästa: om ändringen ser bra ut behöver du inte köra något kommando. Om den blev fel, använd Backa-knappen på commit-meddelandet.'
+    'Nästa: om ändringen ser bra ut behöver du inte göra något. Om den blev fel, använd Backa-knappen på commit-meddelandet eller säg i chatten vad som blev fel.'
   ].filter(Boolean).join('\n').slice(0, 1900)
 }
 
@@ -2558,7 +2572,7 @@ async function formatGscOauthStartMessage() {
         'Google Search Console OAuth: öppna länken och koppla om GSC.',
         payload.authorizationUrl,
         '',
-        'När flödet är klart kör `doctor` här för att verifiera.'
+        'När flödet är klart kan du säga till här, så verifierar jag kopplingen.'
       ].join('\n')
     }
     return `GSC OAuth kunde inte starta: ${JSON.stringify(payload).slice(0, 500)}`
@@ -2601,7 +2615,7 @@ async function openGoogleAdsOauthInFirefox() {
   if (!env.GOOGLE_ADS_CLIENT_ID || !env.GOOGLE_ADS_CLIENT_SECRET) {
     return [
       'Google Ads OAuth kan inte starta i browsern: SEO-agenten saknar GOOGLE_ADS_CLIENT_ID eller GOOGLE_ADS_CLIENT_SECRET på VPS:en.',
-      'Kör `doctor` för integrationsstatus.'
+      'Be mig kontrollera integrationsstatusen när env är uppdaterad.'
     ].join('\n')
   }
   const authUrl = googleAdsOauthUrl()
@@ -2611,12 +2625,12 @@ async function openGoogleAdsOauthInFirefox() {
       'Kunde inte öppna Google Ads OAuth i noVNC-Firefox.',
       `Fel: ${result.error || result.status || 'unknown'}`,
       '',
-      'Fallback: skriv `google ads oauth` och öppna länken manuellt.'
+      'Fallback: be mig posta OAuth-länken här i chatten och öppna den manuellt.'
     ].join('\n')
   }
   return [
     'Google Ads OAuth är öppnad i noVNC-Firefox.',
-    'Logga in/godkänn där. När browsern landar på localhost-callback kör jag automatiskt om du skriver `google ads read browser`.',
+    'Logga in/godkänn där. När browsern landar på localhost-callback kan du säga “klart”, så läser jag callbacken.',
     'Om Google kräver manuell login är det väntat; agenten läser callbacken efteråt och sparar token själv.'
   ].join('\n')
 }
@@ -2633,7 +2647,7 @@ async function readGoogleAdsOauthFromFirefox(message, targetChannelId) {
     await sendDiscordMessage([
       'Jag läste Firefox-URL:en men hittade ingen Google Ads OAuth-code ännu.',
       currentUrl ? `Nuvarande URL: ${currentUrl.slice(0, 220)}` : 'Nuvarande URL saknas.',
-      'När browsern visar `localhost:1455/oauth/google-ads/callback?...code=...`, kör `google ads read browser` igen.'
+      'När browsern visar localhost-callbacken kan du säga “klart” här, så läser jag URL:en igen.'
     ].join('\n'), targetChannelId)
     return
   }
@@ -2660,7 +2674,7 @@ async function handleGoogleAdsOauthCode(code, message, targetChannelId) {
   try {
     const token = await exchangeGoogleAdsOauthCode(code)
     if (!token.refreshToken) {
-      await sendDiscordMessage('Google svarade utan refresh token. Kör `google ads oauth` igen och se till att du godkänner med `prompt=consent`.', targetChannelId)
+      await sendDiscordMessage('Google svarade utan refresh token. Be mig starta om Google Ads-kopplingen och godkänn hela consent-flödet igen.', targetChannelId)
       return
     }
     saveGoogleAdsRefreshToken(token.refreshToken)
@@ -2671,7 +2685,7 @@ async function handleGoogleAdsOauthCode(code, message, targetChannelId) {
         ? `Platform API är uppdaterad och Keyword Planner-status är ${platformSync.keywordPlannerStatus || 'okänd'}.`
         : `Platform API kunde inte uppdateras automatiskt: ${platformSync.error}`,
     ]
-    if (!platformSync.ok) statusLines.push('Agenten behåller token lokalt och `doctor` kommer fortsätta visa exakt vad som saknas tills platform-sync fungerar.')
+    if (!platformSync.ok) statusLines.push('Agenten behåller token lokalt och kan kontrollera exakt vad som saknas tills platform-sync fungerar.')
     await sendDiscordMessage(statusLines.join('\n'), targetChannelId)
     log('google_ads_oauth_refresh_token_saved', {
       discordMessageId: message.id,
@@ -3793,28 +3807,6 @@ function ensureTrailingSlash(value) {
   return text.endsWith('/') ? text : `${text}/`
 }
 
-function parseCommand(content) {
-  const match = content.trim().match(/^(approve|approved|skip|skipped|deprioritize|deprioritized|prioritera bort|needs_context|context|stop|stopped|why)\s+([a-zA-Z0-9_.:-]+)(?:\s+(.+))?$/i)
-  if (!match) return null
-  const verb = match[1].toLowerCase()
-  const decision = verb === 'approve' || verb === 'approved'
-    ? 'approved'
-    : verb === 'skip' || verb === 'skipped'
-      ? 'skipped'
-      : verb === 'deprioritize' || verb === 'deprioritized' || verb === 'prioritera bort'
-        ? 'deprioritized'
-        : verb === 'stop' || verb === 'stopped'
-          ? 'stopped'
-          : verb === 'why'
-            ? 'why'
-            : 'needs_context'
-  return {
-    decision,
-    actionId: match[2],
-    reason: match[3] || ''
-  }
-}
-
 async function buildActionCardMessage(action, workspacePolicy, workspace, review = null, targetChannelId = null) {
   const codexBrief = await runCodexActionCardBrief({ action, workspace, workspacePolicy, review, targetChannelId }).catch((error) => {
     log('codex_action_card_brief_failed', { actionId: action?.id || null, workspace: workspace?.label || workspace?.id || null, error: error?.message || String(error) })
@@ -3953,8 +3945,8 @@ function formatActionMessage(action, workspacePolicy, workspace, review = null) 
     '',
     `ID: \`${action.id}\``,
     isCodeAction(action)
-      ? `Välj: Approve om jag ska koda och committa, Skip om irrelevant, Deprioritize om den kan vänta, eller Why för mer kontext.`
-      : `Det här är en GSC/browser-check, inte en kodaction. Tryck Open in GSC för att öppna Search Console-fönstret, eller svara: \`skip ${action.id}\` när den är hanterad, \`deprioritize ${action.id}\` om den kan vänta, eller \`why ${action.id}\`.`
+      ? `Välj med knapparna, eller svara i vanlig svenska om jag ska köra den, hoppa över den, vänta med den eller förklara mer.`
+      : `Det här är en GSC/browser-check, inte en kodaction. Tryck Open in GSC för att öppna Search Console-fönstret, eller skriv i chatten om den är hanterad, kan vänta eller behöver förklaras.`
   ]
   return lines.filter(Boolean).join('\n').slice(0, 1900)
 }
@@ -4094,7 +4086,7 @@ function formatGscAuthMessage(action, workspacePolicy, workspace) {
     `Varför viktigt: utan fungerande GSC-koppling blir indexeringsstatus och URL Inspection brusiga, och agenten kan föreslå fel åtgärder.`,
     workspacePolicy ? `Policy: ${workspacePolicy}` : '',
     '',
-    `Svara: \`skip ${action.id}\` om du redan vet att GSC ska ignoreras, \`deprioritize ${action.id}\` om det kan vänta, eller \`why ${action.id}\` för mer detaljer.`
+    `Svara i vanlig svenska om GSC kan ignoreras, om det kan vänta, eller om du vill att jag förklarar mer.`
   ]
   return lines.filter(Boolean).join('\n').slice(0, 1900)
 }
@@ -4238,7 +4230,7 @@ function validateOutboundShape(content, targetChannelId, components = [], kind =
   if (/```json|^\s*[\[{]/.test(text) && kind !== 'error_notice') return { reason: `${kind}:looks_like_raw_structured_output`, severity: 'block' }
   if (kind === 'action_card') {
     if (!/seo_action_|mail_action_|Action:|ID:/.test(text)) return { reason: 'action_card:missing_action_id', severity: 'review' }
-    if (!/approve|skip|deprioritize|stop/i.test(text)) return { reason: 'action_card:missing_decision_options', severity: 'review' }
+    if (!components.length && !/knapp|kör|hoppa|vänta|vanta|hanterad|förklara/i.test(text)) return { reason: 'action_card:missing_decision_options', severity: 'review' }
   }
   if (kind === 'decision_confirmation') {
     if (!/Decision|decision|beslut|handled|stored|approved|skipped|deprioritized|send_approved/.test(text)) return { reason: 'decision_confirmation:missing_decision', severity: 'review' }
@@ -4254,6 +4246,7 @@ function validateOutboundShape(content, targetChannelId, components = [], kind =
   }
   if (kind === 'chat_reply') {
     if (/approve seo_action_/.test(text) && !/varför|nästa|rekommender/i.test(text.toLowerCase())) return { reason: 'chat_reply:command_without_explanation', severity: 'review' }
+    if (/\b(approve|skip|deprioritize|doctor|status|why)\s+seo_action_/i.test(text)) return { reason: 'chat_reply:text_command_leaked', severity: 'review' }
     if (/pilotläge|pilotlage/i.test(text)) return { reason: 'chat_reply:stale_pilot_language', severity: 'block' }
   }
   return null
@@ -4358,7 +4351,7 @@ async function blockOutboundAndRepair({ content, targetChannelId, issue, mode })
       'Jag stoppade ett felaktigt agentsvar innan det postades.',
       `Orsak: ${issue.reason}`,
       codeRepair?.ok ? `Självfix: ${codeRepair.changed ? 'patch gjord, agenten startar om.' : 'kontrollerad, ingen patch behövdes.'}` : `Självfix: ${codeRepair?.error || 'ej körd'}`,
-      'Försök igen om en stund, eller skriv `status`.'
+      'Försök igen om en stund, eller fråga mig i chatten vad nästa steg är.'
     ].join('\n').slice(0, 1900)
   }
 }
