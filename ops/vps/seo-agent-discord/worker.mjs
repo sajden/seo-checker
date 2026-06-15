@@ -712,7 +712,7 @@ async function maybeQueueAutonomousCodeActions(workspaces) {
     }
     const payload = await fetchActionsForChat(workspace).catch((error) => ({ error: error?.message || String(error), actions: [] }))
     const actions = Array.isArray(payload.actions) ? payload.actions : []
-    const candidate = await chooseAutonomousCodeAction(actions, workspace, targetChannelId, payload.workspacePolicy)
+    const candidate = await chooseAutonomousCodeAction(actions, workspace, targetChannelId, payload.workspacePolicy, payload)
     if (!candidate) {
       logThrottled(`autonomous_no_candidate_tick:${workspace.id || workspace.label || workspace.repoFullName}`, 30 * 60 * 1000, 'autonomous_no_candidate_tick', {
         workspace: workspace.label || workspace.id || null,
@@ -861,7 +861,7 @@ async function repoAutomationReady(repoFullName, branch = 'main') {
   }
 }
 
-async function chooseAutonomousCodeAction(actions, workspace, targetChannelId, workspacePolicy = '') {
+async function chooseAutonomousCodeAction(actions, workspace, targetChannelId, workspacePolicy = '', sourcePayload = null) {
   const pending = prioritizeActionQueue(actions.filter((item) => item?.status === 'pending'), workspace, targetChannelId)
   const rejectionReasons = []
   for (const action of pending) {
@@ -919,7 +919,8 @@ async function chooseAutonomousCodeAction(actions, workspace, targetChannelId, w
     targetChannelId,
     pending,
     rejectionReasons,
-    workspacePolicy
+    workspacePolicy,
+    sourcePayload
   })
   if (synthetic) return synthetic
   rememberNoAutonomousCandidate(workspace, targetChannelId, pending, rejectionReasons)
@@ -945,7 +946,7 @@ function autonomousCodeCandidateCheck(action, workspace, targetChannelId) {
   return { ok: true, reason: 'candidate' }
 }
 
-async function syntheticAutonomousActionForWorkspace({ workspace, targetChannelId, pending, rejectionReasons, workspacePolicy }) {
+async function syntheticAutonomousActionForWorkspace({ workspace, targetChannelId, pending, rejectionReasons, workspacePolicy, sourcePayload = null }) {
   const profile = ensureWorkspaceProfile(workspace, targetChannelId)
   if (!isSebcastwallWorkspace(workspace, profile)) return null
   const hasLiveAiCandidate = pending.some((action) => {
@@ -965,8 +966,12 @@ async function syntheticAutonomousActionForWorkspace({ workspace, targetChannelI
   }
   const action = await enrichActionWithKeywordMetrics({
     ...rawAction,
-    evidenceSource: 'workspace_goal_backlog',
-    evidenceNote: 'Agent-skapad backlog från workspace-mål och tidigare ledger; ska inte beskrivas som färsk GSC-query om live-data saknas.'
+    evidenceSource: sourcePayload?.batchId ? 'fresh_seo_run_plus_workspace_backlog' : 'workspace_goal_backlog',
+    evidenceBatchId: sourcePayload?.batchId || null,
+    evidenceRunAt: sourcePayload?.runAt || sourcePayload?.lastRunAt || sourcePayload?.batch?.lastRunAt || null,
+    evidenceNote: sourcePayload?.batchId
+      ? `Agent-skapad backlog validerad mot färsk SEO Monitor-batch ${sourcePayload.batchId}; ska ändå inte beskrivas som exakt GSC-query om actionen inte kommer direkt från live-actions.`
+      : 'Agent-skapad backlog från workspace-mål och tidigare ledger; ska inte beskrivas som färsk GSC-query om live-data saknas.'
   })
   const candidateCheck = autonomousCodeCandidateCheck(action, workspace, targetChannelId)
   if (!candidateCheck.ok) {
@@ -1026,13 +1031,16 @@ async function syntheticAutonomousActionForWorkspace({ workspace, targetChannelI
 
 function syntheticEvidenceReason(action) {
   const metrics = action?.keywordMetrics && typeof action.keywordMetrics === 'object' ? action.keywordMetrics : null
+  const freshBatch = action?.evidenceSource === 'fresh_seo_run_plus_workspace_backlog'
   if (metrics && Number(metrics.avgMonthlySearches || 0) > 0) {
-    return `Agenten valde en låg-risk befintlig-sida-ändring från workspace-backloggen och Keyword Planner visar ${metrics.avgMonthlySearches} sök/mån för "${action.keyword}".`
+    return `Agenten valde en låg-risk befintlig-sida-ändring från ${freshBatch ? 'dagens SEO-run och workspace-backlog' : 'workspace-backloggen'} och Keyword Planner visar ${metrics.avgMonthlySearches} sök/mån för "${action.keyword}".`
   }
   if (action?.keywordMetricsStatus === 'failed') {
-    return `Agenten valde en låg-risk befintlig-sida-ändring från workspace-backloggen. Keyword Planner kunde inte verifieras (${action.keywordMetricsError || 'okänt fel'}), så detta är strategisk fallback och inte färsk keyword-data.`
+    return `Agenten valde en låg-risk befintlig-sida-ändring från ${freshBatch ? 'dagens SEO-run och workspace-backlog' : 'workspace-backloggen'}. Keyword Planner kunde inte verifieras (${action.keywordMetricsError || 'okänt fel'}), så detta är inte verifierad keyword-volym.`
   }
-  return 'Agenten valde en låg-risk befintlig-sida-ändring från workspace-mål och tidigare ledger. Detta är strategisk fallback, inte färsk GSC/Keyword Planner-evidens.'
+  return freshBatch
+    ? 'Agenten valde en låg-risk befintlig-sida-ändring efter dagens SEO-run och tidigare ledger, men utan verifierad Keyword Planner-volym.'
+    : 'Agenten valde en låg-risk befintlig-sida-ändring från workspace-mål och tidigare ledger. Detta är strategisk fallback, inte färsk GSC/Keyword Planner-evidens.'
 }
 
 function buildSebcastwallGoalGapAction(workspace, targetChannelId = null) {
@@ -3393,7 +3401,7 @@ function buildSeoMonitorActionsPath(workspace, limit, options = {}) {
 }
 
 function shouldPreferRepoOnlySeoActionsRoute(workspace) {
-  return Boolean(workspace?.repoFullName && String(workspace?.gscProperty || '').startsWith('sc-domain:'))
+  return env.SEO_AGENT_PREFER_REPO_ONLY_ACTIONS === 'true' && Boolean(workspace?.repoFullName && String(workspace?.gscProperty || '').startsWith('sc-domain:'))
 }
 
 function isPlatformResourceLimitError(error) {
@@ -4365,6 +4373,8 @@ async function runCodexActionCardBrief({ action, workspace, workspacePolicy, rev
       keywordMetrics: action?.keywordMetrics || null,
       keywordMetricsError: action?.keywordMetricsError || null,
       evidenceSource: action?.evidenceSource || null,
+      evidenceBatchId: action?.evidenceBatchId || null,
+      evidenceRunAt: action?.evidenceRunAt || null,
       evidenceNote: action?.evidenceNote || null,
       category: action?.category || null,
       priority: action?.priority || null,
@@ -4386,6 +4396,7 @@ async function runCodexActionCardBrief({ action, workspace, workspacePolicy, rev
     '- Max 220 tecken i title, max 420 tecken i doThis.',
     '- Nämn rätt domän/tjänsttyp utifrån context.',
     '- Var ärlig om evidens: om evidenceSource är workspace_goal_backlog eller Keyword Planner saknar metrics, säg inte att åtgärden bygger på färsk GSC/Keyword Planner-data.',
+    '- Om evidenceSource är fresh_seo_run_plus_workspace_backlog: säg att åtgärden är validerad mot färsk SEO Monitor-batch men inte nödvändigtvis en exakt färsk GSC-query.',
     '- Om Keyword Planner har volym/CPC/competition, använd det konkret i why/reason.',
     '- Ingen rå JSON/tool-output i fälten.',
     '- Låtsas inte att kod redan körts.',
