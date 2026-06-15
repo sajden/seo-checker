@@ -22,6 +22,7 @@ const activeActionReminderMs = Number(env.SEO_AGENT_ACTIVE_ACTION_REMINDER_MS ||
 const staleRunningMs = Number(env.SEO_AGENT_STALE_RUNNING_MS || String(2 * 60 * 60 * 1000))
 const staleQueuedApprovedMs = Number(env.SEO_AGENT_STALE_APPROVED_QUEUE_MS || String(36 * 60 * 60 * 1000))
 const staleActiveActionMs = Number(env.SEO_AGENT_STALE_ACTIVE_ACTION_MS || String(30 * 60 * 60 * 1000))
+const stalePlatformIncidentMs = Number(env.SEO_AGENT_STALE_PLATFORM_INCIDENT_MS || String(48 * 60 * 60 * 1000))
 const workspaceChannels = parseWorkspaceChannels(env.SEO_AGENT_WORKSPACE_CHANNELS || '{}')
 const defaultWorkspaceId = env.SEO_AGENT_DEFAULT_WORKSPACE_ID || ''
 const guildId = env.DISCORD_GUILD_ID || ''
@@ -2692,8 +2693,9 @@ function cleanupStaleRuntimeState() {
   }
   for (const [key, incident] of Object.entries(state.platformIncidents || {})) {
     const startedAt = Date.parse(incident?.startedAt || incident?.unresolvedAt || '')
-    if (!startedAt || now - startedAt <= 7 * 24 * 60 * 60 * 1000) continue
+    if (!startedAt || now - startedAt <= stalePlatformIncidentMs) continue
     state.platformIncidents[key] = { ...incident, status: incident.status === 'resolved' ? 'resolved' : 'archived', archivedAt: new Date().toISOString() }
+    rememberAgentLesson(`Archived stale platform incident ${key}`)
     changed = true
   }
   for (const [actionId, result] of Object.entries(state.codeActionResults || {})) {
