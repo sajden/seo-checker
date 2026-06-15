@@ -1641,9 +1641,35 @@ async function postPendingActions({ workspace, targetChannelId }) {
       state.postedSystemKeys = state.postedSystemKeys || {}
       state.postedSystemKeys[systemKey] = { actionId: id, messageId: posted.id, postedAt: new Date().toISOString() }
     }
+    if (isIndexingCheckAction(enrichedAction) && !isGscAuthAction(enrichedAction)) {
+      await autoRunGscInspectionForPostedAction(enrichedAction, workspace, targetChannelId).catch((error) => {
+        log('auto_gsc_inspection_failed', { actionId: id, workspace: workspace?.label || workspace?.id || null, error: error?.message || String(error) })
+      })
+    }
     
     break
   }
+}
+
+async function autoRunGscInspectionForPostedAction(action, workspace, targetChannelId) {
+  if (!action?.targetUrl) return
+  const actionId = String(action.id || '')
+  if (!actionId) return
+  state.autoGscInspectionAttempts = state.autoGscInspectionAttempts || {}
+  const key = `${actionId}:${new Date().toISOString().slice(0, 10)}`
+  if (state.autoGscInspectionAttempts[key]) return
+  state.autoGscInspectionAttempts[key] = { startedAt: new Date().toISOString(), targetUrl: action.targetUrl }
+  saveState()
+  const result = await runGscInspectionAction(action, workspace, targetChannelId, 'auto_gsc_ui')
+  state.autoGscInspectionAttempts[key] = {
+    ...state.autoGscInspectionAttempts[key],
+    completedAt: new Date().toISOString(),
+    ok: Boolean(result?.ok),
+    indexed: Boolean(result?.indexedByGsc),
+    error: result?.error || null,
+    observationPath: result?.observationPath || null
+  }
+  saveState()
 }
 
 async function maybeRemindActiveAction({ workspace, targetChannelId, activeKey, active, actions }) {
@@ -1890,6 +1916,15 @@ async function handleGscUiButton(actionId, targetChannelId) {
   if (!action) return `Hittar inte action \`${actionId}\`.`
   if (!isIndexingCheckAction(action)) return 'Det här är inte en GSC/indexeringsaction.'
   const workspace = workspaceForChannel(targetChannelId)
+  const result = await runGscInspectionAction(action, workspace, targetChannelId, 'discord_gsc_ui')
+  return result.ok
+    ? result.indexedByGsc
+      ? 'Jag körde GSC URL Inspection, verifierade indexering och markerade kortet som hanterat.'
+      : 'Jag körde GSC URL Inspection i noVNC-Firefoxen och postade observationen i kanalen.'
+    : `Kunde inte öppna GSC UI: ${result.error || result.status || 'okänt fel'}`
+}
+
+async function runGscInspectionAction(action, workspace, targetChannelId, source = 'gsc_firefox_ui') {
   const targetUrl = action.targetUrl || ''
   const host = targetUrl ? new URL(targetUrl).hostname.replace(/^www\./, '') : String(workspace?.gscProperty || '').replace(/^sc-domain:/, '')
   const result = await runGscFirefoxUiTool({
@@ -1906,7 +1941,7 @@ async function handleGscUiButton(actionId, targetChannelId) {
       actionId: action.id,
       decision: 'skipped',
       reason: `GSC URL Inspection verified indexed (${result.inspection.reason}, confidence ${Number(result.inspection.confidence).toFixed(2)}).`,
-      source: 'discord_gsc_ui_indexed',
+      source: `${source}_indexed`,
       discordMessageId: null,
       discordChannelId: targetChannelId
     }).catch((error) => log('gsc_indexed_decision_failed', { actionId: action.id, error: error?.message || String(error) }))
@@ -1916,25 +1951,26 @@ async function handleGscUiButton(actionId, targetChannelId) {
       status: 'indexed',
       actionId: action.id,
       confirmedAt: new Date().toISOString(),
-      source: 'gsc_firefox_ui',
+      source,
       observationPath,
       inspection: result.inspection
     }
     saveState()
   }
   await sendDiscordMessage([
-    `GSC URL Inspection körd för ${workspace?.label || workspace?.id || 'workspace'}.`,
+    `${source === 'auto_gsc_ui' ? 'Jag försökte själv köra' : 'GSC URL Inspection körd för'} ${workspace?.label || workspace?.id || 'workspace'}.`,
     targetUrl ? `URL att inspektera: ${targetUrl}` : '',
     indexedByGsc ? `Resultat: GSC visar att URL:en är indexerad (${Number(result.inspection.confidence).toFixed(2)} confidence). Jag markerade kortet som hanterat.` : '',
     result.ok && observationPath ? `Observation sparad på VPS: ${observationPath}` : '',
     result.ok && !indexedByGsc ? 'Nästa: kontrollera resultatet i Firefox/noVNC. Jag stänger bara kort automatiskt när GSC-bilden är tydligt indexerad.' : '',
     !result.ok ? `Fel: ${result.error || result.status || 'kunde inte öppna GSC UI'}` : ''
   ].filter(Boolean).join('\n'), targetChannelId)
-  return result.ok
-    ? indexedByGsc
-      ? 'Jag körde GSC URL Inspection, verifierade indexering och markerade kortet som hanterat.'
-      : 'Jag körde GSC URL Inspection i noVNC-Firefoxen och postade observationen i kanalen.'
-    : `Kunde inte öppna GSC UI: ${result.error || result.status || 'okänt fel'}`
+  return {
+    ok: Boolean(result.ok),
+    indexedByGsc,
+    error: result.error || result.status || '',
+    observationPath
+  }
 }
 
 async function findActionForWorkspace(actionId, targetChannelId) {
@@ -4617,7 +4653,9 @@ function formatGscAuthMessage(action, workspacePolicy, workspace) {
 
 function isGscAuthAction(action) {
   const text = `${action.title || ''} ${action.why || ''} ${action.recommendedAction || ''}`.toLowerCase()
-  return text.includes('oauth-tokenutbyte') || text.includes('url inspection-fel') || text.includes('gsc url inspection')
+  return text.includes('oauth-tokenutbyte')
+    || /oauth|token|refresh-token|reconnect|koppla-om|logga-in|not_connected|invalid_grant/.test(text)
+    || (/url inspection-fel/.test(text) && /oauth|token|reconnect|koppla/.test(text))
 }
 
 function isIndexingCheckAction(action) {

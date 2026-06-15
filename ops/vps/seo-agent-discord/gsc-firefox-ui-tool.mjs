@@ -102,7 +102,7 @@ function inspectionScore(inspection) {
 }
 
 async function novncNavigate(url) {
-  const browser = await chromium.launch({ headless: true })
+  const browser = await launchChromium()
   try {
     const page = await openNovncPage(browser)
     await page.mouse.click(600, 63)
@@ -127,7 +127,7 @@ async function openFirefoxUrl(url) {
 }
 
 async function novncInspectUrl(targetUrl, strategy = 'top_search_click') {
-  const browser = await chromium.launch({ headless: true })
+  const browser = await launchChromium()
   try {
     const page = await openNovncPage(browser)
     if (strategy === 'slash_shortcut') {
@@ -171,10 +171,29 @@ async function openNovncPage(browser) {
   return page
 }
 
+async function launchChromium() {
+  const executablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE || await findSystemChrome()
+  return chromium.launch({
+    headless: true,
+    ...(executablePath ? { executablePath } : {})
+  })
+}
+
+async function findSystemChrome() {
+  const candidates = ['/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser']
+  for (const candidate of candidates) {
+    try {
+      await exec('test', ['-x', candidate])
+      return candidate
+    } catch {}
+  }
+  return ''
+}
+
 async function observeScreen() {
   cleanupOldObservations()
   const path = `/tmp/gsc-novnc-observe-${Date.now()}.png`
-  const browser = await chromium.launch({ headless: true })
+  const browser = await launchChromium()
   try {
     const page = await openNovncPage(browser)
     await page.screenshot({ path, fullPage: false })
