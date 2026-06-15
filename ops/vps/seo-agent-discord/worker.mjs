@@ -731,7 +731,7 @@ async function maybeQueueAutonomousCodeActions(workspaces) {
       `Kort: ${candidate.codexBrief?.title || candidate.action.title}`,
       candidate.action.targetUrl ? `URL: ${candidate.action.targetUrl}` : '',
       `Varför: ${candidate.reason}`,
-      'Jag kodar, bygger, committar och postar diff/commit här. Större ändringar kräver fortfarande ditt approve.'
+      'Jag kodar, bygger, committar och postar diff/commit här. Jag frågar bara vid hög risk, ny sida, oklar riktning eller konflikt.'
     ].filter(Boolean).join('\n').slice(0, 1900), targetChannelId)
     saveState()
     return
@@ -1542,7 +1542,7 @@ async function maybeRemindActiveAction({ workspace, targetChannelId, activeKey, 
   const lastReminderKey = active.lastReminderAt ? Date.parse(active.lastReminderAt) : 0
   if (lastReminderKey && Date.now() - lastReminderKey < activeActionReminderMs) return
   const posted = await repostActiveActionCard(workspace, actions, targetChannelId, {
-    intro: 'Påminnelse: det här SEO-kortet väntar fortfarande på beslut.'
+    intro: 'Påminnelse: det här SEO-kortet ligger fortfarande i kandidatkö.'
   })
   if (!posted) return
   state.activeActionByWorkspace = state.activeActionByWorkspace || {}
@@ -2323,8 +2323,9 @@ async function runCodexWorkspaceChat(context) {
     'Om pendingActions är tom men användaren frågar om nästa steg: föreslå en konkret SEO-riktning och säg vilken integration/datadel som behöver friskna till.',
     'Om completedActiveAction finns: säg att kortet redan är kodat/committat, länka commit, sammanfatta vad som ändrades och föreslå Backa bara om användaren inte gillar ändringen.',
     'Om användaren frågar om en redan skapad commit eller “vad hände”: använd recentCompletedCodeActions före att föreslå nya kommandon.',
-    'Använd actionBoard när användaren frågar vad som ska göras nu, om kön, eller varför inget händer. Svara med klara kategorier: klart, gör nu, väntar på beslut, blockerad, bortprioriterad.',
+    'Använd actionBoard när användaren frågar vad som ska göras nu, om kön, eller varför inget händer. Svara med klara kategorier: klart, gör nu, kandidater, blockerad, bortprioriterad.',
     'Om actionBoard.nextRecommended finns: gör den till tydligt nästa steg. Om den redan körs/är klar, säg det och gå till nästa relevanta item.',
+    'Säg inte att något väntar på användarens beslut som default. Agenten beslutar själv för låg-risk content/kod. Be bara om input vid hög risk, ny sida, oklar riktning, blockerad integration eller konflikt med workspace-mål.',
     'Säg inte att du är i pilotläge. Kodautomation är aktiv om context.automation.codeAutomationEnabled är true.',
     'Du får inte låtsas att du har kört kod eller skickat mail.',
     'Nämn inte textkommandon som approve/skip/status/doctor/why. Om beslut behövs: säg att användaren kan trycka knappen eller skriva vanlig svenska som “kör den”, “hoppa över” eller “vänta med den”.',
@@ -2571,7 +2572,7 @@ function buildWorkspaceActionBoard(workspace, payload, targetChannelId) {
   board.summary = [
     `${board.counts.done} klara`,
     `${board.counts.doing} körs`,
-    `${board.counts.waiting} väntar`,
+    `${board.counts.waiting} kandidater`,
     `${board.counts.blocked} blockerade`,
     `${board.counts.deprioritized} bortprioriterade`
   ].join(', ')
@@ -2628,7 +2629,7 @@ function boardItemForAction(action, workspace, targetChannelId, profile) {
   if (!targetUrl && isCodeAction(action)) {
     return { ...base, status: 'blocked', reason: 'saknar target-URL, behöver research eller tydligare uppgift innan kod' }
   }
-  return { ...base, status: 'waiting', reason: base.reason || 'väntar på beslut eller autonom prioritering' }
+  return { ...base, status: 'waiting', reason: base.reason || 'kandidat för autonom prioritering' }
 }
 
 function pushBoardItem(board, item) {
@@ -2812,10 +2813,10 @@ function formatGeneralChatFallback(workspace, payload, targetChannelId, guidance
   const cardUrl = activeRecord?.messageId ? discordMessageUrl(activeRecord.channelId || targetChannelId, activeRecord.messageId) : ''
   if (!next && activeRecord?.actionId) {
     return [
-      `Nästa steg för ${label}: jag väntar fortfarande på beslut på det aktiva kortet.`,
+      `Nästa steg för ${label}: det finns fortfarande ett aktivt SEO-kort i kandidatkön.`,
       `Kort-ID: \`${activeRecord.actionId}\``,
       cardUrl ? `Kort: ${cardUrl}` : 'Jag kan posta kortet igen med knappar om du ber om det.',
-      'Jag hittar inte kortet i senaste topp-listan från SEO Monitor, men det är fortfarande markerat som aktivt i agentens kö. Säg vad du vill göra med det i vanlig svenska, eller använd knapparna om kortet syns.'
+      'Jag hittar inte kortet i senaste topp-listan från SEO Monitor, men det är fortfarande markerat som aktivt i agentens kö. Om det är låg risk ska jag avgöra själv; om det verkar fel kan du säga det i vanlig svenska.'
     ].join('\n').slice(0, 1900)
   }
   if (!next) return [
@@ -2829,7 +2830,7 @@ function formatGeneralChatFallback(workspace, payload, targetChannelId, guidance
     `Board: ${board.summary}.`,
     cardUrl ? `Kort: ${cardUrl}` : 'Jag kan posta kortet igen med knappar om du vill.',
     `Varför: ${String(why).slice(0, 260)}`,
-    'Jag väntar på ditt beslut på kortet. Säg till i vanlig svenska om jag ska köra den, hoppa över den eller vänta med den.',
+    'Jag avgör själv om det är låg risk och kör vidare. Om du inte håller med kan du säga att jag ska hoppa över eller vänta med den.',
     'Jag kan också sammanfatta tidigare commits om du frågar vad som redan skapats.'
   ].join('\n').slice(0, 1900)
 }
@@ -3470,7 +3471,7 @@ function formatAgentHealthReport() {
     latestCompleted.length ? `\nSenaste commits:\n${latestCompleted.join('\n')}` : '',
     latestFailed.length ? `\nSenaste fel:\n${latestFailed.join('\n')}` : '',
     lessons.length ? `\nSenaste lärdomar:\n${lessons.join('\n')}` : '',
-    '\nTolkning: om activeCards är högt väntar agenten på beslut; om unresolved incidents är högt är Platform API/GSC-data svag; om failed växer ska runner/repo/build fixas innan fler kort approve:as.'
+    '\nTolkning: om activeCards är högt har agenten många kandidater att klassificera eller köra; om unresolved incidents är högt är Platform API/GSC-data svag; om failed växer ska runner/repo/build fixas innan fler kodjobb körs.'
   ].filter(Boolean).join('\n').slice(0, 1900)
 }
 
@@ -3491,7 +3492,7 @@ function formatStatusMessage(workspace, payload, targetChannelId = null) {
     next?.reason ? `Varför: ${String(next.reason).slice(0, 240)}` : '',
     sample('Körs/godkända', board.doing),
     sample('Klara', board.done),
-    sample('Väntar', board.waiting),
+    sample('Kandidater', board.waiting),
     sample('Blockerade', board.blocked),
     sample('Bortprioriterade', board.deprioritized),
     workspace ? `GSC: ${workspace.gscProperty || 'saknas'} · Repo: ${workspace.repoFullName || 'saknas'} · Branch: ${workspace.branch || 'main'}` : '',
@@ -3655,6 +3656,7 @@ function ensureWorkspaceProfile(workspace, targetChannelId = null) {
   const profile = {
     ...defaults,
     ...existing,
+    autonomy: existing.autonomy === 'approve_before_code' ? 'autonomous_low_risk' : (existing.autonomy || defaults.autonomy || 'autonomous_low_risk'),
     goals: [...new Set([...(existing.goals || []), ...(defaults.goals || [])])].slice(0, 20),
     prefer: [...new Set([...(existing.prefer || []), ...(defaults.prefer || [])])].slice(0, 30),
     avoid: [...new Set([...(existing.avoid || []), ...(defaults.avoid || [])])].slice(0, 30),
@@ -3675,7 +3677,7 @@ function defaultWorkspaceProfile(workspace) {
       goals: ['rank higher for AI consulting, AI agents, automation, app/web and AI education leads'],
       prefer: ['AI konsult', 'AI-agenter', 'AI-automation', 'kodning', 'app/web', 'interna verktyg', 'AI-utbildningar', 'workshops'],
       avoid: ['Fortnox-only', 'Visma-only', 'Business Central-only', 'Abicart/Klarna', 'generic integration-only', 'invoice/bookkeeping-only'],
-      autonomy: 'approve_before_code'
+      autonomy: 'autonomous_low_risk'
     }
   }
   if (label.includes('natverkskollen')) {
@@ -3686,7 +3688,7 @@ function defaultWorkspaceProfile(workspace) {
       goals: ['rank higher for startup events, networking and evergreen event landing pages'],
       prefer: ['startup events', 'nätverkande', 'entreprenörer', 'city pages', 'event category pages'],
       avoid: ['agency consulting', 'software integration', 'unrelated AI consultancy'],
-      autonomy: 'approve_before_code'
+      autonomy: 'autonomous_low_risk'
     }
   }
   if (label.includes('parkeringspolaren')) {
@@ -3697,7 +3699,7 @@ function defaultWorkspaceProfile(workspace) {
       goals: ['rank higher for parking intent and conversion landing pages'],
       prefer: ['parkering', 'flygplatsparkering', 'långtidsparkering', 'lokal intent', 'indexering', 'conversion'],
       avoid: ['unrelated software/AI consultancy'],
-      autonomy: 'approve_before_code'
+      autonomy: 'autonomous_low_risk'
     }
   }
   if (inferred.siteType !== 'generic') return inferred
@@ -3708,7 +3710,7 @@ function defaultWorkspaceProfile(workspace) {
     goals: ['rank higher on relevant valuable search demand'],
     prefer: [],
     avoid: [],
-    autonomy: 'approve_before_code'
+    autonomy: 'autonomous_low_risk'
   }
 }
 
@@ -3728,7 +3730,7 @@ function inferWorkspaceProfile(workspace) {
       goals: ['rank higher for road weather, route weather, traffic and road condition searches'],
       prefer: ['väder längs vägen', 'vägväder', 'trafikläge', 'vägförhållanden', 'ruttplanering', 'bilresa', 'halka', 'regn', 'vind', 'road conditions'],
       avoid: ['SMB', 'B2B', 'consulting', 'SaaS', 'agency', 'business workflow', 'CRM', 'invoice'],
-      autonomy: 'approve_before_code'
+      autonomy: 'autonomous_low_risk'
     }
   }
   if (/\b(event|events|nätverk|network|startup|meetup)\b/.test(signal)) {
@@ -3739,7 +3741,7 @@ function inferWorkspaceProfile(workspace) {
       goals: ['rank higher for event discovery and event landing page searches'],
       prefer: ['events', 'startup events', 'nätverkande', 'stadssidor', 'eventkategori', 'kalender'],
       avoid: ['software consulting', 'integration-only', 'generic SaaS'],
-      autonomy: 'approve_before_code'
+      autonomy: 'autonomous_low_risk'
     }
   }
   if (/\b(parking|parkering|airport|flygplats|garage)\b/.test(signal)) {
@@ -3750,7 +3752,7 @@ function inferWorkspaceProfile(workspace) {
       goals: ['rank higher for parking searches and conversion landing pages'],
       prefer: ['parkering', 'flygplatsparkering', 'långtidsparkering', 'pris', 'bokning', 'lokal intent'],
       avoid: ['software consulting', 'generic AI', 'B2B workflow'],
-      autonomy: 'approve_before_code'
+      autonomy: 'autonomous_low_risk'
     }
   }
   if (/\b(ai|automation|app|web|konsult|consult|agent)\b/.test(signal)) {
@@ -3761,7 +3763,7 @@ function inferWorkspaceProfile(workspace) {
       goals: ['rank higher for AI, automation and development service demand'],
       prefer: ['AI', 'automation', 'app/web', 'kodning', 'konsult', 'utbildning'],
       avoid: ['consumer travel', 'parking', 'unrelated event discovery'],
-      autonomy: 'approve_before_code'
+      autonomy: 'autonomous_low_risk'
     }
   }
   return {
@@ -3771,7 +3773,7 @@ function inferWorkspaceProfile(workspace) {
     goals: ['rank higher on relevant valuable search demand'],
     prefer: [],
     avoid: [],
-    autonomy: 'approve_before_code'
+    autonomy: 'autonomous_low_risk'
   }
 }
 
@@ -4067,7 +4069,7 @@ function formatWorkspaceProfileMessage(workspace, targetChannelId) {
     `Mål: ${(profile.goals || []).join('; ') || 'ranka högre på relevant efterfrågan'}`,
     `Prioritera: ${(profile.prefer || []).join(', ') || 'saknas'}`,
     `Undvik: ${(profile.avoid || []).join(', ') || 'saknas'}`,
-    `Autonomi: ${profile.autonomy || 'approve_before_code'}`
+    `Autonomi: ${profile.autonomy || 'autonomous_low_risk'}`
   ].join('\n').slice(0, 1900)
 }
 
@@ -4267,7 +4269,7 @@ async function runCodexActionCardBrief({ action, workspace, workspacePolicy, rev
     'Var smart: om det är en konsumenttjänst ska du inte använda B2B/SMB/konsultspråk. Om det är en katalog/tjänst/produkt ska åtgärden passa den typen.',
     'Om actionen verkar fel workspace, generisk, repetitiv eller otydlig: decision=block eller rewrite med tydlig förklaring.',
     'Returnera ENDAST JSON:',
-    '{"decision":"allow|rewrite|block","title":"kort konkret svensk titel","doThis":"en konkret mening om exakt vad som ska göras","why":"kort varför detta är rätt för just detta workspace","risk":"låg|medium + kort orsak","expectedWork":"vad agenten gör om användaren trycker Approve","recommendation":"Approve|Review|Deprioritize|Skip","reason":"kort intern orsak"}',
+    '{"decision":"allow|rewrite|block","title":"kort konkret svensk titel","doThis":"en konkret mening om exakt vad som ska göras","why":"kort varför detta är rätt för just detta workspace","risk":"låg|medium + kort orsak","expectedWork":"vad agenten gör automatiskt om det är låg risk, annars vad den behöver fråga om","recommendation":"Approve|Review|Deprioritize|Skip","reason":"kort intern orsak"}',
     '',
     'Regler:',
     '- Skriv på svenska.',
@@ -4326,7 +4328,7 @@ function formatActionMessage(action, workspacePolicy, workspace, review = null) 
   const score = Number.isFinite(Number(review?.score)) ? ` · score ${Math.round(Number(review.score))}` : ''
   const codexDecision = review?.codexDecision ? `Codex-bedömning: ${review.codexDecision}${review.codexReason ? ` (${String(review.codexReason).slice(0, 140)})` : ''}` : ''
   const lines = [
-    `Nästa beslut för ${label}`,
+    `Nästa SEO-kandidat för ${label}`,
     '',
     `Jag rekommenderar: ${recommendation}${score}`,
     codexDecision,
@@ -4337,7 +4339,7 @@ function formatActionMessage(action, workspacePolicy, workspace, review = null) 
     '',
     `Gör detta: ${concreteAction}`,
     `Varför: ${String(why).slice(0, 360)}`,
-    `Vad jag gör om du godkänner: ${expectedWork}.`,
+    `Vad agenten gör: ${expectedWork}.`,
     `Risk: ${risk}.`,
     action.recommendedAction ? `Detalj: ${String(action.recommendedAction).slice(0, 420)}` : '',
     review?.negatives?.length ? `Notis: ${review.negatives.join('; ')}` : '',
