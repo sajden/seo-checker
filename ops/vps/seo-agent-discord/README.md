@@ -35,6 +35,8 @@ The refresh token needs `https://www.googleapis.com/auth/webmasters.readonly` or
 
 In Discord, ask the SEO agent for `gsc oauth` to generate the agent-specific OAuth link. After Google redirects to localhost, paste the callback URL back into Discord or write `gsc code <code>`. The worker stores the refresh token in `state/gsc-refresh-token.txt`.
 
+`gsc oauth` now tries to open the flow in the agent's noVNC Firefox first. If Google requires manual approval, finish it in Firefox and write `klart`; the agent reads the current Firefox callback URL and stores the token. `gsc read browser` forces the same callback read.
+
 ## Deploy
 
 After editing this snapshot, deploy with:

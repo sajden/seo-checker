@@ -2060,6 +2060,17 @@ async function handleChatMessage(content, message, targetChannelId) {
     await readGoogleAdsOauthFromFirefox(message, targetChannelId)
     return
   }
+  if (/^(gsc browser oauth|search console browser oauth|gsc oauth browser)$/i.test(trimmed)) {
+    await sendDiscordMessage(await openGscOauthInFirefox(), targetChannelId)
+    return
+  }
+  if (/^(gsc read browser|search console read browser|read gsc browser)$/i.test(trimmed)) {
+    await readGscOauthFromFirefox(message, targetChannelId)
+    return
+  }
+  if (/^(klart|done|färdig|fardig)$/i.test(trimmed)) {
+    if (await readPendingOauthFromFirefox(message, targetChannelId)) return
+  }
   if (/google ads.*oauth|ads oauth|keyword planner.*oauth|google ads.*login/i.test(trimmed)) {
     await sendDiscordMessage(formatGoogleAdsOauthStartMessage(), targetChannelId)
     return
@@ -2088,7 +2099,7 @@ async function handleChatMessage(content, message, targetChannelId) {
     return
   }
   if (/gsc.*oauth|search console.*oauth|gsc.*login|search console.*login/i.test(trimmed)) {
-    await sendDiscordMessage(await formatGscOauthStartMessage(), targetChannelId)
+    await sendDiscordMessage(await openGscOauthInFirefox(), targetChannelId)
     return
   }
   const gscCode = extractGscOauthCode(trimmed)
@@ -3275,6 +3286,78 @@ function saveGscRefreshToken(refreshToken) {
   writeFileSync(join(stateDir, 'gsc-refresh-token.txt'), refreshToken, { mode: 0o600 })
 }
 
+async function openGscOauthInFirefox() {
+  if (!gscClientId() || !gscClientSecret()) {
+    return [
+      'GSC OAuth kan inte starta i browsern: SEO-agenten saknar GSC_CLIENT_ID eller GSC_CLIENT_SECRET på VPS:en.',
+      'Be mig kontrollera integrationsstatusen när env är uppdaterad.'
+    ].join('\n')
+  }
+  const authUrl = gscOauthUrl()
+  const result = await runGscFirefoxUiTool({ command: 'open-url', url: authUrl }).catch((error) => ({ ok: false, error: error?.message || String(error) }))
+  if (!result.ok) {
+    return [
+      'Kunde inte öppna GSC OAuth i noVNC-Firefox.',
+      `Fel: ${result.error || result.status || 'unknown'}`,
+      '',
+      'Fallback: öppna länken manuellt och klistra tillbaka callback-URL:en här.',
+      authUrl
+    ].join('\n')
+  }
+  state.pendingBrowserOauth = {
+    type: 'gsc',
+    startedAt: new Date().toISOString()
+  }
+  saveState()
+  return [
+    'GSC OAuth är öppnad i noVNC-Firefox.',
+    'Om Google redan är inloggat kan agenten läsa callbacken själv när den landar på localhost.',
+    'Om Google kräver manuell godkänning: gör den i Firefox-fönstret och skriv “klart” här, så läser jag callbacken och sparar token.'
+  ].join('\n')
+}
+
+async function readGscOauthFromFirefox(message, targetChannelId) {
+  const result = await runGscFirefoxUiTool({ command: 'current-url' }).catch((error) => ({ ok: false, error: error?.message || String(error) }))
+  if (!result.ok) {
+    await sendDiscordMessage(`Kunde inte läsa Firefox-URL: ${result.error || result.status || 'unknown'}`, targetChannelId)
+    return false
+  }
+  const currentUrl = String(result.currentUrl || '').trim()
+  const code = extractGscOauthCode(currentUrl)
+  if (!code) {
+    await sendDiscordMessage([
+      'Jag läste Firefox-URL:en men hittade ingen GSC OAuth-code ännu.',
+      currentUrl ? `Nuvarande URL: ${currentUrl.slice(0, 220)}` : 'Nuvarande URL saknas.',
+      'När browsern visar localhost-callbacken kan du säga “klart” här, så läser jag URL:en igen.'
+    ].join('\n'), targetChannelId)
+    return false
+  }
+  await handleGscOauthCode(code, message, targetChannelId)
+  if (state.pendingBrowserOauth?.type === 'gsc') {
+    state.pendingBrowserOauth = null
+    saveState()
+  }
+  return true
+}
+
+async function readPendingOauthFromFirefox(message, targetChannelId) {
+  const pending = state.pendingBrowserOauth?.type || ''
+  if (pending === 'gsc') return readGscOauthFromFirefox(message, targetChannelId)
+  if (pending === 'google_ads') {
+    await readGoogleAdsOauthFromFirefox(message, targetChannelId)
+    return true
+  }
+  const result = await runGscFirefoxUiTool({ command: 'current-url' }).catch((error) => ({ ok: false, error: error?.message || String(error) }))
+  if (!result.ok) return false
+  const currentUrl = String(result.currentUrl || '').trim()
+  if (extractGscOauthCode(currentUrl)) return readGscOauthFromFirefox(message, targetChannelId)
+  if (extractGoogleAdsOauthCode(currentUrl)) {
+    await readGoogleAdsOauthFromFirefox(message, targetChannelId)
+    return true
+  }
+  return false
+}
+
 function formatGoogleAdsOauthStartMessage() {
   const authUrl = googleAdsOauthUrl()
   if (!env.GOOGLE_ADS_CLIENT_ID || !env.GOOGLE_ADS_CLIENT_SECRET) {
@@ -3322,6 +3405,11 @@ async function openGoogleAdsOauthInFirefox() {
       'Fallback: be mig posta OAuth-länken här i chatten och öppna den manuellt.'
     ].join('\n')
   }
+  state.pendingBrowserOauth = {
+    type: 'google_ads',
+    startedAt: new Date().toISOString()
+  }
+  saveState()
   return [
     'Google Ads OAuth är öppnad i noVNC-Firefox.',
     'Logga in/godkänn där. När browsern landar på localhost-callback kan du säga “klart”, så läser jag callbacken.',
