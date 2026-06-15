@@ -16,6 +16,8 @@ This directory is a tracked snapshot of the Discord/Hermes SEO agent currently d
 worker.mjs       Main Discord worker, scheduler, action queue, code automation, memory ledger.
 codex-runner.mjs Executes approved code actions in repo checkouts and pushes commits.
 repo-health-check.mjs Fast-forwards repo checkouts and verifies push access for the agent.
+gsc-url-inspection-api.mjs Google Search Console URL Inspection API helper.
+gsc-firefox-ui-tool.mjs Fallback noVNC/Firefox helper for GSC flows that require a logged-in browser.
 agent-brain.mjs  Runtime snapshot helper for agent status/debugging.
 AGENTS.md        Agent role and operating model.
 MEMORY.md        Persistent lessons and known bad patterns.
@@ -23,13 +25,23 @@ MEMORY.md        Persistent lessons and known bad patterns.
 
 Secrets are not stored here. Runtime secrets live in `/home/deploy/seo-agent-discord/.env` and `/home/deploy/.hermes/.env` on the VPS.
 
+For stable GSC URL Inspection, prefer API credentials over browser automation:
+
+- `GSC_CLIENT_ID` or `GOOGLE_SEARCH_CONSOLE_CLIENT_ID`
+- `GSC_CLIENT_SECRET` or `GOOGLE_SEARCH_CONSOLE_CLIENT_SECRET`
+- `GSC_REFRESH_TOKEN` or `/home/deploy/seo-agent-discord/state/gsc-refresh-token.txt`
+
+The refresh token needs `https://www.googleapis.com/auth/webmasters.readonly` or `https://www.googleapis.com/auth/webmasters` scope. If these are missing, the worker falls back to the noVNC Firefox helper and reports browser automation failures as UI failures, not OAuth failures.
+
+In Discord, ask the SEO agent for `gsc oauth` to generate the agent-specific OAuth link. After Google redirects to localhost, paste the callback URL back into Discord or write `gsc code <code>`. The worker stores the refresh token in `state/gsc-refresh-token.txt`.
+
 ## Deploy
 
 After editing this snapshot, deploy with:
 
 ```bash
-rsync -av ops/vps/seo-agent-discord/worker.mjs ops/vps/seo-agent-discord/codex-runner.mjs ops/vps/seo-agent-discord/repo-health-check.mjs ops/vps/seo-agent-discord/AGENTS.md ops/vps/seo-agent-discord/MEMORY.md deploy@178.104.240.46:/home/deploy/seo-agent-discord/
-ssh deploy@178.104.240.46 'cd /home/deploy/seo-agent-discord && node --check worker.mjs && systemctl --user restart seo-agent-discord.service && systemctl --user is-active seo-agent-discord.service'
+rsync -av ops/vps/seo-agent-discord/worker.mjs ops/vps/seo-agent-discord/codex-runner.mjs ops/vps/seo-agent-discord/repo-health-check.mjs ops/vps/seo-agent-discord/gsc-url-inspection-api.mjs ops/vps/seo-agent-discord/gsc-firefox-ui-tool.mjs ops/vps/seo-agent-discord/AGENTS.md ops/vps/seo-agent-discord/MEMORY.md deploy@178.104.240.46:/home/deploy/seo-agent-discord/
+ssh deploy@178.104.240.46 'cd /home/deploy/seo-agent-discord && node --check worker.mjs && node --check gsc-url-inspection-api.mjs && node --check gsc-firefox-ui-tool.mjs && systemctl --user restart seo-agent-discord.service && systemctl --user is-active seo-agent-discord.service'
 ```
 
 Do not deploy this directory with `rsync --delete`. The live runtime also contains untracked operational files such as `.env`, `node_modules`, browser tools, and the `state` symlink to the Hetzner volume. Deleting those will break the agent or make it start with empty memory.

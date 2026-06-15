@@ -13,6 +13,8 @@ const platformApiUrl = (env.PLATFORM_API_URL || 'https://dashboard2-platform-api
 const platformToken = env.PLATFORM_API_TOKEN || ''
 const googleAdsOauthRedirectUri = env.GOOGLE_ADS_OAUTH_REDIRECT_URI || 'http://localhost:1455/oauth/google-ads/callback'
 const googleAdsOauthState = env.GOOGLE_ADS_OAUTH_STATE || 'seo-agent-google-ads-oauth'
+const gscOauthRedirectUri = env.GSC_REDIRECT_URI || env.GOOGLE_SEARCH_CONSOLE_REDIRECT_URI || 'http://localhost:1455/oauth/gsc/callback'
+const gscOauthState = env.GSC_OAUTH_STATE || 'seo-agent-gsc-oauth'
 const pollMs = Number(env.SEO_AGENT_POLL_MS || '60000')
 const dailyHourUtc = Number(env.SEO_AGENT_DAILY_HOUR_UTC || '4')
 const runCheckEveryMs = Number(env.SEO_AGENT_RUN_CHECK_MS || '900000')
@@ -1927,13 +1929,20 @@ async function handleGscUiButton(actionId, targetChannelId) {
 async function runGscInspectionAction(action, workspace, targetChannelId, source = 'gsc_firefox_ui') {
   const targetUrl = action.targetUrl || ''
   const host = targetUrl ? new URL(targetUrl).hostname.replace(/^www\./, '') : String(workspace?.gscProperty || '').replace(/^sc-domain:/, '')
-  const result = await runGscFirefoxUiTool({
+  const input = {
     command: 'inspect-url',
     workspaceId: workspace?.id || null,
     workspaceHost: host,
     gscProperty: workspace?.gscProperty || '',
     targetUrl
-  }).catch((error) => ({ ok: false, error: error?.message || String(error) }))
+  }
+  const apiResult = await runGscUrlInspectionApi(input).catch((error) => ({ ok: false, status: 'api_exception', error: error?.message || String(error) }))
+  const shouldFallbackToUi = !apiResult.ok && /missing_oauth_config|google_api_401|google_api_403|api_exception/i.test(String(apiResult.status || apiResult.error || ''))
+  const result = apiResult.ok
+    ? apiResult
+    : shouldFallbackToUi
+      ? await runGscFirefoxUiTool(input).then((uiResult) => ({ ...uiResult, apiFallbackReason: apiResult.error || apiResult.status || 'api_unavailable' })).catch((error) => ({ ok: false, error: error?.message || String(error), apiFallbackReason: apiResult.error || apiResult.status || 'api_unavailable' }))
+      : apiResult
   const observationPath = result?.observation?.path || ''
   const indexedByGsc = result?.inspection?.status === 'indexed' && Number(result?.inspection?.confidence || 0) >= 0.8
   if (indexedByGsc) {
@@ -1960,6 +1969,8 @@ async function runGscInspectionAction(action, workspace, targetChannelId, source
   await sendDiscordMessage([
     `${source === 'auto_gsc_ui' ? 'Jag försökte själv köra' : 'GSC URL Inspection körd för'} ${workspace?.label || workspace?.id || 'workspace'}.`,
     targetUrl ? `URL att inspektera: ${targetUrl}` : '',
+    result.source === 'google_url_inspection_api' ? 'Källa: Google URL Inspection API.' : '',
+    result.apiFallbackReason ? `API-fallback: ${result.apiFallbackReason}.` : '',
     indexedByGsc ? `Resultat: GSC visar att URL:en är indexerad (${Number(result.inspection.confidence).toFixed(2)} confidence). Jag markerade kortet som hanterat.` : '',
     result.ok && observationPath ? `Observation sparad på VPS: ${observationPath}` : '',
     result.ok && !indexedByGsc ? formatGscInspectionFollowup(result) : '',
@@ -1989,6 +2000,21 @@ function formatGscInspectionFollowup(result) {
     attemptedStrategies ? `Försökta UI-strategier: ${attemptedStrategies}.` : '',
     'Det här är ett browser-/UI-automationsfel tills motsatsen är bevisad, inte ett krav på att koppla om GSC OAuth.'
   ].filter(Boolean).join('\n')
+}
+
+async function runGscUrlInspectionApi(input) {
+  const { execFile } = await import('node:child_process')
+  const { promisify } = await import('node:util')
+  const exec = promisify(execFile)
+  const inputPath = join(stateDir, 'gsc-url-inspection-api-input.json')
+  writeFileSync(inputPath, JSON.stringify(input, null, 2))
+  const result = await exec('/usr/bin/node', ['/home/deploy/seo-agent-discord/gsc-url-inspection-api.mjs', inputPath], {
+    cwd: '/home/deploy/seo-agent-discord',
+    env: { ...process.env, PATH: `${process.env.HOME || '/home/deploy'}/.npm-global/bin:${process.env.HOME || '/home/deploy'}/.local/bin:${process.env.PATH || ''}` },
+    timeout: 60 * 1000,
+    maxBuffer: 4 * 1024 * 1024
+  })
+  return JSON.parse(result.stdout || '{}')
 }
 
 async function findActionForWorkspace(actionId, targetChannelId) {
@@ -2056,6 +2082,11 @@ async function handleChatMessage(content, message, targetChannelId) {
   }
   if (/gsc.*oauth|search console.*oauth|gsc.*login|search console.*login/i.test(trimmed)) {
     await sendDiscordMessage(await formatGscOauthStartMessage(), targetChannelId)
+    return
+  }
+  const gscCode = extractGscOauthCode(trimmed)
+  if (gscCode) {
+    await handleGscOauthCode(gscCode, message, targetChannelId)
     return
   }
   const googleAdsCode = extractGoogleAdsOauthCode(trimmed)
@@ -3122,6 +3153,16 @@ async function runGscBrowserTool(input) {
 }
 
 async function formatGscOauthStartMessage() {
+  const authUrl = gscOauthUrl()
+  if (gscClientId() && gscClientSecret()) {
+    return [
+      'Google Search Console OAuth för SEO-agentens URL Inspection API:',
+      authUrl,
+      '',
+      'Efteråt kan browsern hamna på localhost och visa fel. Det är okej: kopiera hela URL:en från adressfältet eller skriv `gsc code ...` här.',
+      'Agenten sparar refresh-token lokalt på VPS och använder API:t före noVNC/Firefox.'
+    ].join('\n')
+  }
   try {
     const payload = await fetchPlatformJson('/api/platform/integrations/gsc/start', {
       method: 'POST',
@@ -3139,6 +3180,86 @@ async function formatGscOauthStartMessage() {
   } catch (error) {
     return `GSC OAuth kunde inte starta: ${error?.message || String(error)}`
   }
+}
+
+function gscOauthUrl() {
+  const params = new URLSearchParams({
+    client_id: gscClientId(),
+    redirect_uri: gscOauthRedirectUri,
+    response_type: 'code',
+    scope: 'https://www.googleapis.com/auth/webmasters.readonly',
+    access_type: 'offline',
+    prompt: 'consent',
+    state: gscOauthState
+  })
+  return `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`
+}
+
+function gscClientId() {
+  return env.GSC_CLIENT_ID || env.GOOGLE_SEARCH_CONSOLE_CLIENT_ID || env.GOOGLE_CLIENT_ID || ''
+}
+
+function gscClientSecret() {
+  return env.GSC_CLIENT_SECRET || env.GOOGLE_SEARCH_CONSOLE_CLIENT_SECRET || env.GOOGLE_CLIENT_SECRET || ''
+}
+
+function extractGscOauthCode(content) {
+  const direct = content.match(/(?:^|\s)(?:gsc code|search console code)[:=\s]+([A-Za-z0-9._~+-]+)/i)
+  if (direct?.[1]) return direct[1]
+  try {
+    const url = new URL(content.match(/https?:\/\/\S+/)?.[0] || content)
+    const code = url.searchParams.get('code')
+    const state = url.searchParams.get('state')
+    if (code && state === gscOauthState) return code
+  } catch {}
+  return null
+}
+
+async function handleGscOauthCode(code, message, targetChannelId) {
+  if (!gscClientId() || !gscClientSecret()) {
+    await sendDiscordMessage('Kan inte växla GSC-koden: OAuth client saknas i agentens env.', targetChannelId)
+    return
+  }
+  try {
+    const token = await exchangeGscOauthCode(code)
+    if (!token.refreshToken) {
+      await sendDiscordMessage('Google svarade utan GSC refresh token. Be mig starta om GSC OAuth och godkänn hela consent-flödet igen.', targetChannelId)
+      return
+    }
+    saveGscRefreshToken(token.refreshToken)
+    const doctor = await runGscUrlInspectionApi({ command: 'doctor' }).catch((error) => ({ ok: false, error: error?.message || String(error) }))
+    await sendDiscordMessage([
+      'GSC OAuth lyckades. Refresh-token är sparad lokalt på VPS:en.',
+      doctor.ok ? 'URL Inspection API är redo.' : `URL Inspection API är fortfarande inte redo: ${doctor.error || doctor.status || 'okänt fel'}`
+    ].join('\n'), targetChannelId)
+    log('gsc_oauth_refresh_token_saved', { discordMessageId: message.id, channelId: targetChannelId, apiReady: Boolean(doctor.ok) })
+  } catch (error) {
+    await sendDiscordMessage(`GSC OAuth misslyckades: ${error?.message || String(error)}`, targetChannelId)
+  }
+}
+
+async function exchangeGscOauthCode(code) {
+  const response = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      code,
+      client_id: gscClientId(),
+      client_secret: gscClientSecret(),
+      redirect_uri: gscOauthRedirectUri,
+      grant_type: 'authorization_code'
+    })
+  })
+  const payload = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(payload.error_description || payload.error || `google_oauth_${response.status}`)
+  return {
+    refreshToken: payload.refresh_token ? String(payload.refresh_token) : '',
+    accessToken: payload.access_token ? String(payload.access_token) : ''
+  }
+}
+
+function saveGscRefreshToken(refreshToken) {
+  writeFileSync(join(stateDir, 'gsc-refresh-token.txt'), refreshToken, { mode: 0o600 })
 }
 
 function formatGoogleAdsOauthStartMessage() {
