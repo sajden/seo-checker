@@ -1741,6 +1741,12 @@ async function handleChatMessage(content, message, targetChannelId) {
   if (/^(vilket|vilket kort\??|visa kort(et)?\??|skicka kort(et)? igen\??|posta kort(et)? igen\??|nästa steg\??|nasta steg\??|vad är nästa steg\??|vad ar nasta steg\??)$/i.test(trimmed)) {
     const workspace = workspaceForChannel(targetChannelId)
     const actions = await fetchActionsForChat(workspace)
+    const activeRecord = activeActionRecordFor(workspace, targetChannelId)
+    const completedActive = activeRecord?.actionId ? completedCodeActionFor(activeRecord.actionId) : null
+    if (completedActive) {
+      await sendDiscordMessage(formatCompletedActionAnswer(workspace, activeRecord.actionId, completedActive), targetChannelId)
+      return
+    }
     const posted = await repostActiveActionCard(workspace, actions, targetChannelId, { intro: /nästa|nasta/i.test(trimmed) ? 'Nästa steg är det här kortet:' : 'Här är kortet jag menar:' })
     if (!posted) await sendDiscordMessage(formatGeneralChatFallback(workspace, actions, targetChannelId, workspaceGuidanceFor(workspace, targetChannelId)), targetChannelId)
     return
@@ -2032,8 +2038,10 @@ async function formatWorkspaceLlmChat({ workspace, payload, targetChannelId, gui
   const actions = Array.isArray(payload.actions) ? payload.actions : []
   const activeRecord = activeActionRecordFor(workspace, targetChannelId)
   const activeId = activeRecord?.actionId || null
+  const completedActive = activeId ? completedCodeActionFor(activeId) : null
   const active = activeId ? actions.find((item) => item.id === activeId) : null
   const ledgerFallbackActions = ledgerActionsForWorkspace(workspace, targetChannelId).slice(0, 8)
+  const recentCompleted = recentCompletedCodeActionsForWorkspace(workspace).slice(0, 5)
   const pending = actions.filter((item) => item.status === 'pending').slice(0, 8)
   const chatActions = pending.length ? pending : ledgerFallbackActions
   const context = {
@@ -2054,7 +2062,9 @@ async function formatWorkspaceLlmChat({ workspace, payload, targetChannelId, gui
       actionCount: actions.length,
       ledgerFallbackCount: ledgerFallbackActions.length
     },
-    activeAction: active ? compactActionForChat(active) : null,
+    activeAction: completedActive ? null : active ? compactActionForChat(active) : null,
+    completedActiveAction: completedActive ? compactCompletedCodeAction(activeId, completedActive, workspace) : null,
+    recentCompletedCodeActions: recentCompleted.map(([id, result]) => compactCompletedCodeAction(id, result, workspace)),
     pendingActions: chatActions.map(compactActionForChat),
     ledgerFallbackActions: ledgerFallbackActions.map(compactActionForChat),
     userMessage: message
@@ -2079,6 +2089,8 @@ async function runCodexWorkspaceChat(context) {
     'Om CONTEXT JSON visar actionsFetchError eller resourceLimitFallback: säg kort att live-datakällan är begränsad, men använd ledgerFallbackActions/pendingActions för konkret nästa steg.',
     'Om pendingActions kommer från ledgerFallbackActions: säg inte att det saknas approve-ready action. Välj bästa ledger-kortet eller säg att det är ett minneskort som kan behöva repost/approve.',
     'Om pendingActions är tom men användaren frågar om nästa steg: föreslå en konkret SEO-riktning och säg vilken integration/datadel som behöver friskna till.',
+    'Om completedActiveAction finns: säg att kortet redan är kodat/committat, länka commit, sammanfatta vad som ändrades och föreslå Backa bara om användaren inte gillar ändringen.',
+    'Om användaren frågar om en redan skapad commit eller “vad hände”: använd recentCompletedCodeActions före att föreslå nya kommandon.',
     'Säg inte att du är i pilotläge. Kodautomation är aktiv om context.automation.codeAutomationEnabled är true.',
     'Du får inte låtsas att du har kört kod eller skickat mail. Föreslå approve/skip/deprioritize när det är relevant.',
     'Inkludera max ett konkret kommando, t.ex. approve <id> eller deprioritize <id>, om ett kort bör ageras.',
@@ -2387,6 +2399,8 @@ function formatGeneralChatFallback(workspace, payload, targetChannelId, guidance
   const actions = Array.isArray(payload.actions) ? payload.actions : []
   const activeRecord = activeActionRecordFor(workspace, targetChannelId)
   const activeId = activeRecord?.actionId || null
+  const completedActive = activeId ? completedCodeActionFor(activeId) : null
+  if (completedActive) return formatCompletedActionAnswer(workspace, activeId, completedActive)
   const active = activeId ? actions.find((item) => item.id === activeId) : null
   const ledgerFallback = ledgerActionsForWorkspace(workspace, targetChannelId)
   const next = active || actions.find((item) => item.status === 'pending') || actions[0] || ledgerFallback[0]
@@ -2409,6 +2423,53 @@ function formatGeneralChatFallback(workspace, payload, targetChannelId, guidance
     'Jag väntar på ditt beslut på kortet: Approve om du vill att jag kodar den, Skip om den är irrelevant, Deprioritize om den kan vänta.',
     'Vill du se vad som redan skapats: skriv `commits`.'
   ].join('\n').slice(0, 1900)
+}
+
+function completedCodeActionFor(actionId) {
+  const result = state.codeActionResults?.[actionId]
+  return result?.status === 'completed' ? result : null
+}
+
+function recentCompletedCodeActionsForWorkspace(workspace) {
+  const repo = String(workspace?.repoFullName || '').toLowerCase()
+  const repoName = repo.split('/').pop()
+  const label = String(workspace?.label || workspace?.id || '').toLowerCase()
+  return Object.entries(state.codeActionResults || {})
+    .filter(([, result]) => result?.status === 'completed')
+    .filter(([id, result]) => {
+      const haystack = `${id} ${result?.result?.repoFullName || ''} ${result?.result?.repoDir || ''}`.toLowerCase()
+      return !repoName || haystack.includes(repoName) || haystack.includes(repo) || haystack.includes(label)
+    })
+    .sort((a, b) => Date.parse(b[1].completedAt || 0) - Date.parse(a[1].completedAt || 0))
+}
+
+function compactCompletedCodeAction(actionId, resultRecord, workspace) {
+  const result = resultRecord?.result || {}
+  const repoFullName = result.repoFullName || workspace?.repoFullName || ''
+  const commit = result.commit || ''
+  return {
+    actionId,
+    status: resultRecord?.status || '',
+    completedAt: resultRecord?.completedAt || '',
+    commit,
+    commitUrl: githubCommitUrl(repoFullName, commit),
+    repoFullName,
+    branch: result.branch || workspace?.branch || 'main',
+    diffStat: result.diffStat || '',
+    summary: result.summary || result.operatorSummary || ''
+  }
+}
+
+function formatCompletedActionAnswer(workspace, actionId, resultRecord) {
+  const item = compactCompletedCodeAction(actionId, resultRecord, workspace)
+  return [
+    `Den actionen är redan kodad och committad för ${workspace?.label || workspace?.id || 'workspacet'}.`,
+    item.commit ? `Commit: ${item.commit}` : '',
+    item.commitUrl ? `GitHub: ${item.commitUrl}` : '',
+    item.diffStat ? `Diff:\n${String(item.diffStat).slice(0, 500)}` : '',
+    item.summary ? `Sammanfattning: ${String(item.summary).slice(0, 280)}` : '',
+    'Nästa: om ändringen ser bra ut behöver du inte köra något kommando. Om den blev fel, använd Backa-knappen på commit-meddelandet.'
+  ].filter(Boolean).join('\n').slice(0, 1900)
 }
 
 function activeActionRecordFor(workspace, targetChannelId) {
