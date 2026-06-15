@@ -2540,13 +2540,46 @@ async function handleGoogleAdsOauthCode(code, message, targetChannelId) {
       return
     }
     saveGoogleAdsRefreshToken(token.refreshToken)
-    await sendDiscordMessage([
+    const platformSync = await syncGoogleAdsRefreshTokenToPlatform(token.refreshToken)
+    const statusLines = [
       'Google Ads OAuth lyckades. Ny refresh token är sparad lokalt på VPS:en.',
-      'Codex uppdaterar nu Cloudflare secret `GOOGLE_ADS_REFRESH_TOKEN` och testar Keyword Planner igen.'
-    ].join('\n'), targetChannelId)
-    log('google_ads_oauth_refresh_token_saved', { discordMessageId: message.id, channelId: targetChannelId })
+      platformSync.ok
+        ? `Platform API är uppdaterad och Keyword Planner-status är ${platformSync.keywordPlannerStatus || 'okänd'}.`
+        : `Platform API kunde inte uppdateras automatiskt: ${platformSync.error}`,
+    ]
+    if (!platformSync.ok) statusLines.push('Agenten behåller token lokalt och `doctor` kommer fortsätta visa exakt vad som saknas tills platform-sync fungerar.')
+    await sendDiscordMessage(statusLines.join('\n'), targetChannelId)
+    log('google_ads_oauth_refresh_token_saved', {
+      discordMessageId: message.id,
+      channelId: targetChannelId,
+      platformSynced: platformSync.ok,
+      keywordPlannerStatus: platformSync.keywordPlannerStatus || null,
+      error: platformSync.error || null
+    })
   } catch (error) {
     await sendDiscordMessage(`Google Ads OAuth misslyckades: ${error?.message || String(error)}`, targetChannelId)
+  }
+}
+
+async function syncGoogleAdsRefreshTokenToPlatform(refreshToken) {
+  try {
+    const payload = await fetchPlatformJson('/api/platform/ad-automation/google-ads/oauth-token', {
+      method: 'PUT',
+      body: JSON.stringify({ refreshToken })
+    })
+    return {
+      ok: Boolean(payload?.stored),
+      verified: Boolean(payload?.verified),
+      keywordPlannerStatus: payload?.keywordPlannerStatus || payload?.status || '',
+      error: payload?.error || ''
+    }
+  } catch (error) {
+    return {
+      ok: false,
+      verified: false,
+      keywordPlannerStatus: '',
+      error: error?.message || String(error)
+    }
   }
 }
 
