@@ -826,7 +826,7 @@ async function maybeRunIntegrationDoctor(workspaces) {
 }
 
 async function buildIntegrationDoctorReport(workspaces) {
-  const [gsc, googleAds, automation] = await Promise.allSettled([
+  const [gsc, googleAdsInitial, automation] = await Promise.allSettled([
     fetchPlatformJson('/api/platform/integrations/gsc/status'),
     fetchPlatformJson('/api/platform/ad-automation/keyword-metrics', {
       method: 'POST',
@@ -835,7 +835,14 @@ async function buildIntegrationDoctorReport(workspaces) {
     localAutomationStatus(),
   ])
   const gscPayload = settledValue(gsc, null)
-  const googleAdsPayload = settledValue(googleAds, null)
+  let googleAdsPayload = settledValue(googleAdsInitial, null)
+  let googleAdsRepair = null
+  if (googleAdsPayload?.status !== 'ready') {
+    googleAdsRepair = await selfHealGoogleAdsKeywordPlanner()
+    if (googleAdsRepair?.ok) {
+      googleAdsPayload = googleAdsRepair.payload || googleAdsPayload
+    }
+  }
   const automationPayload = settledValue(automation, { codex: 'missing', github: 'missing', repos: 'missing', ready: false })
   const workspaceChecks = []
   for (const workspace of workspaces) {
@@ -860,10 +867,14 @@ async function buildIntegrationDoctorReport(workspaces) {
       key: 'google_ads',
       label: 'Google Ads Keyword Planner OAuth',
       ok: Boolean(googleAdsPayload?.status === 'ready'),
-      status: googleAdsPayload ? String(googleAdsPayload.status || googleAdsPayload.error || 'unknown') : settledErrorMessage(googleAds),
-      fix: googleAdsPayload?.error
-        ? `Skriv \`google ads oauth\`. Fel: ${googleAdsPayload.error}`
-        : 'Skriv `google ads oauth` för att skapa ny refresh token.'
+      status: googleAdsPayload ? String(googleAdsPayload.status || googleAdsPayload.error || 'unknown') : settledErrorMessage(googleAdsInitial),
+      fix: googleAdsRepair?.ok
+        ? `Självreparerad via lokal OAuth-token (${googleAdsRepair.keywordPlannerStatus || 'ready'}).`
+        : googleAdsRepair?.attempted
+          ? `Agenten försökte självreparera men misslyckades: ${googleAdsRepair.error}. Skriv \`google ads oauth\` om tokenen är ogiltig.`
+          : googleAdsPayload?.error
+            ? `Skriv \`google ads oauth\`. Fel: ${googleAdsPayload.error}`
+            : 'Skriv `google ads oauth` för att skapa ny refresh token.'
     },
     {
       key: 'codex',
@@ -2606,6 +2617,39 @@ async function exchangeGoogleAdsOauthCode(code) {
 function saveGoogleAdsRefreshToken(refreshToken) {
   const tokenPath = join(stateDir, 'google-ads-refresh-token.txt')
   writeFileSync(tokenPath, refreshToken, { mode: 0o600 })
+}
+
+function loadGoogleAdsRefreshToken() {
+  const tokenPath = join(stateDir, 'google-ads-refresh-token.txt')
+  if (!existsSync(tokenPath)) return ''
+  return readFileSync(tokenPath, 'utf8').trim()
+}
+
+async function selfHealGoogleAdsKeywordPlanner() {
+  const refreshToken = loadGoogleAdsRefreshToken()
+  if (!refreshToken) return { attempted: false, ok: false, error: 'local_refresh_token_missing' }
+  const sync = await syncGoogleAdsRefreshTokenToPlatform(refreshToken)
+  if (!sync.ok) return { attempted: true, ok: false, error: sync.error || 'platform_sync_failed' }
+  try {
+    const payload = await fetchPlatformJson('/api/platform/ad-automation/keyword-metrics', {
+      method: 'POST',
+      body: JSON.stringify({ keywords: ['ai agenter företag'] })
+    })
+    return {
+      attempted: true,
+      ok: payload?.status === 'ready',
+      payload,
+      keywordPlannerStatus: payload?.status || sync.keywordPlannerStatus || '',
+      error: payload?.status === 'ready' ? '' : payload?.error || payload?.status || 'keyword_planner_not_ready'
+    }
+  } catch (error) {
+    return {
+      attempted: true,
+      ok: false,
+      error: error?.message || String(error),
+      keywordPlannerStatus: sync.keywordPlannerStatus || ''
+    }
+  }
 }
 
 async function fetchActionsForChat(workspace) {
