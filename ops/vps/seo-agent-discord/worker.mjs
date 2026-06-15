@@ -3280,6 +3280,8 @@ function formatActionMessage(action, workspacePolicy, workspace, review = null) 
   if (isGscAuthAction(action)) return formatGscAuthMessage(action, workspacePolicy, workspace)
   const showKeywordAsSearchTerm = shouldUseKeywordPlannerMetrics(action)
   const label = workspace?.label || action.workspaceSlug || action.projectSlug || 'workspace'
+  const title = humanActionTitle(action)
+  const concreteAction = humanConcreteAction(action)
   const why = review?.why || action.why || 'Passerar SEO-agentens relevanskontroll.'
   const expectedWork = review?.expectedWork || (isCodeAction(action) ? 'gör en repoändring, bygger, committar och postar GitHub-länk' : 'hanterar kontrollen och markerar nästa steg')
   const risk = review?.risk || 'okänd'
@@ -3289,11 +3291,12 @@ function formatActionMessage(action, workspacePolicy, workspace, review = null) 
     `Nästa beslut för ${label}`,
     '',
     `Jag rekommenderar: ${recommendation}${score}`,
-    `Kort: ${action.title || 'Untitled'}`,
+    `Kort: ${title}`,
     action.targetUrl ? `URL: ${action.targetUrl}` : '',
     action.keyword ? `${showKeywordAsSearchTerm ? 'Keyword' : 'Focus'}: ${action.keyword}` : '',
     showKeywordAsSearchTerm ? formatKeywordMetricsLine(action) : '',
     '',
+    `Gör detta: ${concreteAction}`,
     `Varför: ${String(why).slice(0, 360)}`,
     `Vad jag gör om du godkänner: ${expectedWork}.`,
     `Risk: ${risk}.`,
@@ -3306,6 +3309,31 @@ function formatActionMessage(action, workspacePolicy, workspace, review = null) 
       : `Det här är en GSC/browser-check, inte en kodaction. Tryck Open in GSC för att öppna Search Console-fönstret, eller svara: \`skip ${action.id}\` när den är hanterad, \`deprioritize ${action.id}\` om den kan vänta, eller \`why ${action.id}\`.`
   ]
   return lines.filter(Boolean).join('\n').slice(0, 1900)
+}
+
+function humanActionTitle(action) {
+  const title = String(action?.title || '').trim()
+  const targetUrl = String(action?.targetUrl || action?.url || '').trim()
+  if (/^ai search readiness:\s*\/?$/i.test(title)) {
+    return targetUrl ? `Bygg ut startsidan för AI Search (${targetUrl})` : 'Bygg ut startsidan för AI Search'
+  }
+  return title || 'SEO-action'
+}
+
+function humanConcreteAction(action) {
+  const recommended = String(action?.recommendedAction || '').trim()
+  const title = String(action?.title || '').trim()
+  const targetUrl = String(action?.targetUrl || action?.url || '').trim()
+  if (/^ai search readiness:\s*\/?$/i.test(title)) {
+    return [
+      targetUrl ? `Uppdatera startsidan ${targetUrl}.` : 'Uppdatera startsidan.',
+      'Lägg in mer konkret hjälpsamt innehåll: exempel/scenario, tydliga use cases, fallgropar, nästa steg och interna länkar.',
+      'Målet är att sidan ska kännas som en verklig produkt/tjänst för användare och AI Search, inte generisk text.'
+    ].join(' ')
+  }
+  if (recommended) return recommended.slice(0, 520)
+  if (targetUrl) return `Gör en fokuserad SEO-förbättring på ${targetUrl} och verifiera med build.`
+  return 'Gör den minsta konkreta SEO-förbättringen som matchar kortet och verifiera med build.'
 }
 
 function formatKeywordMetricsLine(action) {
