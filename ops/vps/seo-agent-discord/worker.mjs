@@ -1901,7 +1901,7 @@ async function handleChatMessage(content, message, targetChannelId) {
   if (/^(status|hjälp|help)$/i.test(trimmed)) {
     const workspace = workspaceForChannel(targetChannelId)
     const actions = await fetchActionsForChat(workspace)
-    await sendDiscordMessage(formatStatusMessage(workspace, actions), targetChannelId)
+    await sendDiscordMessage(formatStatusMessage(workspace, actions, targetChannelId), targetChannelId)
     return
   }
   if (/^(mål|mal|workspace mål|workspace mal|goals?)$/i.test(trimmed)) {
@@ -2273,6 +2273,7 @@ async function formatWorkspaceLlmChat({ workspace, payload, targetChannelId, gui
   const recentCompleted = recentCompletedCodeActionsForWorkspace(workspace).slice(0, 5)
   const pending = actions.filter((item) => item.status === 'pending').slice(0, 8)
   const chatActions = pending.length ? pending : ledgerFallbackActions
+  const actionBoard = buildWorkspaceActionBoard(workspace, payload, targetChannelId)
   const context = {
     workspace: workspace ? {
       id: workspace.id,
@@ -2294,6 +2295,7 @@ async function formatWorkspaceLlmChat({ workspace, payload, targetChannelId, gui
     activeAction: completedActive ? null : active ? compactActionForChat(active) : null,
     completedActiveAction: completedActive ? compactCompletedCodeAction(activeId, completedActive, workspace) : null,
     recentCompletedCodeActions: recentCompleted.map(([id, result]) => compactCompletedCodeAction(id, result, workspace)),
+    actionBoard,
     pendingActions: chatActions.map(compactActionForChat),
     ledgerFallbackActions: ledgerFallbackActions.map(compactActionForChat),
     userMessage: message
@@ -2321,6 +2323,8 @@ async function runCodexWorkspaceChat(context) {
     'Om pendingActions är tom men användaren frågar om nästa steg: föreslå en konkret SEO-riktning och säg vilken integration/datadel som behöver friskna till.',
     'Om completedActiveAction finns: säg att kortet redan är kodat/committat, länka commit, sammanfatta vad som ändrades och föreslå Backa bara om användaren inte gillar ändringen.',
     'Om användaren frågar om en redan skapad commit eller “vad hände”: använd recentCompletedCodeActions före att föreslå nya kommandon.',
+    'Använd actionBoard när användaren frågar vad som ska göras nu, om kön, eller varför inget händer. Svara med klara kategorier: klart, gör nu, väntar på beslut, blockerad, bortprioriterad.',
+    'Om actionBoard.nextRecommended finns: gör den till tydligt nästa steg. Om den redan körs/är klar, säg det och gå till nästa relevanta item.',
     'Säg inte att du är i pilotläge. Kodautomation är aktiv om context.automation.codeAutomationEnabled är true.',
     'Du får inte låtsas att du har kört kod eller skickat mail.',
     'Nämn inte textkommandon som approve/skip/status/doctor/why. Om beslut behövs: säg att användaren kan trycka knappen eller skriva vanlig svenska som “kör den”, “hoppa över” eller “vänta med den”.',
@@ -2511,6 +2515,175 @@ function compactActionForChat(action) {
   }
 }
 
+function buildWorkspaceActionBoard(workspace, payload, targetChannelId) {
+  const actions = Array.isArray(payload?.actions) ? payload.actions : []
+  const profile = ensureWorkspaceProfile(workspace, targetChannelId)
+  const board = {
+    generatedAt: new Date().toISOString(),
+    workspace: workspace?.label || workspace?.id || 'workspace',
+    dataStatus: {
+      fetchError: payload?.error || null,
+      resourceLimitFallback: payload?.resourceLimitFallback || null,
+      liveActionCount: actions.length
+    },
+    counts: { done: 0, doing: 0, waiting: 0, blocked: 0, deprioritized: 0, ignored: 0 },
+    done: [],
+    doing: [],
+    waiting: [],
+    blocked: [],
+    deprioritized: [],
+    ignored: [],
+    nextRecommended: null,
+    notes: []
+  }
+  const seen = new Set()
+  for (const action of prioritizeActionQueue(actions, workspace, targetChannelId)) {
+    const item = boardItemForAction(action, workspace, targetChannelId, profile)
+    if (!item?.id || seen.has(item.id)) continue
+    seen.add(item.id)
+    pushBoardItem(board, item)
+  }
+  for (const [actionId, result] of recentCompletedCodeActionsForWorkspace(workspace).slice(0, 8)) {
+    if (seen.has(actionId)) continue
+    seen.add(actionId)
+    pushBoardItem(board, {
+      id: actionId,
+      title: result?.result?.summary || titleFromActionId(actionId),
+      status: 'done',
+      reason: 'commit finns i agentens kodhistorik',
+      commit: result?.result?.commit || '',
+      commitUrl: githubCommitUrl(result?.result?.repoFullName || workspace?.repoFullName || '', result?.result?.commit || ''),
+      targetUrl: '',
+      category: 'code',
+      priority: 'done'
+    })
+  }
+  const noCandidate = state.noAutonomousCandidate?.[workspaceProfileKey(workspace, targetChannelId)]
+  if (noCandidate) {
+    board.notes.push({
+      type: 'no_autonomous_candidate',
+      at: noCandidate.at,
+      pendingCount: noCandidate.pendingCount,
+      reasons: (noCandidate.reasons || []).slice(0, 6)
+    })
+  }
+  board.nextRecommended = chooseBoardNextRecommended(board, profile)
+  board.summary = [
+    `${board.counts.done} klara`,
+    `${board.counts.doing} körs`,
+    `${board.counts.waiting} väntar`,
+    `${board.counts.blocked} blockerade`,
+    `${board.counts.deprioritized} bortprioriterade`
+  ].join(', ')
+  return trimBoard(board)
+}
+
+function boardItemForAction(action, workspace, targetChannelId, profile) {
+  if (!action?.id) return null
+  const codeResult = state.codeActionResults?.[action.id]
+  const ledger = state.actionLedger?.[actionLearningKey(action, workspace, targetChannelId)]
+  const guarded = state.guardedActions?.[actionLearningKey(action, workspace, targetChannelId)]
+  const targetUrl = action.targetUrl || action.url || ''
+  const base = {
+    id: action.id,
+    title: action.title || action.id,
+    targetUrl,
+    keyword: action.keyword || '',
+    priority: action.priority || 'medium',
+    category: action.category || actionKindForLearning(action),
+    commit: codeResult?.result?.commit || ledger?.commit || '',
+    commitUrl: githubCommitUrl(codeResult?.result?.repoFullName || workspace?.repoFullName || '', codeResult?.result?.commit || ledger?.commit || ''),
+    reason: action.priorityReason || action.why || ''
+  }
+  if (codeResult?.status === 'completed' || (ledger?.status === 'completed' && !isLedgerRecheckDue(ledger))) {
+    return { ...base, status: 'done', reason: base.reason || 'genomförd och väntar på ny recheck' }
+  }
+  if (state.codeActionRunning?.actionId === action.id || ledger?.status === 'coding') {
+    return { ...base, status: 'doing', reason: 'kodautomation körs just nu' }
+  }
+  if (state.approvedCodeActionQueue?.[action.id] || action.status === 'approved' || ledger?.status === 'approved') {
+    return { ...base, status: 'doing', reason: 'godkänd/köad för kodautomation' }
+  }
+  if (codeResult?.status && codeResult.status !== 'completed') {
+    return { ...base, status: 'blocked', reason: codeResult.failure?.operatorSummary || codeResult.error || `kodresultat: ${codeResult.status}` }
+  }
+  if (action.status === 'skipped' || ledger?.status === 'ignored') {
+    return { ...base, status: 'ignored', reason: 'skippad eller markerad som hanterad' }
+  }
+  if (action.status === 'deprioritized' || (ledger?.status === 'deprioritized' && !isLedgerRecheckDue(ledger))) {
+    return { ...base, status: 'deprioritized', reason: 'bortprioriterad tills ny recheck' }
+  }
+  if (guarded && !isLedgerRecheckDue(ledger)) {
+    return { ...base, status: 'deprioritized', reason: `stoppad av guard: ${guarded.reason}` }
+  }
+  if (isIndexingCheckAction(action)) {
+    return { ...base, status: 'blocked', reason: 'GSC/indexering kräver browser/GSC-kontroll, inte vanlig content-commit' }
+  }
+  const text = actionText(action)
+  const avoided = (profile.avoid || []).some((term) => text.includes(normalizeForMatch(term)))
+  const preferred = (profile.prefer || []).some((term) => text.includes(normalizeForMatch(term)))
+  if (avoided && !preferred) {
+    return { ...base, status: 'deprioritized', reason: 'matchar lågprioriterat spår för workspacet' }
+  }
+  if (!targetUrl && isCodeAction(action)) {
+    return { ...base, status: 'blocked', reason: 'saknar target-URL, behöver research eller tydligare uppgift innan kod' }
+  }
+  return { ...base, status: 'waiting', reason: base.reason || 'väntar på beslut eller autonom prioritering' }
+}
+
+function pushBoardItem(board, item) {
+  const bucket = ['done', 'doing', 'waiting', 'blocked', 'deprioritized', 'ignored'].includes(item.status) ? item.status : 'waiting'
+  board[bucket].push(item)
+  board.counts[bucket] += 1
+}
+
+function chooseBoardNextRecommended(board, profile) {
+  if (board.doing.length) return { ...board.doing[0], nextReason: 'pågår redan' }
+  const waiting = board.waiting
+    .filter((item) => item.targetUrl)
+    .filter((item) => {
+      const text = actionText(item)
+      return !(profile.avoid || []).some((term) => text.includes(normalizeForMatch(term)))
+        || (profile.prefer || []).some((term) => text.includes(normalizeForMatch(term)))
+    })
+  if (waiting.length) return { ...waiting[0], nextReason: 'bästa kvarvarande action med target-URL' }
+  if (board.blocked.length) return { ...board.blocked[0], nextReason: 'blockerande sak att lösa innan fler actions' }
+  return null
+}
+
+function trimBoard(board) {
+  const limitItems = (items) => items.slice(0, 8).map((item) => ({
+    id: item.id,
+    title: item.title,
+    status: item.status,
+    priority: item.priority,
+    category: item.category,
+    targetUrl: item.targetUrl,
+    keyword: item.keyword,
+    reason: String(item.reason || '').slice(0, 260),
+    commit: item.commit,
+    commitUrl: item.commitUrl,
+    nextReason: item.nextReason
+  }))
+  return {
+    ...board,
+    done: limitItems(board.done),
+    doing: limitItems(board.doing),
+    waiting: limitItems(board.waiting),
+    blocked: limitItems(board.blocked),
+    deprioritized: limitItems(board.deprioritized),
+    ignored: limitItems(board.ignored),
+    nextRecommended: board.nextRecommended ? limitItems([board.nextRecommended])[0] : null
+  }
+}
+
+function titleFromActionId(actionId) {
+  return String(actionId || '')
+    .replace(/^seo_(action|synthetic)_/, '')
+    .replace(/[_-]+/g, ' ')
+    .slice(0, 140)
+}
+
 function extractOpenAiResponseText(payload) {
   if (typeof payload.output_text === 'string') return payload.output_text.trim()
   const chunks = []
@@ -2627,13 +2800,14 @@ function discordMessageUrl(targetChannelId, messageId) {
 
 function formatGeneralChatFallback(workspace, payload, targetChannelId, guidance = null) {
   const actions = Array.isArray(payload.actions) ? payload.actions : []
+  const board = buildWorkspaceActionBoard(workspace, payload, targetChannelId)
   const activeRecord = activeActionRecordFor(workspace, targetChannelId)
   const activeId = activeRecord?.actionId || null
   const completedActive = activeId ? completedCodeActionFor(activeId) : null
   if (completedActive) return formatCompletedActionAnswer(workspace, activeId, completedActive)
   const active = activeId ? actions.find((item) => item.id === activeId) : null
   const ledgerFallback = ledgerActionsForWorkspace(workspace, targetChannelId)
-  const next = active || actions.find((item) => item.status === 'pending') || actions[0] || ledgerFallback[0]
+  const next = active || board.nextRecommended || actions.find((item) => item.status === 'pending') || actions[0] || ledgerFallback[0]
   const label = workspace?.label || workspace?.id || 'workspace'
   const cardUrl = activeRecord?.messageId ? discordMessageUrl(activeRecord.channelId || targetChannelId, activeRecord.messageId) : ''
   if (!next && activeRecord?.actionId) {
@@ -2644,10 +2818,15 @@ function formatGeneralChatFallback(workspace, payload, targetChannelId, guidance
       'Jag hittar inte kortet i senaste topp-listan från SEO Monitor, men det är fortfarande markerat som aktivt i agentens kö. Säg vad du vill göra med det i vanlig svenska, eller använd knapparna om kortet syns.'
     ].join('\n').slice(0, 1900)
   }
-  if (!next) return `Nästa steg för ${label}: jag hittar ingen pending SEO-action just nu. Jag kan kontrollera kön och integrationerna om du ber mig kolla varför det är tomt.`
-  const why = next.priorityReason || next.why || 'Den ligger högst i aktuell SEO-kö.'
+  if (!next) return [
+    `Nästa steg för ${label}: jag hittar ingen säker pending SEO-action just nu.`,
+    `Board: ${board.summary}.`,
+    board.notes?.length ? `Senaste urvalsskäl: ${JSON.stringify(board.notes[0]).slice(0, 500)}` : 'Jag fortsätter bevaka ny SEO-data och integrationer.'
+  ].join('\n').slice(0, 1900)
+  const why = next.priorityReason || next.why || next.reason || 'Den ligger högst i aktuell SEO-kö.'
   return [
     `Nästa steg för ${label}: ${next.title}.`,
+    `Board: ${board.summary}.`,
     cardUrl ? `Kort: ${cardUrl}` : 'Jag kan posta kortet igen med knappar om du vill.',
     `Varför: ${String(why).slice(0, 260)}`,
     'Jag väntar på ditt beslut på kortet. Säg till i vanlig svenska om jag ska köra den, hoppa över den eller vänta med den.',
@@ -3301,17 +3480,22 @@ function shortActionId(id) {
   return `${text.slice(0, 42)}...${text.slice(-28)}`
 }
 
-function formatStatusMessage(workspace, payload) {
-  const actions = Array.isArray(payload.actions) ? payload.actions : []
-  const pending = actions.filter((item) => item.status === 'pending').length
-  const approved = actions.filter((item) => item.status === 'approved').length
-  const top = actions.find((item) => item.status === 'pending') || actions[0]
+function formatStatusMessage(workspace, payload, targetChannelId = null) {
+  const board = buildWorkspaceActionBoard(workspace, payload, targetChannelId)
+  const next = board.nextRecommended
+  const sample = (label, items) => items.length ? `${label}: ${items.slice(0, 3).map((item) => item.commit ? `${item.title} (${item.commit})` : item.title).join(' | ')}` : ''
   return [
     `SEO Agent status${workspace ? ` för ${workspace.label || workspace.id}` : ''}`,
-    payload.error ? `Fel: ${payload.error}` : `Actions: ${actions.length} hämtade, ${pending} pending, ${approved} approved.`,
-    top ? `Nästa: ${top.title} (${top.priority || 'medium'})` : 'Inga actions just nu.',
+    payload.error ? `Datavarning: ${payload.error}` : `Board: ${board.summary}. Live-actions: ${board.dataStatus.liveActionCount}.`,
+    next ? `Nästa rekommenderade: ${next.title}${next.targetUrl ? ` (${next.targetUrl})` : ''}` : 'Nästa rekommenderade: inget säkert kort just nu.',
+    next?.reason ? `Varför: ${String(next.reason).slice(0, 240)}` : '',
+    sample('Körs/godkända', board.doing),
+    sample('Klara', board.done),
+    sample('Väntar', board.waiting),
+    sample('Blockerade', board.blocked),
+    sample('Bortprioriterade', board.deprioritized),
     workspace ? `GSC: ${workspace.gscProperty || 'saknas'} · Repo: ${workspace.repoFullName || 'saknas'} · Branch: ${workspace.branch || 'main'}` : '',
-  ].filter(Boolean).join('\n')
+  ].filter(Boolean).join('\n').slice(0, 1900)
 }
 
 function ensureAutonomousAgentState() {
