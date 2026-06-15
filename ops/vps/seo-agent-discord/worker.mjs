@@ -661,7 +661,7 @@ async function maybePrepareAutonomousCodeWork(workspaces) {
   }
   if (!codeAutomationEnabled) return
   const status = state.localAutomationStatus || await localAutomationStatus()
-  if (!status.ready) return
+  if (status.codex !== 'ready') return
   await maybeQueueAutonomousCodeActions(workspaces)
   await processApprovedCodeActions(workspaces)
 }
@@ -673,6 +673,15 @@ async function maybeQueueAutonomousCodeActions(workspaces) {
   for (const workspace of workspaces) {
     const targetChannelId = await channelForWorkspace(workspace)
     if (!targetChannelId || !workspace.repoFullName) continue
+    const repoReady = await repoAutomationReady(workspace.repoFullName, workspace.branch || 'main')
+    if (!repoReady.ready) {
+      logThrottled(`autonomous_repo_not_ready:${workspace.repoFullName}`, 60 * 60 * 1000, 'autonomous_repo_not_ready', {
+        workspace: workspace.label || workspace.id || null,
+        repoFullName: workspace.repoFullName,
+        reason: repoReady.reason
+      })
+      continue
+    }
     const runKey = `${workspace.id || workspace.label || workspace.repoFullName}:${today}`
     const usedToday = Number(state.autonomousCodeRuns[runKey]?.count || 0)
     if (usedToday >= autonomousCodePerWorkspacePerDay) continue
@@ -716,6 +725,25 @@ async function maybeQueueAutonomousCodeActions(workspaces) {
     ].filter(Boolean).join('\n').slice(0, 1900), targetChannelId)
     saveState()
     return
+  }
+}
+
+async function repoAutomationReady(repoFullName, branch = 'main') {
+  const repoName = String(repoFullName || '').split('/')[1]
+  if (!repoName) return { ready: false, reason: 'missing_repo_name' }
+  const repoDir = `/home/deploy/seo-agent-workspaces/${repoName}`
+  try {
+    const { execFile } = await import('node:child_process')
+    const { promisify } = await import('node:util')
+    const exec = promisify(execFile)
+    if (!existsSync(join(repoDir, '.git'))) return { ready: false, reason: `repo_checkout_missing:${repoName}` }
+    const envPath = { ...process.env, PATH: `${process.env.HOME || '/home/deploy'}/.npm-global/bin:${process.env.HOME || '/home/deploy'}/.local/bin:${process.env.PATH || ''}` }
+    const status = await exec('git', ['status', '--porcelain'], { cwd: repoDir, env: envPath, timeout: 60 * 1000, maxBuffer: 1024 * 1024 })
+    if (String(status.stdout || '').trim()) return { ready: false, reason: `dirty_worktree:${repoName}` }
+    await exec('git', ['push', '--dry-run', 'origin', `HEAD:${branch}`], { cwd: repoDir, env: envPath, timeout: 2 * 60 * 1000, maxBuffer: 1024 * 1024 })
+    return { ready: true, reason: 'ready' }
+  } catch (error) {
+    return { ready: false, reason: String(error?.stderr || error?.message || error).slice(0, 240) }
   }
 }
 
