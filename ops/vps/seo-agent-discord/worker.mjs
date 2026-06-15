@@ -958,11 +958,16 @@ async function syntheticAutonomousActionForWorkspace({ workspace, targetChannelI
     logThrottled(`synthetic_autonomous_skipped:${workspace?.id || workspace?.label}:live`, 30 * 60 * 1000, 'synthetic_autonomous_skipped', { workspace: workspace?.label || workspace?.id || null, reason: 'live_ai_candidate_available', pendingCount: pending.length })
     return null
   }
-  const action = buildSebcastwallGoalGapAction(workspace, targetChannelId)
-  if (!action || state.codeActionResults?.[action.id] || state.approvedCodeActionQueue?.[action.id]) {
-    logThrottled(`synthetic_autonomous_skipped:${workspace?.id || workspace?.label}:empty`, 30 * 60 * 1000, 'synthetic_autonomous_skipped', { workspace: workspace?.label || workspace?.id || null, reason: !action ? 'no_backlog_action' : 'already_result_or_queued', actionId: action?.id || null })
+  const rawAction = buildSebcastwallGoalGapAction(workspace, targetChannelId)
+  if (!rawAction || state.codeActionResults?.[rawAction.id] || state.approvedCodeActionQueue?.[rawAction.id]) {
+    logThrottled(`synthetic_autonomous_skipped:${workspace?.id || workspace?.label}:empty`, 30 * 60 * 1000, 'synthetic_autonomous_skipped', { workspace: workspace?.label || workspace?.id || null, reason: !rawAction ? 'no_backlog_action' : 'already_result_or_queued', actionId: rawAction?.id || null })
     return null
   }
+  const action = await enrichActionWithKeywordMetrics({
+    ...rawAction,
+    evidenceSource: 'workspace_goal_backlog',
+    evidenceNote: 'Agent-skapad backlog från workspace-mål och tidigare ledger; ska inte beskrivas som färsk GSC-query om live-data saknas.'
+  })
   const candidateCheck = autonomousCodeCandidateCheck(action, workspace, targetChannelId)
   if (!candidateCheck.ok) {
     logThrottled(`synthetic_autonomous_skipped:${workspace?.id || workspace?.label}:${action.id}:candidate`, 30 * 60 * 1000, 'synthetic_autonomous_skipped', { workspace: workspace?.label || workspace?.id || null, actionId: action.id, reason: `candidate:${candidateCheck.reason}` })
@@ -1015,8 +1020,19 @@ async function syntheticAutonomousActionForWorkspace({ workspace, targetChannelI
     action,
     review,
     codexBrief: safeBrief,
-    reason: safeBrief.why || 'Live-kön matchade inte Sebcastwalls AI/kod/utbildningsmål, så agenten skapade en låg-risk förbättring på befintlig tjänstesida.'
+    reason: safeBrief.why || syntheticEvidenceReason(action)
   }
+}
+
+function syntheticEvidenceReason(action) {
+  const metrics = action?.keywordMetrics && typeof action.keywordMetrics === 'object' ? action.keywordMetrics : null
+  if (metrics && Number(metrics.avgMonthlySearches || 0) > 0) {
+    return `Agenten valde en låg-risk befintlig-sida-ändring från workspace-backloggen och Keyword Planner visar ${metrics.avgMonthlySearches} sök/mån för "${action.keyword}".`
+  }
+  if (action?.keywordMetricsStatus === 'failed') {
+    return `Agenten valde en låg-risk befintlig-sida-ändring från workspace-backloggen. Keyword Planner kunde inte verifieras (${action.keywordMetricsError || 'okänt fel'}), så detta är strategisk fallback och inte färsk keyword-data.`
+  }
+  return 'Agenten valde en låg-risk befintlig-sida-ändring från workspace-mål och tidigare ledger. Detta är strategisk fallback, inte färsk GSC/Keyword Planner-evidens.'
 }
 
 function buildSebcastwallGoalGapAction(workspace, targetChannelId = null) {
@@ -4345,6 +4361,11 @@ async function runCodexActionCardBrief({ action, workspace, workspacePolicy, rev
       title: action?.title,
       targetUrl: action?.targetUrl || action?.url || null,
       keyword: action?.keyword || null,
+      keywordMetricsStatus: action?.keywordMetricsStatus || null,
+      keywordMetrics: action?.keywordMetrics || null,
+      keywordMetricsError: action?.keywordMetricsError || null,
+      evidenceSource: action?.evidenceSource || null,
+      evidenceNote: action?.evidenceNote || null,
       category: action?.category || null,
       priority: action?.priority || null,
       why: action?.why || null,
@@ -4364,6 +4385,8 @@ async function runCodexActionCardBrief({ action, workspace, workspacePolicy, rev
     '- Skriv på svenska.',
     '- Max 220 tecken i title, max 420 tecken i doThis.',
     '- Nämn rätt domän/tjänsttyp utifrån context.',
+    '- Var ärlig om evidens: om evidenceSource är workspace_goal_backlog eller Keyword Planner saknar metrics, säg inte att åtgärden bygger på färsk GSC/Keyword Planner-data.',
+    '- Om Keyword Planner har volym/CPC/competition, använd det konkret i why/reason.',
     '- Ingen rå JSON/tool-output i fälten.',
     '- Låtsas inte att kod redan körts.',
     '',
