@@ -25,10 +25,14 @@ export function agentSpecStatus() {
 }
 
 export function workspaceGoalSummary(workspace) {
-  const label = String(workspace?.label || workspace?.id || '').toLowerCase()
+  const label = [workspace?.label, workspace?.id, workspace?.gscProperty, workspace?.repoFullName].filter(Boolean).join(' ').toLowerCase()
   if (label.includes('sebcastwall')) return 'AI, AI-agenter, AI-automation, kodning, app/web, interna verktyg och AI-utbildningar.'
   if (label.includes('natverkskollen')) return 'Events, startup events, entreprenörer, nätverkande och evergreen eventlandningssidor.'
   if (label.includes('parkeringspolaren')) return 'Parkering, flygplatsparkering, långtidsparkering, lokal intent, indexering och konvertering.'
+  if (/\b(vag|väg|road|route|trafik|traffic|weather|väder|driving)\b/.test(label)) return 'Vägväder, ruttplanering, trafikläge, vägförhållanden och konkreta rese-/bilscenarion.'
+  if (/\b(event|events|nätverk|network|startup|meetup)\b/.test(label)) return 'Event discovery, nätverk, stadssidor och konkreta eventkluster.'
+  if (/\b(parking|parkering|airport|flygplats|garage)\b/.test(label)) return 'Parkering, bokning, lokal intent, pris/avstånd och konvertering.'
+  if (/\b(ai|automation|app|web|konsult|consult|agent)\b/.test(label)) return 'AI, automation, utveckling, tjänstecase och köparnära proof.'
   return 'Ranka högre på relevant och värdefull sökefterfrågan.'
 }
 

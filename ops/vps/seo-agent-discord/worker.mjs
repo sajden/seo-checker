@@ -2789,9 +2789,12 @@ function ensureWorkspaceProfile(workspace, targetChannelId = null) {
 
 function defaultWorkspaceProfile(workspace) {
   const label = String(workspace?.label || workspace?.id || '').toLowerCase()
+  const inferred = inferWorkspaceProfile(workspace)
   if (label.includes('sebcastwall')) {
     return {
       label: workspace?.label || 'sebcastwall.se',
+      siteType: 'ai_consultancy',
+      audience: 'företag som vill köpa AI/kod/automation',
       goals: ['rank higher for AI consulting, AI agents, automation, app/web and AI education leads'],
       prefer: ['AI konsult', 'AI-agenter', 'AI-automation', 'kodning', 'app/web', 'interna verktyg', 'AI-utbildningar', 'workshops'],
       avoid: ['Fortnox-only', 'Visma-only', 'Business Central-only', 'Abicart/Klarna', 'generic integration-only', 'invoice/bookkeeping-only'],
@@ -2801,6 +2804,8 @@ function defaultWorkspaceProfile(workspace) {
   if (label.includes('natverkskollen')) {
     return {
       label: workspace?.label || 'natverkskollen.se',
+      siteType: 'event_directory',
+      audience: 'personer och företag som letar events/nätverk',
       goals: ['rank higher for startup events, networking and evergreen event landing pages'],
       prefer: ['startup events', 'nätverkande', 'entreprenörer', 'city pages', 'event category pages'],
       avoid: ['agency consulting', 'software integration', 'unrelated AI consultancy'],
@@ -2810,14 +2815,82 @@ function defaultWorkspaceProfile(workspace) {
   if (label.includes('parkeringspolaren')) {
     return {
       label: workspace?.label || 'parkeringspolaren.se',
+      siteType: 'parking_service',
+      audience: 'personer som söker parkering och vill boka/konvertera',
       goals: ['rank higher for parking intent and conversion landing pages'],
       prefer: ['parkering', 'flygplatsparkering', 'långtidsparkering', 'lokal intent', 'indexering', 'conversion'],
       avoid: ['unrelated software/AI consultancy'],
       autonomy: 'approve_before_code'
     }
   }
+  if (inferred.siteType !== 'generic') return inferred
   return {
     label: workspace?.label || workspace?.id || 'workspace',
+    siteType: 'generic',
+    audience: 'relevanta sökare',
+    goals: ['rank higher on relevant valuable search demand'],
+    prefer: [],
+    avoid: [],
+    autonomy: 'approve_before_code'
+  }
+}
+
+function inferWorkspaceProfile(workspace) {
+  const signal = [
+    workspace?.label,
+    workspace?.id,
+    workspace?.gscProperty,
+    workspace?.repoFullName,
+    workspace?.siteUrl
+  ].filter(Boolean).join(' ').toLowerCase()
+  if (/\b(vag|väg|road|route|trafik|traffic|weather|väder|bilresa|driving)\b/.test(signal)) {
+    return {
+      label: workspace?.label || 'road/weather workspace',
+      siteType: 'road_weather_utility',
+      audience: 'bilister och resenärer som planerar eller följer en bilresa',
+      goals: ['rank higher for road weather, route weather, traffic and road condition searches'],
+      prefer: ['väder längs vägen', 'vägväder', 'trafikläge', 'vägförhållanden', 'ruttplanering', 'bilresa', 'halka', 'regn', 'vind', 'road conditions'],
+      avoid: ['SMB', 'B2B', 'consulting', 'SaaS', 'agency', 'business workflow', 'CRM', 'invoice'],
+      autonomy: 'approve_before_code'
+    }
+  }
+  if (/\b(event|events|nätverk|network|startup|meetup)\b/.test(signal)) {
+    return {
+      label: workspace?.label || 'event workspace',
+      siteType: 'event_directory',
+      audience: 'personer som letar events, nätverk och sammanhang',
+      goals: ['rank higher for event discovery and event landing page searches'],
+      prefer: ['events', 'startup events', 'nätverkande', 'stadssidor', 'eventkategori', 'kalender'],
+      avoid: ['software consulting', 'integration-only', 'generic SaaS'],
+      autonomy: 'approve_before_code'
+    }
+  }
+  if (/\b(parking|parkering|airport|flygplats|garage)\b/.test(signal)) {
+    return {
+      label: workspace?.label || 'parking workspace',
+      siteType: 'parking_service',
+      audience: 'personer som vill hitta och boka parkering',
+      goals: ['rank higher for parking searches and conversion landing pages'],
+      prefer: ['parkering', 'flygplatsparkering', 'långtidsparkering', 'pris', 'bokning', 'lokal intent'],
+      avoid: ['software consulting', 'generic AI', 'B2B workflow'],
+      autonomy: 'approve_before_code'
+    }
+  }
+  if (/\b(ai|automation|app|web|konsult|consult|agent)\b/.test(signal)) {
+    return {
+      label: workspace?.label || 'AI/service workspace',
+      siteType: 'ai_consultancy',
+      audience: 'företag som vill köpa AI, kod eller automation',
+      goals: ['rank higher for AI, automation and development service demand'],
+      prefer: ['AI', 'automation', 'app/web', 'kodning', 'konsult', 'utbildning'],
+      avoid: ['consumer travel', 'parking', 'unrelated event discovery'],
+      autonomy: 'approve_before_code'
+    }
+  }
+  return {
+    label: workspace?.label || workspace?.id || 'workspace',
+    siteType: 'generic',
+    audience: 'relevanta sökare',
     goals: ['rank higher on relevant valuable search demand'],
     prefer: [],
     avoid: [],
@@ -3327,13 +3400,9 @@ function humanConcreteAction(action, workspace = null) {
   const title = String(action?.title || '').trim()
   const targetUrl = String(action?.targetUrl || action?.url || '').trim()
   if (/^ai search readiness:\s*\/?$/i.test(title)) {
-    if (isVagkollenWorkspace(workspace, action)) {
-      return [
-        targetUrl ? `Uppdatera startsidan ${targetUrl}.` : 'Uppdatera startsidan.',
-        'Gör den tydligare som en väg- och vädertjänst: konkreta rutt-/rese-scenarion, vägväder, trafikläge, halka/regn/vind och när användaren bör kolla tjänsten före eller under en resa.',
-        'Målet är att sidan ska förklara den faktiska nyttan med Vagkollen för bilresor i Sverige, inte låta som en generisk B2B- eller konsulttjänst.'
-      ].join(' ')
-    }
+    const profile = defaultWorkspaceProfile(workspace || action)
+    const specific = aiSearchReadinessActionForProfile(profile, targetUrl)
+    if (specific) return specific
     return [
       targetUrl ? `Uppdatera startsidan ${targetUrl}.` : 'Uppdatera startsidan.',
       'Lägg in mer konkret hjälpsamt innehåll: exempel/scenario, tydliga use cases, fallgropar, nästa steg och interna länkar.',
@@ -3345,10 +3414,37 @@ function humanConcreteAction(action, workspace = null) {
   return 'Gör den minsta konkreta SEO-förbättringen som matchar kortet och verifiera med build.'
 }
 
-function isVagkollenWorkspace(workspace, action = null) {
-  return [workspace?.label, workspace?.id, workspace?.gscProperty, workspace?.repoFullName, action?.workspaceSlug, action?.projectSlug, action?.targetUrl, action?.url]
-    .filter(Boolean)
-    .some((value) => String(value).toLowerCase().includes('vagkollen'))
+function aiSearchReadinessActionForProfile(profile, targetUrl) {
+  const intro = targetUrl ? `Uppdatera startsidan ${targetUrl}.` : 'Uppdatera startsidan.'
+  if (profile?.siteType === 'road_weather_utility') {
+    return [
+      intro,
+      'Gör den tydligare som en väg- och vädertjänst: konkreta rutt-/rese-scenarion, vägväder, trafikläge, halka/regn/vind och när användaren bör kolla tjänsten före eller under en resa.',
+      'Målet är att sidan ska förklara den faktiska nyttan för bilresor i Sverige, inte låta som en generisk B2B- eller konsulttjänst.'
+    ].join(' ')
+  }
+  if (profile?.siteType === 'parking_service') {
+    return [
+      intro,
+      'Gör den tydligare som en parkeringstjänst: konkreta sök- och bokningsscenarion, pris/avstånd/tidsbesparing, flygplats- eller lokal kontext, trygghet och vad användaren gör härnäst.',
+      'Målet är att sidan ska hjälpa en person att välja parkering, inte beskriva en generisk mjukvaru- eller konsulttjänst.'
+    ].join(' ')
+  }
+  if (profile?.siteType === 'event_directory') {
+    return [
+      intro,
+      'Gör den tydligare som en event-/nätverkstjänst: konkreta eventtyper, stad eller målgrupp, exempel på när sidan används, hur man hittar rätt event och interna länkar till relevanta kluster.',
+      'Målet är att sidan ska hjälpa någon att hitta rätt sammanhang, inte låta som en generisk SaaS- eller konsultsida.'
+    ].join(' ')
+  }
+  if (profile?.siteType === 'ai_consultancy') {
+    return [
+      intro,
+      'Gör den tydligare som en AI/kod/automationstjänst: konkreta case, köparproblem, leveransform, risker/fallgropar, proof och nästa steg för företag som överväger hjälp.',
+      'Målet är att sidan ska bygga förtroende och visa praktisk expertis, inte bara nämna keywords.'
+    ].join(' ')
+  }
+  return ''
 }
 
 function formatKeywordMetricsLine(action) {
