@@ -1613,7 +1613,7 @@ async function postPendingActions({ workspace, targetChannelId }) {
         continue
       }
       rememberGuardedAction(enrichedAction, workspace, targetChannelId, guard.reason)
-      log('action_card_guarded', { id, workspace: workspace?.label || workspace?.id || null, reason: guard.reason })
+      logThrottled(`action_card_guarded:${id}:${guard.reason}`, 6 * 60 * 60 * 1000, 'action_card_guarded', { id, workspace: workspace?.label || workspace?.id || null, reason: guard.reason })
       continue
     }
     const review = reviewActionForPosting(enrichedAction, workspace, targetChannelId, actions.workspacePolicy)
