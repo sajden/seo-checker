@@ -20,6 +20,8 @@ const dailyHourUtc = Number(env.SEO_AGENT_DAILY_HOUR_UTC || '4')
 const runCheckEveryMs = Number(env.SEO_AGENT_RUN_CHECK_MS || '900000')
 const integrationDoctorEveryMs = Number(env.SEO_AGENT_INTEGRATION_DOCTOR_MS || '21600000')
 const gscIssueCheckEveryMs = Number(env.SEO_AGENT_GSC_ISSUE_CHECK_MS || String(6 * 60 * 60 * 1000))
+const repoCommitSyncEveryMs = Number(env.SEO_AGENT_REPO_COMMIT_SYNC_MS || String(15 * 60 * 1000))
+const repoCommitSyncLimit = Number(env.SEO_AGENT_REPO_COMMIT_SYNC_LIMIT || '8')
 const activeActionReminderMs = Number(env.SEO_AGENT_ACTIVE_ACTION_REMINDER_MS || String(6 * 60 * 60 * 1000))
 const staleRunningMs = Number(env.SEO_AGENT_STALE_RUNNING_MS || String(2 * 60 * 60 * 1000))
 const staleQueuedApprovedMs = Number(env.SEO_AGENT_STALE_APPROVED_QUEUE_MS || String(36 * 60 * 60 * 1000))
@@ -61,6 +63,7 @@ async function tick() {
   cleanupStaleRuntimeState()
   await processDiscordReplies()
   const workspaces = await listWorkspaces()
+  await syncWorkspaceRepoCommits(workspaces)
   await ensureDailyRunsForWorkspaces(workspaces)
   await runDailyRankingReviews(workspaces)
   await postReadinessForWorkspaces(workspaces)
@@ -104,6 +107,153 @@ async function maybeStartDailySeoRuns() {
 async function listWorkspaces() {
   const payload = await fetchPlatformJson('/api/platform/seo-monitor/workspaces')
   return Array.isArray(payload.workspaces) ? payload.workspaces : []
+}
+
+async function syncWorkspaceRepoCommits(workspaces) {
+  if (!automationEnabled) return
+  const now = Date.now()
+  if (state.lastRepoCommitSyncAt && now - Date.parse(state.lastRepoCommitSyncAt) < repoCommitSyncEveryMs) return
+  state.lastRepoCommitSyncAt = new Date(now).toISOString()
+  state.repoCommitSync = state.repoCommitSync || {}
+  for (const workspace of workspaces) {
+    await syncWorkspaceRepoCommitsForWorkspace(workspace).catch((error) => {
+      const key = workspaceProfileKey(workspace, null)
+      state.repoCommitSync[key] = {
+        ...(state.repoCommitSync[key] || {}),
+        workspaceKey: key,
+        repoFullName: workspace?.repoFullName || null,
+        branch: workspace?.branch || 'main',
+        checkedAt: new Date().toISOString(),
+        status: 'failed',
+        error: String(error?.message || error).slice(0, 500)
+      }
+      logThrottled(`repo_commit_sync_failed:${key}`, 6 * 60 * 60 * 1000, 'repo_commit_sync_failed', { workspace: workspace?.label || workspace?.id || key, error: error?.message || String(error) })
+    })
+  }
+}
+
+async function syncWorkspaceRepoCommitsForWorkspace(workspace) {
+  const repoFullName = String(workspace?.repoFullName || '').trim()
+  if (!repoFullName) return
+  const branch = String(workspace?.branch || 'main').trim() || 'main'
+  const repoDir = resolveRepoCheckoutDir(repoFullName)
+  const key = workspaceProfileKey(workspace, null)
+  const nowIso = new Date().toISOString()
+  const previous = state.repoCommitSync?.[key] || {}
+  if (!repoDir) {
+    state.repoCommitSync[key] = {
+      ...previous,
+      workspaceKey: key,
+      repoFullName,
+      branch,
+      checkedAt: nowIso,
+      status: 'missing_checkout',
+      error: `No checkout found for ${repoFullName}`
+    }
+    return
+  }
+  const git = await gitRunner(repoDir)
+  await git(['fetch', '--quiet', 'origin', branch], 2 * 60 * 1000)
+  const stdout = await git(['log', `--max-count=${repoCommitSyncLimit}`, '--format=%H%x09%h%x09%ct%x09%s', `origin/${branch}`], 60 * 1000)
+  const commits = stdout.split(/\r?\n/)
+    .map(parseGitLogLine)
+    .filter(Boolean)
+  const known = new Set([...(previous.knownShas || []), ...(previous.recentCommits || []).map((item) => item.sha)].filter(Boolean))
+  for (const commit of commits.slice().reverse()) {
+    if (known.has(commit.sha)) continue
+    recordObservedRepoCommit(workspace, repoDir, commit)
+    known.add(commit.sha)
+  }
+  state.repoCommitSync[key] = {
+    workspaceKey: key,
+    repoFullName,
+    branch,
+    repoDir,
+    checkedAt: nowIso,
+    status: 'ok',
+    lastSeenSha: commits[0]?.sha || previous.lastSeenSha || null,
+    recentCommits: commits.slice(0, repoCommitSyncLimit),
+    knownShas: [...known].slice(-80)
+  }
+}
+
+async function gitRunner(repoDir) {
+  const { execFile } = await import('node:child_process')
+  const { promisify } = await import('node:util')
+  const exec = promisify(execFile)
+  return async (args, timeout = 60 * 1000) => {
+    const result = await exec('git', args, {
+      cwd: repoDir,
+      env: { ...process.env, PATH: `/home/deploy/.npm-global/bin:/home/deploy/.local/bin:${process.env.PATH || ''}` },
+      timeout,
+      maxBuffer: 1024 * 1024
+    })
+    return String(result.stdout || '').trim()
+  }
+}
+
+function parseGitLogLine(line) {
+  const [sha, shortSha, timestamp, ...subjectParts] = String(line || '').split('\t')
+  if (!sha || !shortSha) return null
+  return {
+    sha,
+    shortSha,
+    committedAt: Number(timestamp) ? new Date(Number(timestamp) * 1000).toISOString() : null,
+    subject: subjectParts.join('\t').trim()
+  }
+}
+
+function resolveRepoCheckoutDir(repoFullName) {
+  const repoName = String(repoFullName || '').split('/').pop()
+  if (!repoName) return ''
+  const candidates = [
+    `/home/deploy/seo-agent-workspaces/${repoName}`,
+    `/mnt/HC_Volume_105954589/deploy-storage/agent-workspaces/seo-agent-workspaces/${repoName}`,
+    `/mnt/HC_Volume_105954589/deploy-storage/agent-workspaces/${repoName}`
+  ]
+  return candidates.find((dir) => existsSync(join(dir, '.git'))) || ''
+}
+
+function recordObservedRepoCommit(workspace, repoDir, commit) {
+  const workspaceKey = workspaceProfileKey(workspace, null)
+  const key = `repo-commit:${workspaceKey}:${commit.shortSha}`
+  const now = new Date().toISOString()
+  const existing = state.actionLedger[key] || {}
+  state.actionLedger[key] = {
+    ...existing,
+    key,
+    actionId: key,
+    title: `Repo commit: ${commit.subject || commit.shortSha}`,
+    workspaceKey,
+    targetUrl: null,
+    keyword: null,
+    status: 'observed',
+    commit: commit.shortSha,
+    repoFullName: workspace?.repoFullName || null,
+    branch: workspace?.branch || 'main',
+    repoDir,
+    firstSeenAt: existing.firstSeenAt || now,
+    lastEventAt: now,
+    recheckAfter: existing.recheckAfter || defaultLedgerRecheck('completed', now),
+    events: [
+      { event: 'repo_commit_observed', at: now, commit: commit.shortSha, sha: commit.sha, subject: commit.subject, committedAt: commit.committedAt },
+      ...(existing.events || [])
+    ].slice(0, 20)
+  }
+  const profile = ensureWorkspaceProfile(workspace, null)
+  const memory = Array.isArray(profile.memory) ? profile.memory : []
+  const memoryItem = {
+    at: now,
+    source: 'repo_commit_sync',
+    repoFullName: workspace?.repoFullName || null,
+    branch: workspace?.branch || 'main',
+    commit: commit.shortSha,
+    subject: commit.subject || ''
+  }
+  profile.memory = [memoryItem, ...memory.filter((item) => item?.commit !== commit.shortSha)].slice(0, 30)
+  profile.updatedAt = now
+  state.workspaceProfiles[workspaceKey] = profile
+  rememberAgentLesson(`Observed ${workspace?.label || workspaceKey} repo commit ${commit.shortSha}: ${commit.subject || 'no subject'}`)
 }
 
 async function ensureDailyRunsForWorkspaces(workspaces) {
@@ -3921,6 +4071,7 @@ function ensureAutonomousAgentState() {
   state.rankingReviews = state.rankingReviews || {}
   state.agentLessons = state.agentLessons || []
   state.guardedActions = state.guardedActions || {}
+  state.repoCommitSync = state.repoCommitSync || {}
   migrateExistingStateToActionLedger()
 }
 
