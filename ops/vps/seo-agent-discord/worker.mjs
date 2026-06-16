@@ -85,6 +85,7 @@ async function tick() {
   await postPendingActionsForWorkspaces(workspaces)
   await maybePrepareAutonomousCodeWork(workspaces)
   await maybeRunIntegrationDoctor(workspaces)
+  await maybeAskForGscApiOAuth()
   saveState()
 }
 
@@ -1402,6 +1403,29 @@ async function maybeRunIntegrationDoctor(workspaces) {
   state.lastIntegrationDoctorAlert = { date: today, signature, at: now.toISOString() }
   rememberPendingIntegrationRepair(report, channelId)
   await sendDiscordMessage(formatIntegrationDoctorMessage(report, true), channelId)
+}
+
+async function maybeAskForGscApiOAuth() {
+  const today = new Date().toISOString().slice(0, 10)
+  const api = await runGscUrlInspectionApi({ command: 'doctor' }).catch((error) => ({ ok: false, status: 'api_doctor_failed', error: error?.message || String(error) }))
+  if (api.ok) return
+  const browser = await runGscFirefoxUiTool({ command: 'doctor' }).catch((error) => ({ ok: false, status: 'browser_doctor_failed', error: error?.message || String(error) }))
+  if (!browser.ok || !browser.canObserve) return
+  await sendOncePerDay(`gsc-api-oauth-request:${today}`, channelId, formatGscApiOAuthRequest(api, browser))
+}
+
+function formatGscApiOAuthRequest(api, browser) {
+  return [
+    'GSC API-token saknas för SEO-agenten.',
+    '',
+    `Status: API=${api.status || api.error || 'inte redo'} · Browser=${browser.status || 'redo'}`,
+    'Agenten kan fortsätta via noVNC/Firefox, men bästa långsiktiga läget är API-first så URL Inspection inte beror på browser-sessionen.',
+    '',
+    'När du har tid: skriv `gsc browser oauth` här. Jag öppnar Google-flödet i VPS-Firefox.',
+    'Om Google kräver manuell login/approval gör du det i noVNC-fönstret och skriver sedan `klart` eller `gsc read browser`, så försöker jag läsa callbacken och spara refresh-token på VPS.',
+    '',
+    'Det här är inte blockerande, men det är rätt sak att fixa för stabil drift.'
+  ].join('\n').slice(0, 1900)
 }
 
 async function buildIntegrationDoctorReport(workspaces) {
@@ -3575,7 +3599,9 @@ async function formatGscOauthStartMessage() {
       'Google Search Console OAuth för SEO-agentens URL Inspection API:',
       authUrl,
       '',
-      'Efteråt kan browsern hamna på localhost och visa fel. Det är okej: kopiera hela URL:en från adressfältet eller skriv `gsc code ...` här.',
+      `Redirect URI: ${gscOauthRedirectUri}`,
+      'Om Google kräver manuell login/approval: gör den i noVNC-Firefox och skriv sedan `klart` eller `gsc read browser` här.',
+      'Om callbacken landar på en sida med fel men URL:en fortfarande innehåller `code=...`: klistra in hela URL:en eller skriv `gsc code ...`.',
       'Agenten sparar refresh-token lokalt på VPS och använder API:t före noVNC/Firefox.'
     ].join('\n')
   }
