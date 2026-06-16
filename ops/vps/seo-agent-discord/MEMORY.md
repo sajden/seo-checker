@@ -55,6 +55,7 @@ Treat Vagkollen as a road-weather and route-planning utility for ordinary driver
 - Plain Firefox/noVNC login works for GSC.
 - Direct Wayland capture (`grim`/pixelflux from a separate process) does not observe the active Firefox session reliably.
 - The working control path is Playwright against `http://127.0.0.1:3007/` (Selkies/noVNC). It can type into the visible Firefox session and capture screenshots.
+- 2026-06-16: Public operator access for the same Firefox uses Cloudflare Access at `https://gsc-browser.sebcastwall.se/?autoconnect=1&resize=scale`. The tunnel should point at the container's HTTPS origin `https://127.0.0.1:3009` with `noTLSVerify`, while Playwright should keep using local HTTP `3007`.
 - Verified on 2026-06-07: `inspect-url` opened GSC URL Inspection for `https://sebcastwall.se/tjanster/ai-agenter`, and the screenshot showed `URL is on Google`.
 - Added lightweight screenshot classification with `pngjs`: green GSC URL Inspection status is classified as `indexed`.
 - Discord worker now marks stale indexing actions as handled when GSC UI verification returns `indexed` with confidence >= 0.8.

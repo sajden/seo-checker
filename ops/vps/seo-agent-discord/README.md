@@ -39,6 +39,18 @@ In Discord, ask the SEO agent for `gsc oauth` to generate the agent-specific OAu
 
 The known registered redirect URI for the agent GSC OAuth client is `https://seo-api.sebcastwall.se/api/gsc/callback`. Avoid localhost redirect URIs for the VPS agent unless they are explicitly registered in Google Cloud Console.
 
+## GSC Browser Endpoint
+
+The fallback browser is a `lscr.io/linuxserver/firefox:latest` container named `seo-agent-gsc-browser-plain`.
+
+- Profile mount: `/home/deploy/seo-agent-discord/state/gsc-browser-profile-plain:/config`
+- Local HTTP for Playwright control: `http://127.0.0.1:3007/`
+- Local HTTPS for Cloudflare Tunnel/browser access: `https://127.0.0.1:3009/`
+- Public operator URL: `https://gsc-browser.sebcastwall.se/?autoconnect=1&resize=scale`
+- Cloudflare Tunnel rule: `gsc-browser.sebcastwall.se -> https://127.0.0.1:3009` with `noTLSVerify`.
+
+The container should run with Docker restart policy `unless-stopped`. Do not expose the browser without Cloudflare Access or an equivalent auth layer because it contains a persistent Google login profile.
+
 ## Deploy
 
 After editing this snapshot, deploy with:
