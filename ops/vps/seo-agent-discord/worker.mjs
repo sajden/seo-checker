@@ -15,8 +15,8 @@ const googleAdsOauthRedirectUri = env.GOOGLE_ADS_OAUTH_REDIRECT_URI || 'http://l
 const googleAdsOauthState = env.GOOGLE_ADS_OAUTH_STATE || 'seo-agent-google-ads-oauth'
 const gscOauthRedirectUri = env.GSC_REDIRECT_URI || env.GOOGLE_SEARCH_CONSOLE_REDIRECT_URI || 'https://seo-api.sebcastwall.se/api/gsc/callback'
 const gscOauthState = env.GSC_OAUTH_STATE || 'seo-agent-gsc-oauth'
-const noVncUrl = env.SEO_AGENT_NOVNC_URL || 'http://localhost:3007/'
-const noVncTunnelCommand = env.SEO_AGENT_NOVNC_TUNNEL_COMMAND || 'ssh -L 3007:127.0.0.1:3007 deploy@178.104.240.46'
+const noVncUrl = env.SEO_AGENT_NOVNC_URL || 'https://gsc-browser.sebcastwall.se/'
+const noVncTunnelCommand = env.SEO_AGENT_NOVNC_TUNNEL_COMMAND || ''
 const pollMs = Number(env.SEO_AGENT_POLL_MS || '60000')
 const dailyHourUtc = Number(env.SEO_AGENT_DAILY_HOUR_UTC || '4')
 const runCheckEveryMs = Number(env.SEO_AGENT_RUN_CHECK_MS || '900000')
@@ -1417,7 +1417,7 @@ async function maybeAskForGscApiOAuth() {
 }
 
 function formatGscApiOAuthRequest(api, browser) {
-  return [
+  const lines = [
     'GSC behöver godkännas en gång för stabil API-access.',
     '',
     `Status: API saknas (${api.status || api.error || 'inte redo'}). Browser-fallback är redo.`,
@@ -1426,16 +1426,18 @@ function formatGscApiOAuthRequest(api, browser) {
     '1. Svara `gsc browser oauth` här.',
     `2. Öppna ${noVncUrl} och godkänn Google i Firefox.`,
     '3. Skriv `klart` här när Google-flödet är klart.',
-    '',
-    `Om länken inte öppnas: \`${noVncTunnelCommand}\``
-  ].join('\n').slice(0, 1900)
+  ]
+  if (noVncTunnelCommand) {
+    lines.push('', `Om länken inte öppnas: \`${noVncTunnelCommand}\``)
+  }
+  return lines.join('\n').slice(0, 1900)
 }
 
 function formatNoVncAccessLines() {
   return [
     `Öppna VPS-Firefox/noVNC: ${noVncUrl}`,
-    `Om länken inte öppnas lokalt: kör \`${noVncTunnelCommand}\` och öppna länken igen.`
-  ]
+    noVncTunnelCommand ? `Om länken inte öppnas lokalt: kör \`${noVncTunnelCommand}\` och öppna länken igen.` : ''
+  ].filter(Boolean)
 }
 
 async function buildIntegrationDoctorReport(workspaces) {
@@ -3774,7 +3776,7 @@ async function openGscOauthInFirefox() {
     completed.status === 'oauth_error' ? 'Google visade OAuth-fel; be mig köra doctor om du vill se aktuell URL.' : '',
     '',
     'Gör login/godkännande där och skriv `klart` här efteråt.',
-    `Om länken inte öppnas: \`${noVncTunnelCommand}\``
+    noVncTunnelCommand ? `Om länken inte öppnas: \`${noVncTunnelCommand}\`` : ''
   ].filter(Boolean).join('\n')
 }
 
