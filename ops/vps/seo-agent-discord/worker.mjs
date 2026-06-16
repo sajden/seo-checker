@@ -45,18 +45,32 @@ const processStartedAtMs = Date.now()
 if (!existsSync(stateDir)) mkdirSync(stateDir, { recursive: true })
 const state = loadState()
 ensureAutonomousAgentState()
+let tickRunning = false
 
 log('starting', { channelId, allowedUserId, platformApiUrl, pollMs, dailyHourUtc, runCheckEveryMs, workspaceChannelCount: Object.keys(workspaceChannels).length, automationEnabled, codeAutomationEnabled })
 startDiscordInteractionClient()
 await postStartupOnce()
 
 setInterval(() => {
-  tick().catch((error) => log('tick_failed', { error: error?.message || String(error) }))
+  tickGuarded().catch((error) => log('tick_failed', { error: error?.message || String(error) }))
 }, pollMs).unref()
 
 while (true) {
-  await tick().catch((error) => log('tick_failed', { error: error?.message || String(error) }))
+  await tickGuarded().catch((error) => log('tick_failed', { error: error?.message || String(error) }))
   await sleep(pollMs)
+}
+
+async function tickGuarded() {
+  if (tickRunning) {
+    logThrottled('tick_skipped_overlap', 30 * 60 * 1000, 'tick_skipped_overlap', { reason: 'previous_tick_still_running' })
+    return
+  }
+  tickRunning = true
+  try {
+    await tick()
+  } finally {
+    tickRunning = false
+  }
 }
 
 async function tick() {
@@ -898,6 +912,7 @@ async function maybeQueueAutonomousCodeActions(workspaces) {
       review: candidate.review,
       codexBrief: candidate.codexBrief
     })
+    await markPostedActionHandled(candidate.action.id, targetChannelId, 'autonomous_code_queued')
     clearActiveAction(candidate.action.id)
     await sendDiscordMessage([
       `Autopilot startar en låg-risk SEO-fix för ${workspace.label}.`,
@@ -952,6 +967,7 @@ async function recoverRetryableCodeFailures(workspaces) {
       source: 'retryable_failure_recovered',
       reason: 'repo_access_ready_after_failure'
     })
+    await markPostedActionHandled(actionId, targetChannelId, 'retryable_failure_recovered')
     await sendDiscordMessage([
       `Jag återupptar en tidigare stoppad SEO-fix för ${workspace.label}.`,
       `Kort: ${action.title || actionId}`,
@@ -1475,6 +1491,7 @@ async function processQueuedApprovedCodeAction(workspaces) {
     })
     recordSeoExperiment(entry, workspace, targetChannelId, completedResult, { source: 'approved_queue' })
     delete state.approvedCodeActionQueue[entry.id]
+    await markPostedActionHandled(entry.id, targetChannelId, 'code_action_completed')
     clearActiveAction(entry.id)
     const commitUrl = result.commit ? githubCommitUrl(entry.repoFullName || workspace.repoFullName, result.commit) : ''
     const posted = await sendDiscordMessage([
@@ -1493,6 +1510,7 @@ async function processQueuedApprovedCodeAction(workspaces) {
     state.codeActionResults[entry.id] = { status: failure.status, failedAt: new Date().toISOString(), error: error?.message || String(error), failure }
     recordActionLedger(entry, workspace, targetChannelId, failure.ledgerEvent, { error: error?.message || String(error), failure })
     delete state.approvedCodeActionQueue[entry.id]
+    await markPostedActionHandled(entry.id, targetChannelId, 'code_action_failed')
     clearActiveAction(entry.id)
     await sendDiscordMessage(formatCodeActionFailureMessage(workspace.label || entry.workspaceSlug, entry.title, error, failure), targetChannelId)
   } finally {
@@ -1897,6 +1915,33 @@ function clearActiveAction(actionId) {
   if (!actionId || !state.activeActionByWorkspace) return
   for (const [key, active] of Object.entries(state.activeActionByWorkspace)) {
     if (String(active?.actionId || '') === String(actionId)) delete state.activeActionByWorkspace[key]
+  }
+}
+
+async function markPostedActionHandled(actionId, targetChannelId = null, reason = 'handled') {
+  const id = String(actionId || '')
+  if (!id) return
+  const posted = state.postedActionIds?.[id]
+  if (!posted?.messageId) return
+  const channel = posted.channelId || targetChannelId
+  if (!channel) return
+  state.postedActionIds[id] = {
+    ...posted,
+    handledAt: new Date().toISOString(),
+    handledReason: reason
+  }
+  try {
+    await discordJson(`/channels/${channel}/messages/${posted.messageId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ components: [] })
+    })
+  } catch (error) {
+    logThrottled(`mark_posted_action_handled_failed:${id}`, 60 * 60 * 1000, 'mark_posted_action_handled_failed', {
+      actionId: id,
+      channelId: channel,
+      messageId: posted.messageId,
+      error: error?.message || String(error)
+    })
   }
 }
 
