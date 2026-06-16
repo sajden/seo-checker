@@ -1400,6 +1400,7 @@ async function maybeRunIntegrationDoctor(workspaces) {
   const today = now.toISOString().slice(0, 10)
   if (state.lastIntegrationDoctorAlert?.date === today && state.lastIntegrationDoctorAlert?.signature === signature) return
   state.lastIntegrationDoctorAlert = { date: today, signature, at: now.toISOString() }
+  rememberPendingIntegrationRepair(report, channelId)
   await sendDiscordMessage(formatIntegrationDoctorMessage(report, true), channelId)
 }
 
@@ -1479,14 +1480,36 @@ async function buildIntegrationDoctorReport(workspaces) {
 
 function formatIntegrationDoctorMessage(report, onlyProblems = false) {
   const checks = onlyProblems ? report.checks.filter((check) => !check.ok) : report.checks
+  const firstRepair = checks.find((check) => !check.ok && ['gsc', 'google_ads'].includes(check.key))
+  const repairHint = firstRepair?.key === 'gsc'
+    ? 'Skriv `koppla Search Console` så postar jag OAuth-länken. Om du bara svarar `koppla` direkt efter den här varningen tolkar jag det också som Search Console.'
+    : firstRepair?.key === 'google_ads'
+      ? 'Skriv `koppla Google Ads` så postar jag OAuth-länken. Om du bara svarar `koppla` direkt efter den här varningen tolkar jag det också som Google Ads.'
+      : 'Om något är rött: skriv namnet på integrationen du vill fixa, till exempel `koppla Search Console`.'
   return [
     onlyProblems ? 'Integration doctor: åtgärd krävs' : 'Integration doctor: aktuell status',
     `Tid: ${report.generatedAt}`,
     '',
     ...checks.map((check) => `${check.ok ? 'OK' : 'FIX'} ${check.label}: ${check.status}${check.ok ? '' : `\nFix: ${check.fix}`}`),
     '',
-    'Du kan be mig koppla om Google Ads eller Search Console direkt i chatten om något är rött.'
+    repairHint
   ].join('\n').slice(0, 1900)
+}
+
+function rememberPendingIntegrationRepair(report, targetChannelId) {
+  const problems = (report?.checks || []).filter((check) => !check.ok)
+  const integration = problems.find((check) => check.key === 'gsc')
+    || problems.find((check) => check.key === 'google_ads')
+  if (!integration) return
+  state.pendingIntegrationRepair = state.pendingIntegrationRepair || {}
+  state.pendingIntegrationRepair[targetChannelId] = {
+    type: integration.key,
+    label: integration.label,
+    status: integration.status,
+    at: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString()
+  }
+  saveState()
 }
 
 function settledValue(result, fallback) {
@@ -2349,6 +2372,17 @@ async function handleChatMessage(content, message, targetChannelId) {
   if (/^(klart|done|färdig|fardig)$/i.test(trimmed)) {
     if (await readPendingOauthFromFirefox(message, targetChannelId)) return
   }
+  if (/^(koppla|koppla om|connect|reconnect|fixa|laga)$/i.test(trimmed)) {
+    if (await handlePendingIntegrationRepair(targetChannelId)) return
+  }
+  if (/koppla.*(gsc|search console)|(?:gsc|search console).*koppla|search console.*oauth|gsc.*oauth|gsc.*login|search console.*login/i.test(trimmed)) {
+    await sendDiscordMessage(await formatGscOauthStartMessage(), targetChannelId)
+    return
+  }
+  if (/koppla.*(google ads|ads|keyword planner)|(?:google ads|ads|keyword planner).*koppla|google ads.*oauth|ads oauth|keyword planner.*oauth|google ads.*login/i.test(trimmed)) {
+    await sendDiscordMessage(formatGoogleAdsOauthStartMessage(), targetChannelId)
+    return
+  }
   if (/google ads.*oauth|ads oauth|keyword planner.*oauth|google ads.*login/i.test(trimmed)) {
     await sendDiscordMessage(formatGoogleAdsOauthStartMessage(), targetChannelId)
     return
@@ -2356,6 +2390,7 @@ async function handleChatMessage(content, message, targetChannelId) {
   if (/^(doctor|integrations?|integration doctor|status integrations?)$/i.test(trimmed)) {
     const workspaces = await listWorkspaces().catch(() => [])
     const report = await buildIntegrationDoctorReport(workspaces)
+    rememberPendingIntegrationRepair(report, targetChannelId)
     await sendDiscordMessage(formatIntegrationDoctorMessage(report, false), targetChannelId)
     return
   }
@@ -2374,10 +2409,6 @@ async function handleChatMessage(content, message, targetChannelId) {
   }
   if (/^(gsc ui doctor|gsc firefox doctor|firefox doctor)$/i.test(trimmed)) {
     await sendDiscordMessage(await formatGscFirefoxUiDoctorMessage(), targetChannelId)
-    return
-  }
-  if (/gsc.*oauth|search console.*oauth|gsc.*login|search console.*login/i.test(trimmed)) {
-    await sendDiscordMessage(await openGscOauthInFirefox(), targetChannelId)
     return
   }
   const gscCode = extractGscOauthCode(trimmed)
@@ -2461,6 +2492,30 @@ async function handleChatMessage(content, message, targetChannelId) {
     return formatGeneralChatFallback(workspace, actions, targetChannelId, guidance)
   })
   await sendDiscordMessage(reply, targetChannelId)
+}
+
+async function handlePendingIntegrationRepair(targetChannelId) {
+  const pending = state.pendingIntegrationRepair?.[targetChannelId]
+  if (!pending) {
+    await sendDiscordMessage('Jag vet inte vilken integration du vill koppla. Skriv `koppla Search Console` eller `koppla Google Ads`.', targetChannelId)
+    return true
+  }
+  if (pending.expiresAt && Date.parse(pending.expiresAt) < Date.now()) {
+    delete state.pendingIntegrationRepair[targetChannelId]
+    saveState()
+    await sendDiscordMessage('Den senaste integrationsvarningen är gammal. Kör `doctor` först, eller skriv `koppla Search Console` / `koppla Google Ads`.', targetChannelId)
+    return true
+  }
+  if (pending.type === 'gsc') {
+    await sendDiscordMessage(await formatGscOauthStartMessage(), targetChannelId)
+    return true
+  }
+  if (pending.type === 'google_ads') {
+    await sendDiscordMessage(formatGoogleAdsOauthStartMessage(), targetChannelId)
+    return true
+  }
+  await sendDiscordMessage('Jag kan inte avgöra vilken integration som ska kopplas. Skriv `koppla Search Console` eller `koppla Google Ads`.', targetChannelId)
+  return true
 }
 
 async function maybeHandleOperatorIntent(message, targetChannelId) {
