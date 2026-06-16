@@ -1418,17 +1418,16 @@ async function maybeAskForGscApiOAuth() {
 
 function formatGscApiOAuthRequest(api, browser) {
   return [
-    'GSC API-token saknas för SEO-agenten.',
+    'GSC behöver godkännas en gång för stabil API-access.',
     '',
-    `Status: API=${api.status || api.error || 'inte redo'} · Browser=${browser.status || 'redo'}`,
-    'Agenten kan fortsätta via noVNC/Firefox, men bästa långsiktiga läget är API-first så URL Inspection inte beror på browser-sessionen.',
+    `Status: API saknas (${api.status || api.error || 'inte redo'}). Browser-fallback är redo.`,
     '',
-    ...formatNoVncAccessLines(),
+    'Gör så här:',
+    '1. Svara `gsc browser oauth` här.',
+    `2. Öppna ${noVncUrl} och godkänn Google i Firefox.`,
+    '3. Skriv `klart` här när Google-flödet är klart.',
     '',
-    'När du har tid: skriv `gsc browser oauth` här. Jag öppnar Google-flödet i VPS-Firefox.',
-    'Om Google kräver manuell login/approval gör du det i noVNC-fönstret och skriver sedan `klart` eller `gsc read browser`, så försöker jag läsa callbacken och spara refresh-token på VPS.',
-    '',
-    'Det här är inte blockerande, men det är rätt sak att fixa för stabil drift.'
+    `Om länken inte öppnas: \`${noVncTunnelCommand}\``
   ].join('\n').slice(0, 1900)
 }
 
@@ -3767,13 +3766,15 @@ async function openGscOauthInFirefox() {
     ].join('\n')
   }
   return [
-    'GSC OAuth är öppnad i noVNC-Firefox.',
-    ...formatNoVncAccessLines(),
+    'GSC OAuth är öppnad i VPS-Firefox.',
+    '',
+    `Öppna: ${noVncUrl}`,
     completed.status === 'manual_login_required' ? 'Google kräver manuell login/2FA; jag stoppar där av säkerhetsskäl.' : '',
     completed.status === 'callback_not_reached' ? 'Jag försökte välja konto/godkänna automatiskt men nådde inte callback ännu.' : '',
     completed.status === 'oauth_error' ? 'Google visade OAuth-fel; be mig köra doctor om du vill se aktuell URL.' : '',
-    'Om Google redan är inloggat kan agenten läsa callbacken själv när den landar på localhost.',
-    'Om Google kräver manuell godkänning: gör den i Firefox-fönstret och skriv “klart” här, så läser jag callbacken och sparar token.'
+    '',
+    'Gör login/godkännande där och skriv `klart` här efteråt.',
+    `Om länken inte öppnas: \`${noVncTunnelCommand}\``
   ].filter(Boolean).join('\n')
 }
 
