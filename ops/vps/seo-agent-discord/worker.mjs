@@ -18,7 +18,7 @@ const gscOauthState = env.GSC_OAUTH_STATE || 'seo-agent-gsc-oauth'
 const pollMs = Number(env.SEO_AGENT_POLL_MS || '60000')
 const dailyHourUtc = Number(env.SEO_AGENT_DAILY_HOUR_UTC || '4')
 const runCheckEveryMs = Number(env.SEO_AGENT_RUN_CHECK_MS || '900000')
-const integrationDoctorEveryMs = Number(env.SEO_AGENT_INTEGRATION_DOCTOR_MS || '21600000')
+const integrationDoctorEveryMs = Number(env.SEO_AGENT_INTEGRATION_DOCTOR_MS || String(12 * 60 * 60 * 1000))
 const gscIssueCheckEveryMs = Number(env.SEO_AGENT_GSC_ISSUE_CHECK_MS || String(6 * 60 * 60 * 1000))
 const repoCommitSyncEveryMs = Number(env.SEO_AGENT_REPO_COMMIT_SYNC_MS || String(15 * 60 * 1000))
 const repoCommitSyncLimit = Number(env.SEO_AGENT_REPO_COMMIT_SYNC_LIMIT || '8')
@@ -1414,6 +1414,7 @@ async function buildIntegrationDoctorReport(workspaces) {
     localAutomationStatus(),
   ])
   const gscPayload = settledValue(gsc, null)
+  const gscReconnectFix = await buildGscReconnectFix().catch((error) => `Jag kunde inte skapa OAuth-länk automatiskt: ${error?.message || String(error)}. Koppla om i Dashboard2 -> SEO Monitor -> Integrations.`)
   let googleAdsPayload = settledValue(googleAdsInitial, null)
   let googleAdsRepair = null
   if (googleAdsPayload?.status !== 'ready') {
@@ -1440,7 +1441,7 @@ async function buildIntegrationDoctorReport(workspaces) {
       label: 'Google Search Console OAuth',
       ok: Boolean(gscPayload?.connected ?? gscPayload?.hasStoredRefreshToken),
       status: gscPayload ? String(gscPayload.connected ?? gscPayload.hasStoredRefreshToken ? 'connected' : gscPayload.status ?? 'not_connected') : settledErrorMessage(gsc),
-      fix: 'Be agenten koppla om Search Console här i chatten, eller koppla om i Dashboard2 -> SEO Monitor -> Integrations.'
+      fix: gscReconnectFix
     },
     {
       key: 'google_ads',
@@ -1450,10 +1451,10 @@ async function buildIntegrationDoctorReport(workspaces) {
       fix: googleAdsRepair?.ok
         ? `Självreparerad via lokal OAuth-token (${googleAdsRepair.keywordPlannerStatus || 'ready'}).`
         : googleAdsRepair?.attempted
-          ? `Agenten försökte självreparera men misslyckades: ${googleAdsRepair.error}. Be mig koppla om Google Ads om tokenen är ogiltig.`
+          ? `Agenten försökte självreparera men misslyckades: ${googleAdsRepair.error}. ${googleAdsReconnectFix()}`
           : googleAdsPayload?.error
-            ? `Be mig koppla om Google Ads. Fel: ${googleAdsPayload.error}`
-            : 'Be mig koppla Google Ads så skapar jag ett nytt OAuth-flöde.'
+            ? `${googleAdsReconnectFix()} Fel: ${googleAdsPayload.error}`
+            : googleAdsReconnectFix()
     },
     {
       key: 'codex',
@@ -1482,10 +1483,10 @@ function formatIntegrationDoctorMessage(report, onlyProblems = false) {
   const checks = onlyProblems ? report.checks.filter((check) => !check.ok) : report.checks
   const firstRepair = checks.find((check) => !check.ok && ['gsc', 'google_ads'].includes(check.key))
   const repairHint = firstRepair?.key === 'gsc'
-    ? 'Skriv `koppla Search Console` så postar jag OAuth-länken. Om du bara svarar `koppla` direkt efter den här varningen tolkar jag det också som Search Console.'
+    ? 'Jag har lagt OAuth-länken ovan. Du behöver bara öppna den och godkänna Google-access om tokenen faktiskt är trasig.'
     : firstRepair?.key === 'google_ads'
-      ? 'Skriv `koppla Google Ads` så postar jag OAuth-länken. Om du bara svarar `koppla` direkt efter den här varningen tolkar jag det också som Google Ads.'
-      : 'Om något är rött: skriv namnet på integrationen du vill fixa, till exempel `koppla Search Console`.'
+      ? 'Jag har lagt OAuth-länken ovan. Du behöver bara öppna den och godkänna Google Ads-access om tokenen faktiskt är trasig.'
+      : 'Om något är rött och saknar länk kan du skriva `doctor` igen eller be mig felsöka integrationen.'
   return [
     onlyProblems ? 'Integration doctor: åtgärd krävs' : 'Integration doctor: aktuell status',
     `Tid: ${report.generatedAt}`,
@@ -1494,6 +1495,39 @@ function formatIntegrationDoctorMessage(report, onlyProblems = false) {
     '',
     repairHint
   ].join('\n').slice(0, 1900)
+}
+
+async function buildGscReconnectFix() {
+  if (gscClientId() && gscClientSecret()) {
+    return [
+      'Öppna OAuth-länken och godkänn Search Console-access:',
+      gscOauthUrl(),
+      'Efter callback/localhost-fel: klistra in hela callback-URL:en här eller skriv `klart` om den öppnades i noVNC-Firefox.'
+    ].join('\n')
+  }
+  const payload = await fetchPlatformJson('/api/platform/integrations/gsc/start', {
+    method: 'POST',
+    body: JSON.stringify({ returnTo: 'https://dashboard2.sebcastwall.se/#/growth/seo-monitor' })
+  })
+  if (payload.authorizationUrl) {
+    return [
+      'Öppna OAuth-länken och godkänn Search Console-access:',
+      payload.authorizationUrl,
+      'När flödet är klart verifierar agenten status vid nästa doctor-körning.'
+    ].join('\n')
+  }
+  return `OAuth-länk kunde inte skapas automatiskt: ${JSON.stringify(payload).slice(0, 300)}`
+}
+
+function googleAdsReconnectFix() {
+  if (env.GOOGLE_ADS_CLIENT_ID && env.GOOGLE_ADS_CLIENT_SECRET) {
+    return [
+      'Öppna OAuth-länken och godkänn Google Ads-access:',
+      googleAdsOauthUrl(),
+      'Efter callback/localhost-fel: klistra in hela callback-URL:en här eller skriv `klart` om den öppnades i noVNC-Firefox.'
+    ].join('\n')
+  }
+  return 'Google Ads OAuth-länk kan inte skapas automatiskt eftersom GOOGLE_ADS_CLIENT_ID/SECRET saknas i agentens env.'
 }
 
 function rememberPendingIntegrationRepair(report, targetChannelId) {
