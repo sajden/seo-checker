@@ -1405,8 +1405,10 @@ async function maybeRunIntegrationDoctor(workspaces) {
 }
 
 async function buildIntegrationDoctorReport(workspaces) {
-  const [gsc, googleAdsInitial, automation] = await Promise.allSettled([
+  const [gsc, gscApi, gscBrowser, googleAdsInitial, automation] = await Promise.allSettled([
     fetchPlatformJson('/api/platform/integrations/gsc/status'),
+    runGscUrlInspectionApi({ command: 'doctor' }),
+    runGscFirefoxUiTool({ command: 'doctor' }),
     fetchPlatformJson('/api/platform/ad-automation/keyword-metrics', {
       method: 'POST',
       body: JSON.stringify({ keywords: ['ai agenter företag'] })
@@ -1414,7 +1416,23 @@ async function buildIntegrationDoctorReport(workspaces) {
     localAutomationStatus(),
   ])
   const gscPayload = settledValue(gsc, null)
-  const gscReconnectFix = await buildGscReconnectFix().catch((error) => `Jag kunde inte skapa OAuth-länk automatiskt: ${error?.message || String(error)}. Koppla om i Dashboard2 -> SEO Monitor -> Integrations.`)
+  const gscApiPayload = settledValue(gscApi, null)
+  const gscBrowserPayload = settledValue(gscBrowser, null)
+  const gscPlatformConnected = Boolean(gscPayload?.connected ?? gscPayload?.hasStoredRefreshToken)
+  const gscApiReady = Boolean(gscApiPayload?.ok)
+  const gscBrowserReady = Boolean(gscBrowserPayload?.ok && gscBrowserPayload?.canObserve)
+  const gscOperational = gscPlatformConnected || gscApiReady || gscBrowserReady
+  const gscStatus = formatGscCapabilityStatus({
+    platform: gscPayload ? String(gscPayload.connected ?? gscPayload.hasStoredRefreshToken ? 'connected' : gscPayload.status ?? 'not_connected') : settledErrorMessage(gsc),
+    api: gscApiPayload ? String(gscApiPayload.status || (gscApiPayload.ok ? 'ready' : 'unknown')) : settledErrorMessage(gscApi),
+    browser: gscBrowserPayload ? String(gscBrowserPayload.status || (gscBrowserPayload.ok ? 'ready' : 'unknown')) : settledErrorMessage(gscBrowser),
+    gscPlatformConnected,
+    gscApiReady,
+    gscBrowserReady
+  })
+  const gscReconnectFix = gscOperational
+    ? 'Ingen ny OAuth krävs för agentens URL Inspection just nu: agenten har en fungerande GSC-väg via API eller inloggad noVNC-Firefox. Koppla bara om GSC om färsk Search Console-data saknas i SEO Monitor-runs.'
+    : await buildGscReconnectFix().catch((error) => `Jag kunde inte skapa OAuth-länk automatiskt: ${error?.message || String(error)}. Koppla om i Dashboard2 -> SEO Monitor -> Integrations.`)
   let googleAdsPayload = settledValue(googleAdsInitial, null)
   let googleAdsRepair = null
   if (googleAdsPayload?.status !== 'ready') {
@@ -1438,9 +1456,9 @@ async function buildIntegrationDoctorReport(workspaces) {
   const checks = [
     {
       key: 'gsc',
-      label: 'Google Search Console OAuth',
-      ok: Boolean(gscPayload?.connected ?? gscPayload?.hasStoredRefreshToken),
-      status: gscPayload ? String(gscPayload.connected ?? gscPayload.hasStoredRefreshToken ? 'connected' : gscPayload.status ?? 'not_connected') : settledErrorMessage(gsc),
+      label: 'Google Search Console URL Inspection',
+      ok: gscOperational,
+      status: gscStatus,
       fix: gscReconnectFix
     },
     {
@@ -1495,6 +1513,13 @@ function formatIntegrationDoctorMessage(report, onlyProblems = false) {
     '',
     repairHint
   ].join('\n').slice(0, 1900)
+}
+
+function formatGscCapabilityStatus({ platform, api, browser, gscPlatformConnected, gscApiReady, gscBrowserReady }) {
+  if (gscPlatformConnected) return `platform_connected; api=${api}; browser=${browser}`
+  if (gscApiReady) return `api_ready; platform=${platform}; browser=${browser}`
+  if (gscBrowserReady) return `browser_fallback_ready; platform=${platform}; api=${api}`
+  return `not_ready; platform=${platform}; api=${api}; browser=${browser}`
 }
 
 async function buildGscReconnectFix() {
