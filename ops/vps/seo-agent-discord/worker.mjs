@@ -1020,7 +1020,8 @@ async function repoAutomationReady(repoFullName, branch = 'main') {
     if (!existsSync(join(repoDir, '.git'))) return { ready: false, reason: `repo_checkout_missing:${repoName}` }
     const envPath = { ...process.env, PATH: `${process.env.HOME || '/home/deploy'}/.npm-global/bin:${process.env.HOME || '/home/deploy'}/.local/bin:${process.env.PATH || ''}` }
     const status = await exec('git', ['status', '--porcelain'], { cwd: repoDir, env: envPath, timeout: 60 * 1000, maxBuffer: 1024 * 1024 })
-    if (String(status.stdout || '').trim()) return { ready: false, reason: `dirty_worktree:${repoName}` }
+    const dirty = String(status.stdout || '').trim()
+    if (dirty) return { ready: true, reason: `dirty_worktree_recoverable_by_runner:${repoName}` }
     await exec('git', ['fetch', 'origin', branch], { cwd: repoDir, env: envPath, timeout: 2 * 60 * 1000, maxBuffer: 1024 * 1024 })
     await exec('git', ['merge', '--ff-only', 'FETCH_HEAD'], { cwd: repoDir, env: envPath, timeout: 2 * 60 * 1000, maxBuffer: 1024 * 1024 })
     await exec('git', ['push', '--dry-run', 'origin', `HEAD:${branch}`], { cwd: repoDir, env: envPath, timeout: 2 * 60 * 1000, maxBuffer: 1024 * 1024 })
@@ -1117,18 +1118,18 @@ function autonomousCodeCandidateCheck(action, workspace, targetChannelId) {
 
 async function syntheticAutonomousActionForWorkspace({ workspace, targetChannelId, pending, rejectionReasons, workspacePolicy, sourcePayload = null }) {
   const profile = ensureWorkspaceProfile(workspace, targetChannelId)
-  if (!isSebcastwallWorkspace(workspace, profile)) return null
-  const hasLiveAiCandidate = pending.some((action) => {
-    const text = actionText(action)
-    return /ai|agent|automation|automatisering|kodning|utbildning|workshop|app|webbutveckling/.test(text)
-      && !/fortnox|visma|bokforing|faktura|klarna/.test(text)
+  const hasGoodLiveCandidate = pending.some((action) => {
+    const check = autonomousCodeCandidateCheck(action, workspace, targetChannelId)
+    if (!check.ok) return false
+    const review = reviewActionForPosting(action, workspace, targetChannelId, workspacePolicy)
+    return isAutonomousReviewSafe(review)
   })
   const queueIsWeak = !pending.length || rejectionReasons.length >= Math.min(pending.length, 4)
-  if (!queueIsWeak && hasLiveAiCandidate) {
-    logThrottled(`synthetic_autonomous_skipped:${workspace?.id || workspace?.label}:live`, 30 * 60 * 1000, 'synthetic_autonomous_skipped', { workspace: workspace?.label || workspace?.id || null, reason: 'live_ai_candidate_available', pendingCount: pending.length })
+  if (!queueIsWeak && hasGoodLiveCandidate) {
+    logThrottled(`synthetic_autonomous_skipped:${workspace?.id || workspace?.label}:live`, 30 * 60 * 1000, 'synthetic_autonomous_skipped', { workspace: workspace?.label || workspace?.id || null, reason: 'good_live_candidate_available', pendingCount: pending.length })
     return null
   }
-  const rawAction = buildSebcastwallGoalGapAction(workspace, targetChannelId)
+  const rawAction = buildWorkspaceGoalGapAction(workspace, targetChannelId, sourcePayload)
   if (!rawAction || state.codeActionResults?.[rawAction.id] || state.approvedCodeActionQueue?.[rawAction.id]) {
     logThrottled(`synthetic_autonomous_skipped:${workspace?.id || workspace?.label}:empty`, 30 * 60 * 1000, 'synthetic_autonomous_skipped', { workspace: workspace?.label || workspace?.id || null, reason: !rawAction ? 'no_backlog_action' : 'already_result_or_queued', actionId: rawAction?.id || null })
     return null
@@ -1189,13 +1190,95 @@ async function syntheticAutonomousActionForWorkspace({ workspace, targetChannelI
     actionId: action.id,
     rejectedLiveActions: rejectionReasons.slice(0, 8)
   })
-  rememberAgentLesson(`Created synthetic Sebcastwall goal-gap action because live queue did not match AI/kod/utbildning focus.`)
+  rememberAgentLesson(`Created synthetic ${profile.siteType || 'workspace'} goal-gap action because live queue did not provide a better low-risk code action.`)
   return {
     action,
     review,
     codexBrief: safeBrief,
     reason: safeBrief.why || syntheticEvidenceReason(action)
   }
+}
+
+function buildWorkspaceGoalGapAction(workspace, targetChannelId = null, sourcePayload = null) {
+  const profile = ensureWorkspaceProfile(workspace, targetChannelId)
+  const special = isSebcastwallWorkspace(workspace, profile) ? buildSebcastwallGoalGapAction(workspace, targetChannelId) : null
+  if (special) return special
+  const keywordMap = ensureKeywordMap(workspace, targetChannelId)
+    .filter((item) => item?.status !== 'done' && item?.status !== 'paused')
+    .filter((item) => item?.keyword && item?.targetUrl)
+    .sort((a, b) => keywordPriorityWeight(a.priority) - keywordPriorityWeight(b.priority))
+  const host = workspaceHost(workspace) || slugify(workspace?.label || workspace?.repoFullName || 'workspace')
+  const repo = workspace?.repoFullName || 'repo'
+  for (const item of keywordMap) {
+    const action = buildKeywordMapSyntheticAction({ workspace, profile, keywordTarget: item, host, repo, sourcePayload })
+    const cluster = actionLearningKey(action, workspace, targetChannelId)
+    const ledger = state.actionLedger?.[cluster]
+    if (state.codeActionResults?.[action.id] || state.approvedCodeActionQueue?.[action.id]) continue
+    if (ledger?.status === 'completed' && !isLedgerRecheckDue(ledger)) continue
+    if (ledger?.status === 'ignored' && !isLedgerRecheckDue(ledger)) continue
+    if (ledger?.status === 'deprioritized' && !isLedgerRecheckDue(ledger)) continue
+    return action
+  }
+  return null
+}
+
+function keywordPriorityWeight(priority) {
+  return priority === 'critical' ? 0 : priority === 'high' ? 1 : priority === 'medium' ? 2 : 3
+}
+
+function buildKeywordMapSyntheticAction({ workspace, profile, keywordTarget, host, repo, sourcePayload = null }) {
+  const keyword = String(keywordTarget.keyword || '').trim()
+  const targetUrl = String(keywordTarget.targetUrl || '').trim()
+  const siteType = profile?.siteType || 'service'
+  const id = `seo_synthetic_${slugify(`${host}-${repo}-${normalizeActionPath(targetUrl)}-${keyword}`).slice(0, 130)}`
+  return {
+    id,
+    status: 'pending',
+    priority: keywordTarget.priority || 'high',
+    category: 'content',
+    workspaceSlug: workspace?.label || host,
+    projectSlug: repo,
+    synthetic: true,
+    title: syntheticActionTitle(siteType, targetUrl, keyword),
+    targetUrl,
+    url: targetUrl,
+    keyword,
+    why: syntheticActionWhy(profile, keywordTarget, sourcePayload),
+    recommendedAction: syntheticRecommendedAction(profile, keywordTarget)
+  }
+}
+
+function syntheticActionTitle(siteType, targetUrl, keyword) {
+  const path = normalizeActionPath(targetUrl) || '/'
+  if (siteType === 'parking_service') return `Workspace goal gap: stärk ${path} för "${keyword}"`
+  if (siteType === 'road_weather_utility') return `Workspace goal gap: stärk väg-/väderintention på ${path}`
+  if (siteType === 'event_directory') return `Workspace goal gap: stärk eventintention på ${path}`
+  if (siteType === 'ai_consultancy') return `Workspace goal gap: stärk tjänstesidan för "${keyword}"`
+  return `Workspace goal gap: stärk ${path} för "${keyword}"`
+}
+
+function syntheticActionWhy(profile, keywordTarget, sourcePayload = null) {
+  const fresh = sourcePayload?.batchId ? `Dagens SEO Monitor-batch ${sourcePayload.batchId} finns, men live-kön gav ingen bättre låg-risk kodaction.` : 'Live-kön gav ingen bättre låg-risk kodaction.'
+  const target = keywordTarget.targetUrl ? `Målet "${keywordTarget.keyword}" är kopplat till ${keywordTarget.targetUrl}.` : `Målet är "${keywordTarget.keyword}".`
+  return `${fresh} ${target} Workspace-profilen säger att detta är viktigt för ${profile?.siteType || 'sajten'}, så agenten väljer ett litet befintlig-sida-experiment som kan följas upp senare.`
+}
+
+function syntheticRecommendedAction(profile, keywordTarget) {
+  const keyword = keywordTarget.keyword
+  const targetUrl = keywordTarget.targetUrl
+  if (profile?.siteType === 'parking_service') {
+    return `I repo: uppdatera befintlig sida ${targetUrl} med tydligare parkeringserbjudande runt "${keyword}": konkreta användarscenarion, område/avstånd/pris/tid, trygghet, bokningsnästa steg, kort FAQ och interna länkar till relevanta parkeringssidor. Undvik B2B/SMB/AI-konsultspråk.`
+  }
+  if (profile?.siteType === 'road_weather_utility') {
+    return `I repo: uppdatera befintlig sida ${targetUrl} runt "${keyword}" med konkreta bilrese-scenarion, vägväder/trafik/rutt-kontext, när tjänsten ska användas, risker som halka/regn/vind och tydliga interna länkar. Undvik generisk SaaS- eller konsultcopy.`
+  }
+  if (profile?.siteType === 'event_directory') {
+    return `I repo: uppdatera befintlig sida ${targetUrl} runt "${keyword}" med tydlig eventintention: vilka event sidan hjälper med, målgrupp, stad/kategori-exempel, hur användaren hittar rätt event och interna länkar till relevanta kluster.`
+  }
+  if (profile?.siteType === 'ai_consultancy') {
+    return `I repo: uppdatera befintlig sida ${targetUrl} runt "${keyword}" med tydligare köparproblem, konkreta case, leveransform, risker, proof, internlänkar och CTA. Håll fokus på AI, kod, automation och praktiska resultat.`
+  }
+  return `I repo: uppdatera befintlig sida ${targetUrl} runt "${keyword}" med mer konkret hjälpsamt innehåll, internlänkar, FAQ och tydligare nästa steg.`
 }
 
 function syntheticEvidenceReason(action) {
@@ -4650,6 +4733,7 @@ function shouldPostActionCard(action, workspace, targetChannelId) {
   const text = actionText(action)
   const cluster = actionLearningKey(action, workspace, targetChannelId)
   const ledger = state.actionLedger?.[cluster]
+  if (isGscAuthAction(action)) return { ok: false, reason: 'gsc_auth_status_not_seo_work' }
   if (ledger?.status === 'completed' && !isLedgerRecheckDue(ledger)) return { ok: false, reason: 'already_completed_waiting_recheck' }
   if (ledger?.status === 'ignored' && !isLedgerRecheckDue(ledger)) return { ok: false, reason: 'previously_ignored_waiting_recheck' }
   if (Number(ledger?.guardedCount || 0) >= 2 && !isLedgerRecheckDue(ledger)) return { ok: false, reason: 'repeatedly_guarded' }
