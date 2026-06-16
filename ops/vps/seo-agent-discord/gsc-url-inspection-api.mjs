@@ -10,7 +10,7 @@ const stateDir = '/home/deploy/seo-agent-discord/state'
 const input = JSON.parse(readFileSync(inputPath, 'utf8'))
 const command = String(input.command || '').trim()
 
-if (!['doctor', 'inspect-url'].includes(command)) throw new Error(`Unsupported command: ${command}`)
+if (!['doctor', 'doctor-shallow', 'inspect-url'].includes(command)) throw new Error(`Unsupported command: ${command}`)
 
 const result = await run(command, input)
 console.log(JSON.stringify(result, null, 2))
@@ -18,6 +18,38 @@ console.log(JSON.stringify(result, null, 2))
 async function run(command, input) {
   const config = loadConfig()
   if (command === 'doctor') {
+    const missing = [
+      !config.clientId ? 'GSC_CLIENT_ID or GOOGLE_CLIENT_ID' : '',
+      !config.clientSecret ? 'GSC_CLIENT_SECRET or GOOGLE_CLIENT_SECRET' : '',
+      !config.refreshToken ? 'GSC_REFRESH_TOKEN or state/gsc-refresh-token.txt' : ''
+    ].filter(Boolean)
+    if (missing.length) {
+      return {
+        ok: false,
+        command,
+        status: 'missing_oauth_config',
+        missing
+      }
+    }
+    try {
+      await refreshAccessToken(config)
+      return {
+        ok: true,
+        command,
+        status: 'ready',
+        missing: []
+      }
+    } catch (error) {
+      return {
+        ok: false,
+        command,
+        status: 'invalid_refresh_token',
+        error: error?.message || String(error),
+        missing: []
+      }
+    }
+  }
+  if (command === 'doctor-shallow') {
     return {
       ok: Boolean(config.clientId && config.clientSecret && config.refreshToken),
       command,
