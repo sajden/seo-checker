@@ -15,7 +15,7 @@ const googleAdsOauthRedirectUri = env.GOOGLE_ADS_OAUTH_REDIRECT_URI || 'http://l
 const googleAdsOauthState = env.GOOGLE_ADS_OAUTH_STATE || 'seo-agent-google-ads-oauth'
 const gscOauthRedirectUri = env.GSC_REDIRECT_URI || env.GOOGLE_SEARCH_CONSOLE_REDIRECT_URI || 'https://seo-api.sebcastwall.se/api/gsc/callback'
 const gscOauthState = env.GSC_OAUTH_STATE || 'seo-agent-gsc-oauth'
-const noVncUrl = env.SEO_AGENT_NOVNC_URL || 'https://gsc-browser.sebcastwall.se/'
+const noVncUrl = env.SEO_AGENT_NOVNC_URL || 'https://gsc-browser.sebcastwall.se/?autoconnect=1&resize=scale'
 const noVncTunnelCommand = env.SEO_AGENT_NOVNC_TUNNEL_COMMAND || ''
 const pollMs = Number(env.SEO_AGENT_POLL_MS || '60000')
 const dailyHourUtc = Number(env.SEO_AGENT_DAILY_HOUR_UTC || '4')
