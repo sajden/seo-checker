@@ -9,7 +9,10 @@ const exec = promisify(execFile)
 const inputPath = process.argv[2]
 if (!inputPath) throw new Error('Missing JSON input path')
 const input = JSON.parse(readFileSync(inputPath, 'utf8'))
-const container = process.env.SEO_AGENT_GSC_FIREFOX_CONTAINER || 'seo-agent-gsc-browser-plain'
+const container = process.env.SEO_AGENT_GSC_FIREFOX_CONTAINER || 'seo-agent-gsc-browser-vnc'
+const noVncControlUrl = process.env.SEO_AGENT_GSC_FIREFOX_CONTROL_URL || 'http://127.0.0.1:3015/?resize=scale'
+const containerUser = process.env.SEO_AGENT_GSC_FIREFOX_USER || 'app'
+const containerDisplay = process.env.SEO_AGENT_GSC_FIREFOX_DISPLAY || ':0'
 const command = String(input.command || '').trim()
 
 if (!['doctor', 'open-property', 'inspect-url', 'observe', 'open-url', 'current-url', 'complete-oauth'].includes(command)) throw new Error(`Unsupported command: ${command}`)
@@ -20,7 +23,7 @@ async function run(command, input) {
   const doctor = await runDocker(['ps', '--filter', `name=${container}`, '--filter', 'status=running', '--format', '{{.Names}}']).then((r) => r.stdout.trim()).catch(() => '')
   if (command === 'doctor') {
     const canObserve = doctor ? await observeScreen().then((r) => r.ok).catch(() => false) : false
-    return { ok: Boolean(doctor), container, status: doctor ? 'running' : 'not_running', mode: 'firefox_wayland_ui', canObserve }
+    return { ok: Boolean(doctor), container, status: doctor ? 'running' : 'not_running', mode: 'firefox_vnc_ui', controlUrl: noVncControlUrl, canObserve }
   }
   if (!doctor) return { ok: false, container, status: 'not_running' }
   if (command === 'observe') return observeScreen()
@@ -108,42 +111,25 @@ async function novncNavigate(url) {
 }
 
 async function openFirefoxUrl(url) {
-  const script = [
-    'export DISPLAY=:1',
-    'export XDG_RUNTIME_DIR=/config/.XDG',
-    'export WAYLAND_DISPLAY=wayland-1',
-    'export MOZ_ENABLE_WAYLAND=1',
-    `nohup firefox ${shellQuote(url)} >/tmp/seo-agent-firefox-open.log 2>&1 &`
-  ].join('; ')
-  await runDocker(['exec', '-u', 'abc', container, 'sh', '-lc', script])
+  await pasteFirefoxUrl(url)
 }
 
 async function pasteFirefoxUrl(url) {
   const script = [
-    'export XDG_RUNTIME_DIR=/config/.XDG',
-    'export WAYLAND_DISPLAY=wayland-1',
-    `printf %s ${shellQuote(url)} | wl-copy`,
+    `export DISPLAY=${shellQuote(containerDisplay)}`,
+    'xdotool search --onlyvisible --class firefox windowactivate --sync 2>/dev/null || true',
     'sleep 0.2',
-    'wtype -M ctrl -k l -m ctrl',
+    'xdotool key ctrl+l',
     'sleep 0.2',
-    'wtype -M ctrl -k v -m ctrl',
+    `xdotool type --delay 1 ${shellQuote(url)}`,
     'sleep 0.2',
-    'wtype -k Return'
+    'xdotool key Return'
   ].join('; ')
-  await runDocker(['exec', '-u', 'abc', container, 'sh', '-lc', script])
+  await runDocker(['exec', '-u', containerUser, container, 'sh', '-lc', script])
 }
 
 async function restartFirefoxUrl(url) {
-  const script = [
-    'export DISPLAY=:1',
-    'export XDG_RUNTIME_DIR=/config/.XDG',
-    'export WAYLAND_DISPLAY=wayland-1',
-    'export MOZ_ENABLE_WAYLAND=1',
-    'pkill firefox || true',
-    'sleep 2',
-    `nohup firefox ${shellQuote(url)} >/tmp/seo-agent-firefox-open.log 2>&1 &`
-  ].join('; ')
-  await runDocker(['exec', '-u', 'abc', container, 'sh', '-lc', script])
+  await pasteFirefoxUrl(url)
 }
 
 async function novncInspectUrl(targetUrl, strategy = 'top_search_click') {
@@ -176,20 +162,17 @@ async function novncInspectUrl(targetUrl, strategy = 'top_search_click') {
 
 async function readFirefoxCurrentUrl() {
   const script = [
-    'export XDG_RUNTIME_DIR=/config/.XDG',
-    'export WAYLAND_DISPLAY=wayland-1',
-    'wl-copy --clear 2>/dev/null || true',
-    'wtype -k Escape',
-    'sleep 0.5',
-    'wtype -M ctrl -k l -m ctrl',
-    'sleep 0.7',
-    'wtype -M ctrl -k c -m ctrl',
-    'sleep 1',
-    'url=$(wl-paste)',
-    'wtype -k Escape',
-    'printf %s "$url"'
+    `export DISPLAY=${shellQuote(containerDisplay)}`,
+    'xdotool search --onlyvisible --class firefox windowactivate --sync 2>/dev/null || true',
+    'sleep 0.2',
+    'xdotool key Escape',
+    'sleep 0.2',
+    'xdotool key ctrl+l',
+    'sleep 0.2',
+    'xdotool getwindowfocus getwindowname 2>/dev/null || true',
+    'xdotool key Escape'
   ].join('; ')
-  const result = await runDocker(['exec', '-u', 'abc', container, 'sh', '-lc', script])
+  const result = await runDocker(['exec', '-u', containerUser, container, 'sh', '-lc', script])
   return result.stdout.trim()
 }
 
@@ -244,7 +227,7 @@ function safeUrlPreview(value) {
 
 async function openNovncPage(browser) {
   const page = await browser.newPage({ viewport: { width: 1280, height: 720 } })
-  await page.goto('http://127.0.0.1:3007/', { waitUntil: 'networkidle', timeout: 30_000 })
+  await page.goto(noVncControlUrl, { waitUntil: 'networkidle', timeout: 30_000 })
   await page.waitForTimeout(2500)
   return page
 }
@@ -370,11 +353,21 @@ async function focusUrlInspectionBox(targetUrl) {
 }
 
 async function wtypeText(text) {
-  await runDocker(['exec', '-u', 'abc', container, 'sh', '-lc', `export XDG_RUNTIME_DIR=/config/.XDG; export WAYLAND_DISPLAY=wayland-1; wtype ${shellQuote(text)}`])
+  await runDocker(['exec', '-u', containerUser, container, 'sh', '-lc', `export DISPLAY=${shellQuote(containerDisplay)}; xdotool type --delay 1 ${shellQuote(text)}`])
 }
 
 async function wtypeKeys(args) {
-  await runDocker(['exec', '-u', 'abc', container, 'sh', '-lc', `export XDG_RUNTIME_DIR=/config/.XDG; export WAYLAND_DISPLAY=wayland-1; wtype ${args.map(shellQuote).join(' ')}`])
+  const xdotoolArgs = xdotoolKeyArgs(args)
+  await runDocker(['exec', '-u', containerUser, container, 'sh', '-lc', `export DISPLAY=${shellQuote(containerDisplay)}; xdotool ${xdotoolArgs}`])
+}
+
+function xdotoolKeyArgs(args) {
+  const values = Array.isArray(args) ? args.map(String) : []
+  if (values[0] === '-M' && values[1] === 'ctrl' && values[2] === '-k' && values[3] && values[4] === '-m' && values[5] === 'ctrl') {
+    return `key ctrl+${shellQuote(values[3])}`
+  }
+  if (values[0] === '-k' && values[1]) return `key ${shellQuote(values[1])}`
+  return `key ${values.map(shellQuote).join(' ')}`
 }
 
 function assertWorkspaceUrl(input) {

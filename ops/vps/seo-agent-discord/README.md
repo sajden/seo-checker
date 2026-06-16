@@ -41,15 +41,13 @@ The known registered redirect URI for the agent GSC OAuth client is `https://seo
 
 ## GSC Browser Endpoint
 
-The fallback browser is a `lscr.io/linuxserver/firefox:latest` container named `seo-agent-gsc-browser-plain`.
+The fallback browser is a `jlesage/firefox:latest` container named `seo-agent-gsc-browser-vnc`.
 
-- Profile mount: `/home/deploy/seo-agent-discord/state/gsc-browser-profile-plain:/config`
-- Local HTTP for Playwright control: `http://127.0.0.1:3007/`
-- Local HTTPS for Cloudflare Access/browser access: `https://127.0.0.1:3009/`
+- Profile mount: `/home/deploy/seo-agent-discord/state/gsc-browser-jlesage:/config`
+- Local HTTP for Playwright control: `http://127.0.0.1:3015/?resize=scale`
 - Local Basic Auth proxy for websocket-friendly browser access: `http://127.0.0.1:3014/`
-- Public operator URL: `https://gsc-browser-direct.sebcastwall.se/?autoconnect=1&resize=scale`
+- Public operator URL: `https://gsc-browser-direct.sebcastwall.se/?resize=scale`
 - Cloudflare Tunnel rules:
-  - `gsc-browser.sebcastwall.se -> https://127.0.0.1:3009` with `noTLSVerify`
   - `gsc-browser-direct.sebcastwall.se -> http://127.0.0.1:3014`
 
 The container should run with Docker restart policy `unless-stopped`. The direct endpoint must stay behind Basic Auth because it contains a persistent Google login profile. Runtime credentials live in `/home/deploy/seo-agent-discord/state/secrets/gsc-browser-basic-auth.env` and can be surfaced by the Discord worker through `SEO_AGENT_NOVNC_AUTH_USER` / `SEO_AGENT_NOVNC_AUTH_PASSWORD` on the VPS.
