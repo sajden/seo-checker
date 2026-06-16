@@ -15,6 +15,8 @@ const googleAdsOauthRedirectUri = env.GOOGLE_ADS_OAUTH_REDIRECT_URI || 'http://l
 const googleAdsOauthState = env.GOOGLE_ADS_OAUTH_STATE || 'seo-agent-google-ads-oauth'
 const gscOauthRedirectUri = env.GSC_REDIRECT_URI || env.GOOGLE_SEARCH_CONSOLE_REDIRECT_URI || 'https://seo-api.sebcastwall.se/api/gsc/callback'
 const gscOauthState = env.GSC_OAUTH_STATE || 'seo-agent-gsc-oauth'
+const noVncUrl = env.SEO_AGENT_NOVNC_URL || 'http://localhost:3007/'
+const noVncTunnelCommand = env.SEO_AGENT_NOVNC_TUNNEL_COMMAND || 'ssh -L 3007:127.0.0.1:3007 deploy@178.104.240.46'
 const pollMs = Number(env.SEO_AGENT_POLL_MS || '60000')
 const dailyHourUtc = Number(env.SEO_AGENT_DAILY_HOUR_UTC || '4')
 const runCheckEveryMs = Number(env.SEO_AGENT_RUN_CHECK_MS || '900000')
@@ -1421,11 +1423,20 @@ function formatGscApiOAuthRequest(api, browser) {
     `Status: API=${api.status || api.error || 'inte redo'} · Browser=${browser.status || 'redo'}`,
     'Agenten kan fortsätta via noVNC/Firefox, men bästa långsiktiga läget är API-first så URL Inspection inte beror på browser-sessionen.',
     '',
+    ...formatNoVncAccessLines(),
+    '',
     'När du har tid: skriv `gsc browser oauth` här. Jag öppnar Google-flödet i VPS-Firefox.',
     'Om Google kräver manuell login/approval gör du det i noVNC-fönstret och skriver sedan `klart` eller `gsc read browser`, så försöker jag läsa callbacken och spara refresh-token på VPS.',
     '',
     'Det här är inte blockerande, men det är rätt sak att fixa för stabil drift.'
   ].join('\n').slice(0, 1900)
+}
+
+function formatNoVncAccessLines() {
+  return [
+    `Öppna VPS-Firefox/noVNC: ${noVncUrl}`,
+    `Om länken inte öppnas lokalt: kör \`${noVncTunnelCommand}\` och öppna länken igen.`
+  ]
 }
 
 async function buildIntegrationDoctorReport(workspaces) {
@@ -3599,6 +3610,8 @@ async function formatGscOauthStartMessage() {
       'Google Search Console OAuth för SEO-agentens URL Inspection API:',
       authUrl,
       '',
+      ...formatNoVncAccessLines(),
+      '',
       `Redirect URI: ${gscOauthRedirectUri}`,
       'Om Google kräver manuell login/approval: gör den i noVNC-Firefox och skriv sedan `klart` eller `gsc read browser` här.',
       'Om callbacken landar på en sida med fel men URL:en fortfarande innehåller `code=...`: klistra in hela URL:en eller skriv `gsc code ...`.',
@@ -3718,6 +3731,8 @@ async function openGscOauthInFirefox() {
       'Kunde inte öppna GSC OAuth i noVNC-Firefox.',
       `Fel: ${result.error || result.status || 'unknown'}`,
       '',
+      ...formatNoVncAccessLines(),
+      '',
       'Fallback: öppna länken manuellt och klistra tillbaka callback-URL:en här.',
       authUrl
     ].join('\n')
@@ -3753,6 +3768,7 @@ async function openGscOauthInFirefox() {
   }
   return [
     'GSC OAuth är öppnad i noVNC-Firefox.',
+    ...formatNoVncAccessLines(),
     completed.status === 'manual_login_required' ? 'Google kräver manuell login/2FA; jag stoppar där av säkerhetsskäl.' : '',
     completed.status === 'callback_not_reached' ? 'Jag försökte välja konto/godkänna automatiskt men nådde inte callback ännu.' : '',
     completed.status === 'oauth_error' ? 'Google visade OAuth-fel; be mig köra doctor om du vill se aktuell URL.' : '',
