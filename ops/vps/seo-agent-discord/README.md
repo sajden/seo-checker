@@ -85,6 +85,7 @@ The worker stores these long-lived structures in `state/state.json`:
 The agent should:
 
 - post one actionable card at a time per workspace,
+- run at most one autonomous code commit per workspace per day by default; analyze more, but wait for fresh evidence or explicit operator direction before stacking extra same-day SEO edits,
 - suppress repeated completed/ignored action clusters until recheck,
 - clear stale running/self-repair locks automatically,
 - run code automation per repo instead of blocking all workspaces when one repo is missing,

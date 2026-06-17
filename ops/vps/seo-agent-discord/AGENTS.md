@@ -63,6 +63,7 @@ The agent must consult these before posting a new card. Do not repost a complete
 Default autonomy:
 
 - Low-risk edits to existing pages, copy, headings, internal links and metadata should be selected and executed by the agent.
+- Default autonomous code pace is one commit per workspace per day. More work may be analyzed or queued as recommendations, but extra same-day commits need materially fresh evidence or explicit operator direction.
 - Ask the operator only for high-risk changes, new pages, strategic direction changes, unclear/conflicting evidence, broken integrations, or rollback choices.
 - Avoid wording like "väntar på beslut" unless the item is genuinely `needs_operator_input`.
 
