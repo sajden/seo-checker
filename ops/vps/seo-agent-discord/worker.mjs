@@ -4926,9 +4926,13 @@ function inferWorkspaceProfile(workspace) {
 function shouldPostActionCard(action, workspace, targetChannelId) {
   const profile = ensureWorkspaceProfile(workspace, targetChannelId)
   const text = actionText(action)
+  const kind = actionKindForLearning(action)
+  const targetUrl = String(action.targetUrl || action.url || '').trim()
   const cluster = actionLearningKey(action, workspace, targetChannelId)
   const ledger = state.actionLedger?.[cluster]
   if (isGscAuthAction(action)) return { ok: false, reason: 'gsc_auth_status_not_seo_work' }
+  if (isKeywordPlanAction(action)) return { ok: false, reason: 'keyword_plan_is_strategy_not_action_card' }
+  if (isCodeAction(action) && !targetUrl && kind !== 'new-page') return { ok: false, reason: 'missing_target_url' }
   if (ledger?.status === 'completed' && !isLedgerRecheckDue(ledger)) return { ok: false, reason: 'already_completed_waiting_recheck' }
   if (ledger?.status === 'ignored' && !isLedgerRecheckDue(ledger)) return { ok: false, reason: 'previously_ignored_waiting_recheck' }
   if (Number(ledger?.guardedCount || 0) >= 2 && !isLedgerRecheckDue(ledger)) return { ok: false, reason: 'repeatedly_guarded' }
@@ -4945,6 +4949,11 @@ function shouldPostActionCard(action, workspace, targetChannelId) {
     if (String(action.keyword).length > 90 || words > 8) return { ok: false, reason: 'keyword_too_long_for_action_card' }
   }
   return { ok: true, reason: 'passed' }
+}
+
+function isKeywordPlanAction(action) {
+  const text = actionText(action)
+  return /keyword-plan|keywordmap|keyword-map|target-pages|target-sidor|lagg-in-foreslagen-keyword-plan|lagg-in-en-forsta-keyword-plan/.test(text)
 }
 
 function reviewActionForPosting(action, workspace, targetChannelId, workspacePolicy = '') {
