@@ -79,18 +79,48 @@ async function tickGuarded() {
 
 async function tick() {
   cleanupStaleRuntimeState()
-  await processDiscordReplies()
-  const workspaces = await listWorkspaces()
-  await syncWorkspaceRepoCommits(workspaces)
-  await ensureDailyRunsForWorkspaces(workspaces)
-  await runDailyRankingReviews(workspaces)
-  await postReadinessForWorkspaces(workspaces)
-  await checkGscIssuesForWorkspaces(workspaces)
-  await postPendingActionsForWorkspaces(workspaces)
-  await maybePrepareAutonomousCodeWork(workspaces)
-  await maybeRunIntegrationDoctor(workspaces)
-  await maybeAskForGscApiOAuth()
+  await runTickStep('process_discord_replies', () => processDiscordReplies())
+  const workspaces = await listWorkspaces().catch((error) => {
+    recordTickStepFailure('list_workspaces', error)
+    return null
+  })
+  if (!Array.isArray(workspaces)) {
+    saveState()
+    return
+  }
+  await runTickStep('sync_workspace_repo_commits', () => syncWorkspaceRepoCommits(workspaces))
+  await runTickStep('ensure_daily_runs_for_workspaces', () => ensureDailyRunsForWorkspaces(workspaces))
+  await runTickStep('run_daily_ranking_reviews', () => runDailyRankingReviews(workspaces))
+  await runTickStep('post_readiness_for_workspaces', () => postReadinessForWorkspaces(workspaces))
+  await runTickStep('check_gsc_issues_for_workspaces', () => checkGscIssuesForWorkspaces(workspaces))
+  await runTickStep('post_pending_actions_for_workspaces', () => postPendingActionsForWorkspaces(workspaces))
+  await runTickStep('prepare_autonomous_code_work', () => maybePrepareAutonomousCodeWork(workspaces))
+  await runTickStep('run_integration_doctor', () => maybeRunIntegrationDoctor(workspaces))
+  await runTickStep('ask_for_gsc_api_oauth', () => maybeAskForGscApiOAuth())
   saveState()
+}
+
+async function runTickStep(name, fn) {
+  try {
+    return await fn()
+  } catch (error) {
+    recordTickStepFailure(name, error)
+    return null
+  }
+}
+
+function recordTickStepFailure(name, error) {
+  const message = error?.message || String(error)
+  state.tickStepFailures = state.tickStepFailures || {}
+  state.tickStepFailures[name] = {
+    count: Number(state.tickStepFailures[name]?.count || 0) + 1,
+    lastError: message.slice(0, 500),
+    lastAt: new Date().toISOString()
+  }
+  logThrottled(`tick_step_failed:${name}:${message.slice(0, 120)}`, 15 * 60 * 1000, 'tick_step_failed', {
+    step: name,
+    error: message
+  })
 }
 
 async function postStartupOnce() {
