@@ -42,6 +42,7 @@ const autonomousCodeEnabled = env.SEO_AGENT_AUTONOMOUS_CODE_ENABLED !== 'false'
 const autonomousCodePerWorkspacePerDay = Number(env.SEO_AGENT_AUTONOMOUS_CODE_PER_WORKSPACE_PER_DAY || '1')
 const codexChatEnabled = env.SEO_AGENT_CODEX_CHAT_ENABLED !== 'false'
 const smartOutboundGuardEnabled = env.SEO_AGENT_SMART_OUTBOUND_GUARD !== 'false'
+const codexCli = env.CODEX_CLI || `${env.HOME || '/home/deploy'}/.npm-global/bin/codex`
 const stateDir = '/home/deploy/seo-agent-discord/state'
 const statePath = join(stateDir, 'state.json')
 const agentSpecFiles = ['AGENTS.md', 'SKILLS.md', 'TOOLS.md', 'POLICIES.md', 'MEMORY.md']
@@ -2027,6 +2028,11 @@ async function postPendingActions({ workspace, targetChannelId }) {
       log('action_card_review_rejected', { id, workspace: workspace?.label || workspace?.id || null, reason: review.reason, score: review.score })
       continue
     }
+    if (shouldSuppressDecisionCard(enrichedAction, review, workspace, targetChannelId)) {
+      rememberGuardedAction(enrichedAction, workspace, targetChannelId, 'autonomous_or_internal_not_decision_card')
+      logThrottled(`action_card_suppressed:${id}`, 6 * 60 * 60 * 1000, 'action_card_suppressed', { id, workspace: workspace?.label || workspace?.id || null, reason: 'autonomous_or_internal_not_decision_card', recommendation: review.recommendation })
+      continue
+    }
     const message = await buildActionCardMessage(enrichedAction, actions.workspacePolicy, workspace, review, targetChannelId)
     if (!message) {
       recordActionLedger(enrichedAction, workspace, targetChannelId, 'guarded', { systemKey, guard: 'codex_action_card_blocked', review })
@@ -2114,6 +2120,18 @@ function shouldSkipUnknownVolumeKeywordAction(action) {
   const hasKnownVolume = volume !== null && volume !== undefined && volume !== '' && Number(volume) > 0
   const isKeywordOnly = title.includes('täck keyword') || title.includes('serp-gap')
   return Boolean(keyword && !targetUrl && isKeywordOnly && !hasKnownVolume)
+}
+
+function shouldSuppressDecisionCard(action, review, workspace, targetChannelId) {
+  if (isGscAuthAction(action) || isIndexingCheckAction(action)) return true
+  if (isKeywordPlanAction(action)) return true
+  const kind = review?.kind || actionKindForLearning(action)
+  if (kind === 'new-page') return false
+  if (!isCodeAction(action)) return true
+  if (!automationEnabled || !autonomousCodeEnabled || !codeAutomationEnabled) return false
+  if (['Approve', 'Review'].includes(String(review?.recommendation || ''))) return true
+  const check = autonomousCodeCandidateCheck(action, workspace, targetChannelId)
+  return check.ok || ['already_completed_waiting_recheck', 'recently_deprioritized_waiting_recheck', 'recently_ignored_waiting_recheck'].includes(check.reason)
 }
 
 function activeWorkspaceActionKey(workspace, targetChannelId) {
@@ -2903,7 +2921,7 @@ async function runCodexOperatorIntent(context) {
     agent: 'seo-agent',
     purpose: 'operator_intent',
     workspace: context?.workspace?.label || context?.workspace?.id || null,
-    command: `codex exec --json --cd /home/deploy/seo-agent-discord --dangerously-bypass-approvals-and-sandbox - < ${promptPath}`,
+    command: `${codexCli} exec --json --cd /home/deploy/seo-agent-discord --dangerously-bypass-approvals-and-sandbox - < ${promptPath}`,
     timeout: 2 * 60 * 1000,
     maxBuffer: 4 * 1024 * 1024
   })
@@ -3025,7 +3043,7 @@ async function runCodexWorkspaceChat(context) {
     agent: 'seo-agent',
     purpose: 'workspace_chat',
     workspace: context?.workspace?.label || context?.workspace?.id || null,
-    command: `codex exec --json --cd /home/deploy/seo-agent-discord --dangerously-bypass-approvals-and-sandbox - < ${promptPath}`,
+    command: `${codexCli} exec --json --cd /home/deploy/seo-agent-discord --dangerously-bypass-approvals-and-sandbox - < ${promptPath}`,
     timeout: 4 * 60 * 1000,
     maxBuffer: 8 * 1024 * 1024
   })
@@ -4931,6 +4949,7 @@ function shouldPostActionCard(action, workspace, targetChannelId) {
   const cluster = actionLearningKey(action, workspace, targetChannelId)
   const ledger = state.actionLedger?.[cluster]
   if (isGscAuthAction(action)) return { ok: false, reason: 'gsc_auth_status_not_seo_work' }
+  if (isIndexingCheckAction(action)) return { ok: false, reason: 'indexing_check_is_internal' }
   if (isKeywordPlanAction(action)) return { ok: false, reason: 'keyword_plan_is_strategy_not_action_card' }
   if (isCodeAction(action) && !targetUrl && kind !== 'new-page') return { ok: false, reason: 'missing_target_url' }
   if (ledger?.status === 'completed' && !isLedgerRecheckDue(ledger)) return { ok: false, reason: 'already_completed_waiting_recheck' }
@@ -5459,7 +5478,7 @@ async function runCodexActionCardBrief({ action, workspace, workspacePolicy, rev
     agent: 'seo-agent',
     purpose: 'action_card_brief',
     workspace: workspace?.label || workspace?.id || null,
-    command: `codex exec --json --cd /home/deploy/seo-agent-discord --dangerously-bypass-approvals-and-sandbox - < ${promptPath}`,
+    command: `${codexCli} exec --json --cd /home/deploy/seo-agent-discord --dangerously-bypass-approvals-and-sandbox - < ${promptPath}`,
     timeout: 3 * 60 * 1000,
     maxBuffer: 8 * 1024 * 1024
   })
@@ -5866,7 +5885,7 @@ async function smartReviewOutboundMessage(content, targetChannelId, components =
     agent: 'seo-agent',
     purpose: 'outbound_review',
     workspace: context?.workspace?.label || context?.workspace?.id || null,
-    command: `codex exec --json --cd /home/deploy/seo-agent-discord --dangerously-bypass-approvals-and-sandbox - < ${promptPath}`,
+    command: `${codexCli} exec --json --cd /home/deploy/seo-agent-discord --dangerously-bypass-approvals-and-sandbox - < ${promptPath}`,
     timeout: 3 * 60 * 1000,
     maxBuffer: 8 * 1024 * 1024
   })
