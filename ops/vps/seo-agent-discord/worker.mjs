@@ -5988,7 +5988,16 @@ async function discordJson(path, init = {}) {
     }
   })
   const text = await response.text()
-  const payload = text ? JSON.parse(text) : {}
+  let payload = {}
+  if (text) {
+    try {
+      payload = JSON.parse(text)
+    } catch {
+      const contentType = response.headers.get('content-type') || 'unknown content-type'
+      const preview = text.replace(/\s+/g, ' ').slice(0, 200)
+      throw new Error(`discord_${response.status}_invalid_json: ${path} returned ${contentType} · ${preview}`)
+    }
+  }
   if (!response.ok) throw new Error(`discord_${response.status}: ${payload.message || text.slice(0, 200)}`)
   return payload
 }
