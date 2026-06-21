@@ -971,10 +971,12 @@ function activeActionBlocksAutonomousCode(active) {
 function codeActionResultBlocks(action, workspace, targetChannelId) {
   const actionId = action?.id
   if (!actionId) return false
+  if (codeActionLedgerCooldownBlocks(action)) return true
   const result = state.codeActionResults?.[actionId]
   if (!result) return false
   const status = String(result.status || '')
   if (status === 'archived_failed') return false
+  if (codeActionSameIdCooldownBlocks(action)) return true
   const ledger = state.actionLedger?.[actionLearningKey(action, workspace, targetChannelId)]
   if (ledger?.recheckAfter) return !isLedgerRecheckDue(ledger)
 
@@ -985,6 +987,37 @@ function codeActionResultBlocks(action, workspace, targetChannelId) {
     ? 14 * 24 * 60 * 60 * 1000
     : 7 * 24 * 60 * 60 * 1000
   return Date.now() - terminalMs < waitMs
+}
+
+function codeActionLedgerCooldownBlocks(action, cooldownMs = 24 * 60 * 60 * 1000) {
+  const actionId = action?.id
+  if (!actionId) return false
+  const now = Date.now()
+  for (const record of Object.values(state.actionLedger || {})) {
+    if (record?.actionId !== actionId) continue
+    const events = Array.isArray(record.events) ? record.events : []
+    for (const event of events) {
+      const name = String(event?.event || '')
+      if (!['completed', 'coding_started', 'deprioritized', 'failed', 'reverted'].includes(name)) continue
+      const at = Date.parse(event?.at || '')
+      if (at && now - at < cooldownMs) return true
+    }
+    const lastEventAt = Date.parse(record.lastEventAt || '')
+    if (lastEventAt && now - lastEventAt < cooldownMs && ['completed', 'coding', 'failed', 'deprioritized'].includes(String(record.status || ''))) {
+      return true
+    }
+  }
+  return false
+}
+
+function codeActionSameIdCooldownBlocks(action, cooldownMs = 24 * 60 * 60 * 1000) {
+  const actionId = action?.id
+  if (!actionId) return false
+  const result = state.codeActionResults?.[actionId]
+  if (!result) return false
+  const terminalAt = result.completedAt || result.failedAt || result.archivedAt || ''
+  const terminalMs = Date.parse(terminalAt)
+  return Boolean(terminalMs && Date.now() - terminalMs < cooldownMs)
 }
 
 async function recoverRetryableCodeFailures(workspaces) {
