@@ -39,7 +39,7 @@ const autoCreateWorkspaceChannels = env.SEO_AGENT_AUTO_CREATE_CHANNELS !== 'fals
 const automationEnabled = env.SEO_AGENT_AUTONOMY_ENABLED !== 'false'
 const codeAutomationEnabled = env.SEO_AGENT_CODE_AUTOMATION_ENABLED === 'true'
 const autonomousCodeEnabled = env.SEO_AGENT_AUTONOMOUS_CODE_ENABLED !== 'false'
-const autonomousCodePerWorkspacePerDay = Number(env.SEO_AGENT_AUTONOMOUS_CODE_PER_WORKSPACE_PER_DAY || '1')
+const autonomousCodePerWorkspacePerDay = Number(env.SEO_AGENT_AUTONOMOUS_CODE_PER_WORKSPACE_PER_DAY || '2')
 const codexChatEnabled = env.SEO_AGENT_CODEX_CHAT_ENABLED !== 'false'
 const smartOutboundGuardEnabled = env.SEO_AGENT_SMART_OUTBOUND_GUARD !== 'false'
 const codexCli = env.CODEX_CLI || `${env.HOME || '/home/deploy'}/.npm-global/bin/codex`
@@ -968,6 +968,25 @@ function activeActionBlocksAutonomousCode(active) {
   return Date.now() - startedAt < autonomousActiveBlockMs
 }
 
+function codeActionResultBlocks(action, workspace, targetChannelId) {
+  const actionId = action?.id
+  if (!actionId) return false
+  const result = state.codeActionResults?.[actionId]
+  if (!result) return false
+  const status = String(result.status || '')
+  if (status === 'archived_failed') return false
+  const ledger = state.actionLedger?.[actionLearningKey(action, workspace, targetChannelId)]
+  if (ledger?.recheckAfter) return !isLedgerRecheckDue(ledger)
+
+  const terminalAt = result.completedAt || result.failedAt || result.archivedAt || ''
+  const terminalMs = Date.parse(terminalAt)
+  if (!terminalMs) return true
+  const waitMs = status === 'completed'
+    ? 14 * 24 * 60 * 60 * 1000
+    : 7 * 24 * 60 * 60 * 1000
+  return Date.now() - terminalMs < waitMs
+}
+
 async function recoverRetryableCodeFailures(workspaces) {
   if (!automationEnabled || !autonomousCodeEnabled || !codeAutomationEnabled || state.codeActionRunning) return
   state.codeActionResults = state.codeActionResults || {}
@@ -1075,7 +1094,7 @@ async function chooseAutonomousCodeAction(actions, workspace, targetChannelId, w
       rejectionReasons.push({ title: action?.title || 'untitled', reason: 'missing_action_id' })
       continue
     }
-    if (state.codeActionResults?.[action.id]) {
+    if (codeActionResultBlocks(action, workspace, targetChannelId)) {
       rejectionReasons.push({ id: action.id, title: action.title || action.id, reason: `already_result:${state.codeActionResults[action.id]?.status || 'done'}` })
       continue
     }
@@ -1166,7 +1185,7 @@ async function syntheticAutonomousActionForWorkspace({ workspace, targetChannelI
     return null
   }
   const rawAction = buildWorkspaceGoalGapAction(workspace, targetChannelId, sourcePayload)
-  if (!rawAction || state.codeActionResults?.[rawAction.id] || state.approvedCodeActionQueue?.[rawAction.id]) {
+  if (!rawAction || codeActionResultBlocks(rawAction, workspace, targetChannelId) || state.approvedCodeActionQueue?.[rawAction.id]) {
     logThrottled(`synthetic_autonomous_skipped:${workspace?.id || workspace?.label}:empty`, 30 * 60 * 1000, 'synthetic_autonomous_skipped', { workspace: workspace?.label || workspace?.id || null, reason: !rawAction ? 'no_backlog_action' : 'already_result_or_queued', actionId: rawAction?.id || null })
     return null
   }
@@ -1249,7 +1268,7 @@ function buildWorkspaceGoalGapAction(workspace, targetChannelId = null, sourcePa
     const action = buildKeywordMapSyntheticAction({ workspace, profile, keywordTarget: item, host, repo, sourcePayload })
     const cluster = actionLearningKey(action, workspace, targetChannelId)
     const ledger = state.actionLedger?.[cluster]
-    if (state.codeActionResults?.[action.id] || state.approvedCodeActionQueue?.[action.id]) continue
+    if (codeActionResultBlocks(action, workspace, targetChannelId) || state.approvedCodeActionQueue?.[action.id]) continue
     if (ledger?.status === 'completed' && !isLedgerRecheckDue(ledger)) continue
     if (ledger?.status === 'ignored' && !isLedgerRecheckDue(ledger)) continue
     if (ledger?.status === 'deprioritized' && !isLedgerRecheckDue(ledger)) continue
@@ -1369,14 +1388,13 @@ function buildSebcastwallGoalGapAction(workspace, targetChannelId = null) {
     }
   ]
   for (const candidate of candidates) {
-    const id = `seo_synthetic_${slugify(`${host}-${repo}-${candidate.slug}`).slice(0, 120)}`
-    if (state.codeActionResults?.[id] || state.approvedCodeActionQueue?.[id]) continue
     const action = {
       ...base,
       ...candidate,
-      id,
+      id: `seo_synthetic_${slugify(`${host}-${repo}-${candidate.slug}`).slice(0, 120)}`,
       url: candidate.targetUrl
     }
+    if (codeActionResultBlocks(action, workspace, targetChannelId) || state.approvedCodeActionQueue?.[action.id]) continue
     const cluster = actionLearningKey(action, workspace, targetChannelId)
     const ledger = state.actionLedger?.[cluster]
     if (ledger?.status === 'completed' && !isLedgerRecheckDue(ledger)) continue
