@@ -867,6 +867,8 @@ async function maybePrepareAutonomousCodeWork(workspaces) {
   const status = state.localAutomationStatus || await localAutomationStatus()
   if (status.codex !== 'ready') return
   await recoverRetryableCodeFailures(workspaces)
+  const processedQueued = await processApprovedCodeActions(workspaces)
+  if (processedQueued) return
   await maybeQueueAutonomousCodeActions(workspaces)
   await processApprovedCodeActions(workspaces)
 }
@@ -998,12 +1000,12 @@ function codeActionLedgerCooldownBlocks(action, cooldownMs = 24 * 60 * 60 * 1000
     const events = Array.isArray(record.events) ? record.events : []
     for (const event of events) {
       const name = String(event?.event || '')
-      if (!['completed', 'coding_started', 'deprioritized', 'failed', 'reverted'].includes(name)) continue
+      if (!['completed', 'deprioritized', 'failed', 'reverted'].includes(name)) continue
       const at = Date.parse(event?.at || '')
       if (at && now - at < cooldownMs) return true
     }
     const lastEventAt = Date.parse(record.lastEventAt || '')
-    if (lastEventAt && now - lastEventAt < cooldownMs && ['completed', 'coding', 'failed', 'deprioritized'].includes(String(record.status || ''))) {
+    if (lastEventAt && now - lastEventAt < cooldownMs && ['completed', 'failed', 'deprioritized', 'reverted'].includes(String(record.status || ''))) {
       return true
     }
   }
@@ -1218,6 +1220,15 @@ async function syntheticAutonomousActionForWorkspace({ workspace, targetChannelI
     return null
   }
   const rawAction = buildWorkspaceGoalGapAction(workspace, targetChannelId, sourcePayload)
+    || await buildCodexOpportunityAction(workspace, targetChannelId, {
+      pending,
+      rejectionReasons,
+      workspacePolicy,
+      sourcePayload
+    }).catch((error) => {
+      log('codex_opportunity_action_failed', { workspace: workspace?.label || workspace?.id || null, error: error?.message || String(error) })
+      return null
+    })
   if (!rawAction || codeActionResultBlocks(rawAction, workspace, targetChannelId) || state.approvedCodeActionQueue?.[rawAction.id]) {
     logThrottled(`synthetic_autonomous_skipped:${workspace?.id || workspace?.label}:empty`, 30 * 60 * 1000, 'synthetic_autonomous_skipped', { workspace: workspace?.label || workspace?.id || null, reason: !rawAction ? 'no_backlog_action' : 'already_result_or_queued', actionId: rawAction?.id || null })
     return null
@@ -1308,6 +1319,153 @@ function buildWorkspaceGoalGapAction(workspace, targetChannelId = null, sourcePa
     return action
   }
   return null
+}
+
+async function buildCodexOpportunityAction(workspace, targetChannelId = null, context = {}) {
+  if (!codexChatEnabled) return null
+  const repoFullName = String(workspace?.repoFullName || '').trim()
+  const repoName = repoFullName.split('/')[1]
+  if (!repoName) return null
+  const repoDir = resolveRepoCheckoutDir(repoFullName)
+  if (!repoDir) return null
+  const key = workspaceProfileKey(workspace, targetChannelId)
+  const today = new Date().toISOString().slice(0, 10)
+  if (state.codexOpportunityScout?.[key]?.date === today) {
+    logThrottled(`codex_opportunity_skipped:${key}:today`, 60 * 60 * 1000, 'codex_opportunity_skipped', { workspace: workspace?.label || workspace?.id || null, reason: 'already_scouted_today' })
+    return null
+  }
+  const profile = ensureWorkspaceProfile(workspace, targetChannelId)
+  const keywordMap = ensureKeywordMap(workspace, targetChannelId)
+  const experiments = Object.values(state.seoExperiments || {})
+    .filter((item) => item.workspaceKey === key)
+    .sort((a, b) => Date.parse(b.completedAt || 0) - Date.parse(a.completedAt || 0))
+    .slice(0, 20)
+  const promptPath = join(stateDir, `codex-opportunity-${slugify(key).slice(0, 80)}.md`)
+  const contextJson = {
+    workspace: {
+      id: workspace?.id,
+      label: workspace?.label,
+      gscProperty: workspace?.gscProperty,
+      repoFullName,
+      branch: workspace?.branch || 'main'
+    },
+    profile,
+    keywordMap: keywordMap.slice(0, 20),
+    recentExperiments: experiments.map((item) => ({
+      title: item.title,
+      targetUrl: item.targetUrl,
+      keyword: item.keyword,
+      commit: item.commit,
+      completedAt: item.completedAt,
+      reviewAfter: item.reviewAfter
+    })),
+    rejectedLiveActions: (context.rejectionReasons || []).slice(0, 12),
+    workspacePolicy: context.workspacePolicy || '',
+    source: {
+      batchId: context.sourcePayload?.batchId || null,
+      runAt: context.sourcePayload?.runAt || context.sourcePayload?.lastRunAt || null
+    }
+  }
+  const prompt = [
+    'Du är SEO Agentens opportunity scout.',
+    'Inspektera repo-checkouten och skapa exakt EN låg-risk SEO-kodaction för en befintlig sida, eller returnera null om inget bra finns.',
+    '',
+    'Regler:',
+    '- Returnera ENDAST JSON.',
+    '- Välj bara en befintlig sida/route som verkar finnas i repo.',
+    '- Skapa inte ny sida.',
+    '- Välj inte auth, GSC, privacy, terms eller rent tekniskt driftarbete.',
+    '- Repetera inte recentExperiments innan reviewAfter, om inte hypotesen är tydligt annorlunda.',
+    '- Kandidaten måste ha targetUrl, keyword/focus, problem, hypotes och konkret repoändring.',
+    '- Workspace-profilen styr målgrupp och språk. Vägkollen får aldrig SMB/B2B/konsultspråk.',
+    '',
+    'JSON-format vid bra kandidat:',
+    '{"action":{"title":"kort titel","targetUrl":"https://...","keyword":"sökfras/fokus","priority":"high|medium","category":"content|internal-links","why":"varför detta är bästa nästa experimentet","recommendedAction":"exakt vad kodaren ska ändra i repo"}}',
+    '',
+    'JSON-format om ingen kandidat finns:',
+    '{"action":null,"reason":"kort varför"}',
+    '',
+    'AGENT SPEC:',
+    readAgentSpecs(5000),
+    '',
+    'CONTEXT JSON:',
+    JSON.stringify(contextJson, null, 2),
+    '',
+    'Repo hints:',
+    await repoPageInventory(repoDir)
+  ].join('\n')
+  writeFileSync(promptPath, prompt)
+  const result = await execCodexTracked({
+    agent: 'seo-agent',
+    purpose: 'opportunity_scout',
+    workspace: workspace?.label || workspace?.id || null,
+    command: `${codexCli} exec --json --cd ${repoDir} --dangerously-bypass-approvals-and-sandbox - < ${promptPath}`,
+    timeout: 4 * 60 * 1000,
+    maxBuffer: 8 * 1024 * 1024
+  })
+  state.codexOpportunityScout = state.codexOpportunityScout || {}
+  state.codexOpportunityScout[key] = { date: today, at: new Date().toISOString() }
+  const output = extractCodexExecText(result.stdout || '')
+  const parsed = parseCodexOpportunity(output)
+  if (!parsed?.action) {
+    log('codex_opportunity_no_action', { workspace: workspace?.label || workspace?.id || null, reason: parsed?.reason || 'no_action' })
+    return null
+  }
+  const host = workspaceHost(workspace) || slugify(workspace?.label || repoName)
+  const targetUrl = String(parsed.action.targetUrl || '').trim()
+  const keyword = String(parsed.action.keyword || parsed.action.focus || '').trim()
+  if (!targetUrl || !keyword) return null
+  return {
+    id: `seo_scout_${slugify(`${host}-${repoName}-${normalizeActionPath(targetUrl)}-${keyword}`).slice(0, 140)}`,
+    status: 'pending',
+    priority: ['high', 'medium', 'low'].includes(parsed.action.priority) ? parsed.action.priority : 'high',
+    category: ['content', 'internal-links'].includes(parsed.action.category) ? parsed.action.category : 'content',
+    workspaceSlug: workspace?.label || host,
+    projectSlug: repoFullName,
+    synthetic: true,
+    scout: true,
+    title: String(parsed.action.title || `Scout: förbättra ${normalizeActionPath(targetUrl) || targetUrl}`).slice(0, 180),
+    targetUrl,
+    url: targetUrl,
+    keyword,
+    why: String(parsed.action.why || 'Codex scout hittade en låg-risk befintlig-sida-opportunity i repo när live-kön var svag.').slice(0, 900),
+    recommendedAction: String(parsed.action.recommendedAction || '').slice(0, 1400),
+    evidenceSource: context.sourcePayload?.batchId ? 'fresh_seo_run_plus_codex_repo_scout' : 'codex_repo_scout',
+    evidenceBatchId: context.sourcePayload?.batchId || null,
+    evidenceRunAt: context.sourcePayload?.runAt || context.sourcePayload?.lastRunAt || null
+  }
+}
+
+async function repoPageInventory(repoDir) {
+  const { execFile } = await import('node:child_process')
+  const { promisify } = await import('node:util')
+  const execLocal = promisify(execFile)
+  const commands = [
+    ['bash', ['-lc', 'find . -path "*/node_modules" -prune -o -path "*/.next" -prune -o -path "*/dist" -prune -o \\( -name "page.tsx" -o -name "page.ts" -o -name "*.astro" -o -name "*.mdx" \\) -print | head -80']],
+    ['bash', ['-lc', 'git log --oneline -12']]
+  ]
+  const parts = []
+  for (const [cmd, args] of commands) {
+    try {
+      const result = await execLocal(cmd, args, { cwd: repoDir, timeout: 30 * 1000, maxBuffer: 512 * 1024 })
+      parts.push(result.stdout.trim())
+    } catch (error) {
+      parts.push(`inventory_error: ${error?.message || String(error)}`)
+    }
+  }
+  return parts.filter(Boolean).join('\n\n').slice(0, 6000)
+}
+
+function parseCodexOpportunity(text) {
+  const raw = String(text || '').trim()
+  const jsonText = raw.match(/\{[\s\S]*\}/)?.[0] || raw
+  try {
+    const parsed = JSON.parse(jsonText)
+    if (!parsed || typeof parsed !== 'object') return null
+    return parsed
+  } catch {
+    return null
+  }
 }
 
 function keywordPriorityWeight(priority) {
@@ -4623,7 +4781,7 @@ function formatRankingReviewMessage(workspace, review) {
 function cleanupStaleRuntimeState() {
   const now = Date.now()
   let changed = false
-  if (state.codeActionRunning?.startedAt && Date.parse(state.codeActionRunning.startedAt) < processStartedAtMs - 10 * 1000) {
+  if (state.codeActionRunning?.startedAt && Date.parse(state.codeActionRunning.startedAt) < processStartedAtMs) {
     const actionId = state.codeActionRunning.actionId || 'unknown'
     rememberAgentLesson(`Cleared interrupted codeActionRunning lock after worker restart for ${actionId}`)
     log('interrupted_code_action_lock_cleared_after_restart', { actionId, startedAt: state.codeActionRunning.startedAt })

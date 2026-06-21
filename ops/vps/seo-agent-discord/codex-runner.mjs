@@ -6,6 +6,7 @@ import { promisify } from 'node:util'
 
 const exec = promisify(execFile)
 const runnerEnv = { ...process.env, PATH: `/home/deploy/.npm-global/bin:/home/deploy/.local/bin:${process.env.PATH || ""}` }
+const codexCli = process.env.CODEX_CLI || '/home/deploy/.npm-global/bin/codex'
 const workspaceRoot = '/home/deploy/seo-agent-workspaces'
 const action = JSON.parse(readFileSync(process.argv[2], 'utf8'))
 const repoName = String(action.repoFullName || '').split('/')[1]
@@ -19,12 +20,18 @@ await run('git', ['checkout', action.branch || 'main'], repoDir)
 await run("git", ["fetch", "origin", action.branch || "main"], repoDir)
 await run("git", ["merge", "--ff-only", "FETCH_HEAD"], repoDir)
 
+const existingCommit = await finalizeExistingSeoAgentCommit(repoDir, action)
+if (existingCommit) {
+  console.log(JSON.stringify(existingCommit, null, 2))
+  process.exit(0)
+}
+
 const prompt = buildPrompt(action)
 const promptPath = join('/home/deploy/seo-agent-discord/state/codex-prompts', `${action.id}.md`)
 mkdirSync(dirname(promptPath), { recursive: true })
 writeFileSync(promptPath, prompt)
 
-const codexRun = await run("bash", ["-lc", `codex exec --json --cd ${repoDir} --dangerously-bypass-approvals-and-sandbox - < ${promptPath}`], repoDir)
+const codexRun = await runCodexPrompt(repoDir, promptPath, repoDir)
 const codexUsage = extractCodexUsage(codexRun.stdout || '')
 recordCodexUsage({
   agent: 'seo-agent',
@@ -34,6 +41,12 @@ recordCodexUsage({
   usage: codexUsage,
   actionId: action.id
 })
+
+const codexCommitted = await finalizeExistingSeoAgentCommit(repoDir, action, codexUsage)
+if (codexCommitted) {
+  console.log(JSON.stringify(codexCommitted, null, 2))
+  process.exit(0)
+}
 
 const quality = await runQualityGate(repoDir, action)
 await runBestBuild(bestBuildDir(repoDir))
@@ -108,6 +121,41 @@ async function recoverInterruptedWorktree(cwd, input) {
   })
 }
 
+async function finalizeExistingSeoAgentCommit(cwd, input, codexUsage = null) {
+  const branch = input.branch || 'main'
+  const status = await run('git', ['status', '--porcelain'], cwd)
+  if (status.stdout.trim()) return null
+  const ahead = await run('git', ['rev-list', '--count', `origin/${branch}..HEAD`], cwd).catch(() => ({ stdout: '0' }))
+  if (Number(ahead.stdout.trim() || '0') <= 0) return null
+  const meta = await run('git', ['show', '-s', '--format=%an%x00%ae%x00%s%x00%b', 'HEAD'], cwd)
+  const [authorName, authorEmail, subject, body] = meta.stdout.split('\u0000')
+  const bySeoAgent = /SEO Agent/i.test(authorName || '') || /seo-agent/i.test(authorEmail || '')
+  const related = String(subject || '').toLowerCase().includes(String(input.title || '').toLowerCase().slice(0, 32))
+    || String(body || '').includes(input.id || '')
+    || bySeoAgent
+  if (!bySeoAgent || !related) return null
+  await runBestBuild(bestBuildDir(cwd))
+  const diff = await run('git', ['diff', '--stat', `origin/${branch}..HEAD`], cwd)
+  await run('git', ['push', 'origin', `HEAD:${branch}`], cwd)
+  const commit = await run('git', ['rev-parse', '--short', 'HEAD'], cwd)
+  return {
+    ok: true,
+    repoDir: cwd,
+    actionId: input.id,
+    commit: commit.stdout.trim(),
+    diffStat: diff.stdout,
+    codexUsage,
+    quality: {
+      ok: true,
+      recoveredCommittedByCodex: true,
+      review: {
+        decision: 'allow',
+        reason: 'Codex created a clean SEO Agent commit before runner commit phase; build passed and runner pushed it.'
+      }
+    }
+  }
+}
+
 async function runBestBuild(cwd) {
   const pkgPath = join(cwd, 'package.json')
   if (!existsSync(pkgPath)) return
@@ -125,6 +173,14 @@ async function runPackageScript(cwd, script) {
 
 async function run(cmd, args, cwd) {
   return exec(cmd, args, { cwd, env: runnerEnv, timeout: 10 * 60 * 1000, maxBuffer: 10 * 1024 * 1024 })
+}
+
+async function runCodexPrompt(cdDir, promptPath, cwd) {
+  return run('bash', ['-c', `${shellQuote(codexCli)} exec --json --cd ${shellQuote(cdDir)} --dangerously-bypass-approvals-and-sandbox - < ${shellQuote(promptPath)}`], cwd)
+}
+
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`
 }
 
 async function runQualityGate(repoDir, input) {
@@ -200,7 +256,7 @@ async function reviewDiffWithCodex(repoDir, input, diffStat, diff, attempt) {
     String(diff || '').slice(0, 28000)
   ].join('\n')
   writeFileSync(promptPath, prompt)
-  const result = await run("bash", ["-lc", `codex exec --json --cd /home/deploy/seo-agent-discord --dangerously-bypass-approvals-and-sandbox - < ${promptPath}`], '/home/deploy/seo-agent-discord')
+  const result = await runCodexPrompt('/home/deploy/seo-agent-discord', promptPath, '/home/deploy/seo-agent-discord')
   const usage = extractCodexUsage(result.stdout || '')
   recordCodexUsage({
     agent: 'seo-agent',
@@ -237,7 +293,7 @@ async function reviseDiffWithCodex(repoDir, input, review, attempt) {
     review.requiredFix || review.reason || 'Make the diff workspace-correct and less generic.'
   ].join('\n')
   writeFileSync(promptPath, prompt)
-  const result = await run("bash", ["-lc", `codex exec --json --cd ${repoDir} --dangerously-bypass-approvals-and-sandbox - < ${promptPath}`], repoDir)
+  const result = await runCodexPrompt(repoDir, promptPath, repoDir)
   const usage = extractCodexUsage(result.stdout || '')
   recordCodexUsage({
     agent: 'seo-agent',
