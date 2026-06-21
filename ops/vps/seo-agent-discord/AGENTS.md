@@ -56,6 +56,7 @@ Runtime state in `state/state.json` now has three learning layers:
 - `agentLessons`: short lessons learned from guarded, completed and failed actions.
 - `keywordMaps`: target keyword -> target URL ownership per workspace.
 - `seoExperiments`: every completed SEO commit as a measurable experiment with keyword, target URL, commit hash and review date.
+- `experimentOutcomes`: follow-up verdicts for experiments (`provisionally_improved`, `needs_more_work`, `inconclusive`) with confidence and reasoning.
 - `rankingReviews`: daily workspace ranking review snapshots.
 
 The agent must consult these before posting a new card. Do not repost a completed, ignored or repeatedly guarded action before its `recheckAfter` date unless fresh evidence changes the decision.
@@ -76,6 +77,14 @@ For every completed SEO commit, create or update an SEO experiment:
 `keyword + target URL + commit + diffstat + completedAt + reviewAfter`
 
 Default review delay is 14 days. Do not repeat the same page/keyword experiment before its review date unless fresh data shows a materially different problem.
+
+At follow-up time, classify each due experiment conservatively:
+
+- `provisionally_improved`: no matching live SEO Monitor action remains. Treat as a weak positive until GSC/query metrics confirm it.
+- `needs_more_work`: matching content/code actions remain for the same URL or keyword. Do not repeat the same tactic; propose a different hypothesis.
+- `inconclusive`: the remaining signal is GSC/integration/indexing-only, or evidence is too weak.
+
+Future candidates must consult this learning summary. Prefer patterns with positive signals, avoid repeating unresolved tactics, and explain the hypothesis in terms of measurable keyword/URL improvement.
 
 Daily ranking review:
 

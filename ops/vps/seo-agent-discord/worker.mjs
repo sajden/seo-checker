@@ -1336,6 +1336,7 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
   }
   const profile = ensureWorkspaceProfile(workspace, targetChannelId)
   const keywordMap = ensureKeywordMap(workspace, targetChannelId)
+  const learningSummary = buildWorkspaceLearningSummary(key)
   const experiments = Object.values(state.seoExperiments || {})
     .filter((item) => item.workspaceKey === key)
     .sort((a, b) => Date.parse(b.completedAt || 0) - Date.parse(a.completedAt || 0))
@@ -1359,6 +1360,7 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
       completedAt: item.completedAt,
       reviewAfter: item.reviewAfter
     })),
+    learningSummary,
     rejectedLiveActions: (context.rejectionReasons || []).slice(0, 12),
     workspacePolicy: context.workspacePolicy || '',
     source: {
@@ -1376,6 +1378,7 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
     '- Skapa inte ny sida.',
     '- Välj inte auth, GSC, privacy, terms eller rent tekniskt driftarbete.',
     '- Repetera inte recentExperiments innan reviewAfter, om inte hypotesen är tydligt annorlunda.',
+    '- Använd learningSummary: undvik mönster som needs_more_work utan ny vinkel, och prioritera mönster som provisionally_improved när de passar dagens mål.',
     '- Kandidaten måste ha targetUrl, keyword/focus, problem, hypotes och konkret repoändring.',
     '- Workspace-profilen styr målgrupp och språk. Vägkollen får aldrig SMB/B2B/konsultspråk.',
     '',
@@ -4633,6 +4636,7 @@ function ensureAutonomousAgentState() {
   state.actionLedger = state.actionLedger || {}
   state.keywordMaps = state.keywordMaps || {}
   state.seoExperiments = state.seoExperiments || {}
+  state.experimentOutcomes = state.experimentOutcomes || {}
   state.rankingReviews = state.rankingReviews || {}
   state.agentLessons = state.agentLessons || []
   state.guardedActions = state.guardedActions || {}
@@ -4673,6 +4677,7 @@ async function buildRankingReview(workspace, targetChannelId) {
   const experiments = Object.values(state.seoExperiments || {})
     .filter((item) => item.workspaceKey === workspaceKey)
     .sort((a, b) => Date.parse(b.completedAt || 0) - Date.parse(a.completedAt || 0))
+  const outcomeReview = evaluateDueSeoExperiments({ workspace, targetChannelId, actions, experiments })
   const pendingFollowups = experiments.filter((item) => item.reviewAfter && item.reviewAfter <= new Date().toISOString().slice(0, 10) && !item.reviewedAt)
   const unmappedActions = actions
     .filter((action) => isCodeAction(action) && !isIndexingCheckAction(action))
@@ -4706,6 +4711,8 @@ async function buildRankingReview(workspace, targetChannelId) {
       commit: item.commit,
       reviewAfter: item.reviewAfter
     })),
+    outcomeReview,
+    learningSummary: buildWorkspaceLearningSummary(workspaceKey),
     unmappedActionCount: unmappedActions.length,
     staleKeywordTargets,
     weakLiveQueue,
@@ -4766,16 +4773,134 @@ function shouldNotifyRankingReview(review) {
 
 function formatRankingReviewMessage(workspace, review) {
   const next = review.next || {}
+  const outcomes = review.outcomeReview?.reviewed?.slice(0, 3) || []
   return [
     `Daglig ranking-review för ${workspace?.label || workspace?.id || 'workspace'}`,
     `Keyword-map: ${review.keywordMapCount} mål · Experiment: ${review.experimentCount} · Live-actions: ${review.liveActionCount}`,
     review.pendingFollowups?.length ? `Uppföljning redo: ${review.pendingFollowups.map((item) => `${item.keyword || item.title}${item.commit ? ` (${item.commit})` : ''}`).join(', ')}` : '',
+    outcomes.length ? `Experiment-utvärdering: ${outcomes.map((item) => `${item.outcome}: ${item.keyword || item.targetUrl}`).join(' | ')}` : '',
     `Nästa SEO-experiment: ${next.title || 'inget säkert'}`,
     next.targetUrl ? `URL: ${next.targetUrl}` : '',
     next.keyword ? `Keyword: ${next.keyword}` : '',
     next.reason ? `Varför: ${next.reason}` : '',
     'Jag använder detta för att välja kodactions; GSC/API-kontroller rate-limtas och körs inte i loop.'
   ].filter(Boolean).join('\n').slice(0, 1900)
+}
+
+function evaluateDueSeoExperiments({ workspace, targetChannelId, actions, experiments }) {
+  const today = new Date().toISOString().slice(0, 10)
+  const dueExperiments = experiments.filter((item) => item?.reviewAfter && item.reviewAfter <= today && !item.reviewedAt)
+  const reviewed = []
+  for (const experiment of dueExperiments) {
+    const matchingActions = actions.filter((action) => experimentMatchesAction(experiment, action))
+    const unresolvedCodeActions = matchingActions.filter((action) => isCodeAction(action) && !isIndexingCheckAction(action))
+    const gscOrIndexingActions = matchingActions.filter((action) => isIndexingCheckAction(action) || isGscAuthAction(action))
+    let outcome = 'inconclusive'
+    let confidence = 'low'
+    let reason = 'No direct live action matched this experiment at follow-up time, but no Search Console performance snapshot is available.'
+    let nextReviewAfter = addDaysIso(today, 14)
+    if (unresolvedCodeActions.length) {
+      outcome = 'needs_more_work'
+      confidence = 'medium'
+      reason = `SEO Monitor still has ${unresolvedCodeActions.length} matching content/code action(s), so the previous experiment did not fully clear the problem.`
+      nextReviewAfter = addDaysIso(today, 7)
+    } else if (gscOrIndexingActions.length) {
+      outcome = 'inconclusive'
+      confidence = 'medium'
+      reason = 'Matching issue is operational/GSC-related, so content impact cannot be judged from live actions alone.'
+      nextReviewAfter = addDaysIso(today, 7)
+    } else {
+      outcome = 'provisionally_improved'
+      confidence = 'low'
+      reason = 'No matching live action remains; treat this as a weak positive signal until GSC/query metrics confirm it.'
+      nextReviewAfter = addDaysIso(today, 30)
+    }
+    const outcomeRecord = {
+      experimentId: experiment.id,
+      actionId: experiment.actionId || null,
+      workspaceKey: experiment.workspaceKey,
+      workspaceLabel: experiment.workspaceLabel || workspace?.label || workspace?.id || '',
+      targetUrl: experiment.targetUrl || '',
+      keyword: experiment.keyword || experiment.mappedKeyword || '',
+      commit: experiment.commit || '',
+      outcome,
+      confidence,
+      reason,
+      matchingActionIds: matchingActions.map((action) => action.id).filter(Boolean).slice(0, 10),
+      reviewedAt: new Date().toISOString(),
+      nextReviewAfter
+    }
+    state.experimentOutcomes = state.experimentOutcomes || {}
+    state.experimentOutcomes[experiment.id] = outcomeRecord
+    state.seoExperiments[experiment.id] = {
+      ...state.seoExperiments[experiment.id],
+      reviewedAt: outcomeRecord.reviewedAt,
+      outcome,
+      outcomeConfidence: confidence,
+      outcomeReason: reason,
+      nextReviewAfter,
+      reviewAfter: nextReviewAfter
+    }
+    rememberExperimentLesson(outcomeRecord)
+    reviewed.push(outcomeRecord)
+  }
+  return {
+    reviewed,
+    dueCount: dueExperiments.length
+  }
+}
+
+function experimentMatchesAction(experiment, action) {
+  if (!experiment || !action) return false
+  const experimentUrl = String(experiment.targetUrl || '').trim()
+  const actionUrl = String(action.targetUrl || action.url || '').trim()
+  if (experimentUrl && actionUrl && sameSeoUrl(experimentUrl, actionUrl)) return true
+  const experimentKeyword = normalizeKeywordText(experiment.keyword || experiment.mappedKeyword || '')
+  const actionKeyword = normalizeKeywordText(action.keyword || '')
+  if (experimentKeyword && actionKeyword && (experimentKeyword === actionKeyword || actionKeyword.includes(experimentKeyword) || experimentKeyword.includes(actionKeyword))) return true
+  const actionTextValue = normalizeKeywordText(`${action.title || ''} ${action.why || ''} ${action.recommendedAction || ''}`)
+  return Boolean(experimentKeyword && actionTextValue.includes(experimentKeyword))
+}
+
+function rememberExperimentLesson(outcome) {
+  const text = [
+    `Experiment ${outcome.outcome} for ${outcome.workspaceLabel || outcome.workspaceKey}`,
+    outcome.keyword ? `keyword "${outcome.keyword}"` : '',
+    outcome.targetUrl ? `target ${outcome.targetUrl}` : '',
+    outcome.commit ? `commit ${outcome.commit}` : '',
+    `confidence ${outcome.confidence}: ${outcome.reason}`
+  ].filter(Boolean).join(' ')
+  rememberAgentLesson(text.slice(0, 700))
+}
+
+function buildWorkspaceLearningSummary(workspaceKey) {
+  const outcomes = Object.values(state.experimentOutcomes || {})
+    .filter((item) => item.workspaceKey === workspaceKey)
+    .sort((a, b) => Date.parse(b.reviewedAt || 0) - Date.parse(a.reviewedAt || 0))
+  const experiments = Object.values(state.seoExperiments || {})
+    .filter((item) => item.workspaceKey === workspaceKey)
+    .sort((a, b) => Date.parse(b.completedAt || 0) - Date.parse(a.completedAt || 0))
+  return {
+    recentCompleted: experiments.slice(0, 8).map((item) => ({
+      title: item.title,
+      targetUrl: item.targetUrl,
+      keyword: item.keyword,
+      commit: item.commit,
+      completedAt: item.completedAt,
+      reviewAfter: item.reviewAfter,
+      outcome: item.outcome || null,
+      outcomeConfidence: item.outcomeConfidence || null
+    })),
+    positiveSignals: outcomes.filter((item) => item.outcome === 'provisionally_improved').slice(0, 6),
+    needsMoreWork: outcomes.filter((item) => item.outcome === 'needs_more_work').slice(0, 6),
+    inconclusive: outcomes.filter((item) => item.outcome === 'inconclusive').slice(0, 4)
+  }
+}
+
+function addDaysIso(dateOrIso, days) {
+  const date = new Date(`${String(dateOrIso).slice(0, 10)}T00:00:00.000Z`)
+  date.setUTCDate(date.getUTCDate() + Number(days || 0))
+  return date.toISOString().slice(0, 10)
 }
 
 function cleanupStaleRuntimeState() {

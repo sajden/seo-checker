@@ -87,6 +87,7 @@ The agent should:
 - post one actionable card at a time per workspace,
 - run at most five autonomous code commits per workspace per day by default; analyze more, but wait for fresh evidence or explicit operator direction before stacking extra same-day SEO edits,
 - create a Codex repo-scouted synthetic action when live SEO Monitor actions are weak, already completed, missing a target URL, or blocked by guards. Scout actions must target an existing page and still pass normal guards, Codex action review, and the pre-commit quality gate.
+- evaluate due SEO experiments during daily ranking review and feed outcomes back into the next Codex scout so the agent learns which page/keyword tactics worked, need a different approach, or remain inconclusive.
 - suppress repeated completed/ignored action clusters until recheck,
 - clear stale running/self-repair locks automatically,
 - run code automation per repo instead of blocking all workspaces when one repo is missing,
