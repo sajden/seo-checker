@@ -152,11 +152,14 @@ function recordCodexUsage(entry) {
 }
 
 function buildPrompt(input) {
+  const agentSpecs = readAgentSpecs(6000)
+  const workspaceRules = workspaceImplementationRules(input)
   return [
-    'You are implementing one approved SEO action. Keep the change minimal and scoped.',
+    'You are implementing one approved SEO action. Keep the change minimal, scoped, and workspace-correct.',
     '',
     `SEO-action-id: ${input.id}`,
     `Workspace: ${input.workspaceSlug || input.projectSlug || ''}`,
+    `Repo: ${input.repoFullName || ''}`,
     `Target URL: ${input.targetUrl || ''}`,
     `Keyword: ${input.keyword || ''}`,
     `Keyword Planner metrics: ${formatKeywordMetrics(input.keywordMetrics)}`,
@@ -164,13 +167,81 @@ function buildPrompt(input) {
     `Why: ${input.why || ''}`,
     `Recommended action: ${input.recommendedAction || ''}`,
     '',
+    'Workspace implementation rules:',
+    workspaceRules,
+    '',
+    'Agent memory/spec excerpt:',
+    agentSpecs,
+    '',
     'Rules:',
     '- Work directly on the current main checkout.',
     '- Do not touch unrelated files.',
     '- Do not change deploy config, auth, API integrations, pricing, redirects, or routing unless the action explicitly requires it.',
     '- Prefer metadata, copy, schema, internal links, FAQ, or small existing-page changes.',
+    '- If the action text contains a generic template that conflicts with the workspace rules, rewrite the implementation around the workspace rules instead of copying the template.',
+    '- Do not add B2B/SMB/konsult/SaaS language to consumer utilities such as vagkollen.se or parkeringspolaren.se.',
+    '- Do not repeat a previously completed page/keyword experiment unless the action provides new evidence or a clearly different hypothesis.',
+    '- If the keyword is broad, one-word, or weakly evidenced, make only a conservative improvement tied to the actual user intent of the site.',
     '- Leave the repo buildable.',
   ].join('\n')
+}
+
+function readAgentSpecs(maxChars = 6000) {
+  const base = '/home/deploy/seo-agent-discord'
+  const localBase = new URL('.', import.meta.url).pathname
+  const parts = []
+  for (const file of ['AGENTS.md', 'MEMORY.md']) {
+    for (const dir of [base, localBase]) {
+      const path = join(dir, file)
+      if (!existsSync(path)) continue
+      parts.push(readFileSync(path, 'utf8'))
+      break
+    }
+  }
+  return parts.join('\n\n').slice(0, maxChars) || 'No agent specs available.'
+}
+
+function workspaceImplementationRules(input) {
+  const haystack = [
+    input.workspaceSlug,
+    input.projectSlug,
+    input.repoFullName,
+    input.targetUrl,
+    input.gscProperty,
+    input.title,
+    input.why,
+    input.recommendedAction,
+  ].filter(Boolean).join(' ').toLowerCase()
+
+  if (/vagkollen|vägkollen/.test(haystack)) {
+    return [
+      'vagkollen.se is a consumer road-weather and route-planning utility.',
+      'Use driver scenarios, route checks, weather along the road, traffic, road conditions, safety, timing, road trips and practical travel use cases.',
+      'Never frame it as SMB, B2B, consulting, SaaS, customer visits, service firms, internal tools, invoices or integrations.',
+    ].join(' ')
+  }
+  if (/parkeringspolaren/.test(haystack)) {
+    return [
+      'parkeringspolaren.se is a consumer/local parking service.',
+      'Use parking search, airport parking, long-term parking, location, price/time factors, booking flow and conversion use cases.',
+      'Never frame it as SMB, B2B, consulting, SaaS, internal tools, invoices or integrations.',
+    ].join(' ')
+  }
+  if (/natverkskollen|nätverkskollen/.test(haystack)) {
+    return [
+      'natverkskollen.se is an event/networking discovery service.',
+      'Use startup events, entrepreneurs, networking, city/event category pages and evergreen event landing pages.',
+      'Avoid agency, integration and software-consultancy angles unless explicitly requested.',
+    ].join(' ')
+  }
+  if (/sebcastwall/.test(haystack)) {
+    return [
+      'sebcastwall.se is an AI/coding/automation consultancy.',
+      'Prioritize AI agents, AI automation, app/web development, internal tools, AI education, workshops and practical implementation credibility.',
+      'Deprioritize pure bookkeeping, invoice, Fortnox, Visma and generic integration angles unless tied to AI/coding strategy.',
+    ].join(' ')
+  }
+  return 'Infer the workspace from repo, URL and page content. Do not use generic SEO filler if it does not match the actual product/site.'
 }
 
 function formatKeywordMetrics(metrics) {
