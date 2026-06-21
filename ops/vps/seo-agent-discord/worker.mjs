@@ -1683,10 +1683,11 @@ async function processApprovedCodeActions(workspaces) {
     const approved = actions.find((action) =>
       action?.status === 'approved'
       && action?.id
-      && !state.codeActionResults[action.id]
+      && !codeActionResultBlocks(action, workspace, targetChannelId)
       && isCodeAction(action)
     )
     if (!approved) continue
+    delete state.codeActionResults[approved.id]
     state.codeActionRunning = { actionId: approved.id, startedAt: new Date().toISOString() }
     recordActionLedger(approved, workspace, targetChannelId, 'coding_started', { source: 'platform_approved' })
     saveState()
@@ -1725,14 +1726,28 @@ async function processApprovedCodeActions(workspaces) {
 
 async function processQueuedApprovedCodeAction(workspaces) {
   const queue = state.approvedCodeActionQueue || {}
-  const entry = Object.values(queue)
-    .filter((item) => item?.id && !state.codeActionResults[item.id])
-    .sort((a, b) => Date.parse(b.queuedAt || 0) - Date.parse(a.queuedAt || 0))[0]
+  const entries = Object.values(queue)
+    .filter((item) => item?.id)
+    .sort((a, b) => Date.parse(b.queuedAt || 0) - Date.parse(a.queuedAt || 0))
+  for (const entry of entries) {
+    const workspace = workspaces.find((item) => item.repoFullName === entry.repoFullName)
+      || workspaces.find((item) => item.label === entry.workspaceSlug)
+      || { label: entry.workspaceSlug || entry.repoFullName || 'workspace', repoFullName: entry.repoFullName, branch: entry.branch || 'main' }
+    const targetChannelId = entry.channelId || await channelForWorkspace(workspace)
+    if (codeActionResultBlocks(entry, workspace, targetChannelId)) {
+      delete state.approvedCodeActionQueue[entry.id]
+      log('approved_queue_item_blocked_by_existing_result', { actionId: entry.id, workspace: workspace?.label || workspace?.repoFullName || null })
+      saveState()
+      continue
+    }
+    delete state.codeActionResults[entry.id]
+    return await runQueuedApprovedCodeAction(entry, workspace, targetChannelId)
+  }
+  return false
+}
+
+async function runQueuedApprovedCodeAction(entry, workspace, targetChannelId) {
   if (!entry) return false
-  const workspace = workspaces.find((item) => item.repoFullName === entry.repoFullName)
-    || workspaces.find((item) => item.label === entry.workspaceSlug)
-    || { label: entry.workspaceSlug || entry.repoFullName || 'workspace', repoFullName: entry.repoFullName, branch: entry.branch || 'main' }
-  const targetChannelId = entry.channelId || await channelForWorkspace(workspace)
   state.codeActionRunning = { actionId: entry.id, startedAt: new Date().toISOString(), source: 'approved_queue' }
   recordActionLedger(entry, workspace, targetChannelId, 'coding_started', { source: 'approved_queue' })
   saveState()
