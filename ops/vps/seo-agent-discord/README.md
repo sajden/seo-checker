@@ -92,7 +92,12 @@ The agent should:
 - auto-clone missing repo checkouts when a matching `github.com-seo-agent-<repo>` SSH host/deploy key exists,
 - fast-forward clean repo checkouts before readiness checks so a normal remote update does not look like a push failure,
 - record commits and diffstats so Discord can explain what was created.
+- run a Codex pre-commit SEO quality gate before every autonomous commit. The gate can `allow`, request one small `revise` pass, or `block` the commit if the diff is generic, wrong-workspace, repetitive, or mismatched with the workspace profile.
 - treat each completed SEO commit as an experiment and review it after 14 days before repeating similar work.
+
+Rejected autonomous diffs are saved on the VPS under:
+
+`/home/deploy/seo-agent-discord/state/rejected-diffs/`
 
 In a workspace channel, useful commands:
 

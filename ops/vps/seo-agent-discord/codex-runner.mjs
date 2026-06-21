@@ -35,6 +35,7 @@ recordCodexUsage({
   actionId: action.id
 })
 
+const quality = await runQualityGate(repoDir, action)
 await runBestBuild(bestBuildDir(repoDir))
 await run('git', ['add', '-A'], repoDir)
 const diff = await run('git', ['diff', '--cached', '--stat'], repoDir)
@@ -45,7 +46,7 @@ await run('git', ['commit', '-m', `${action.title || 'SEO action'}\n\nSEO-action
 const commit = await run('git', ['rev-parse', '--short', 'HEAD'], repoDir)
 await run('git', ['push', 'origin', `HEAD:${action.branch || 'main'}`], repoDir)
 
-console.log(JSON.stringify({ ok: true, repoDir, actionId: action.id, commit: commit.stdout.trim(), diffStat: diff.stdout, codexUsage }, null, 2))
+console.log(JSON.stringify({ ok: true, repoDir, actionId: action.id, commit: commit.stdout.trim(), diffStat: diff.stdout, codexUsage, quality }, null, 2))
 
 async function ensureRepoCheckout(repoDir, repoFullName) {
   if (existsSync(join(repoDir, '.git'))) return
@@ -124,6 +125,190 @@ async function runPackageScript(cwd, script) {
 
 async function run(cmd, args, cwd) {
   return exec(cmd, args, { cwd, env: runnerEnv, timeout: 10 * 60 * 1000, maxBuffer: 10 * 1024 * 1024 })
+}
+
+async function runQualityGate(repoDir, input) {
+  let lastReview = null
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const diffStat = await run('git', ['diff', '--stat'], repoDir)
+    if (!diffStat.stdout.trim()) throw new Error('Codex made no changes')
+    const diff = await run('git', ['diff', '--', '.'], repoDir)
+    const review = await reviewDiffWithCodex(repoDir, input, diffStat.stdout, diff.stdout, attempt)
+    lastReview = review
+    if (review.decision === 'allow') return { ok: true, attempts: attempt, review }
+    if (review.decision === 'block') {
+      await rejectDirtyWorktree(repoDir, input, review)
+      throw new Error(`SEO quality gate blocked commit: ${review.reason || 'quality_blocked'}`)
+    }
+    if (review.decision === 'revise' && attempt < 2) {
+      await reviseDiffWithCodex(repoDir, input, review, attempt)
+      continue
+    }
+    await rejectDirtyWorktree(repoDir, input, review)
+    throw new Error(`SEO quality gate did not approve after revision: ${review.reason || 'quality_not_approved'}`)
+  }
+  await rejectDirtyWorktree(repoDir, input, lastReview || { reason: 'quality_unknown' })
+  throw new Error('SEO quality gate failed without approval')
+}
+
+async function reviewDiffWithCodex(repoDir, input, diffStat, diff, attempt) {
+  const promptPath = join('/home/deploy/seo-agent-discord/state/codex-prompts', `${input.id}.quality.${attempt}.md`)
+  mkdirSync(dirname(promptPath), { recursive: true })
+  const prompt = [
+    'Du är SEO Agentens pre-commit quality reviewer.',
+    'Bedöm om diffen ska få committas. Returnera ENDAST JSON:',
+    '{"decision":"allow|revise|block","reason":"kort orsak","requiredFix":"om revise, exakt vad kodaren ska ändra","confidence":0.0}',
+    '',
+    'Allow bara om diffen:',
+    '- matchar rätt workspace och målgrupp,',
+    '- är en konkret SEO-förbättring med rimlig hypotes,',
+    '- är tydligt kopplad till target URL/keyword eller workspace-mål,',
+    '- inte lägger in generisk malltext,',
+    '- inte upprepar samma experiment utan ny evidens,',
+    '- inte lägger SMB/B2B/konsult/SaaS-språk på konsumenttjänster.',
+    '',
+    'Revise om diffen kan räddas med en liten ändring.',
+    'Block om den är fel workspace, för generisk, farlig, irrelevant eller saknar trovärdig SEO-hypotes.',
+    '',
+    'Workspace rules:',
+    workspaceImplementationRules(input),
+    '',
+    'Agent memory/spec excerpt:',
+    readAgentSpecs(6000),
+    '',
+    'Action JSON:',
+    JSON.stringify({
+      id: input.id,
+      workspaceSlug: input.workspaceSlug,
+      projectSlug: input.projectSlug,
+      repoFullName: input.repoFullName,
+      targetUrl: input.targetUrl,
+      keyword: input.keyword,
+      keywordMetrics: input.keywordMetrics,
+      keywordMetricsStatus: input.keywordMetricsStatus,
+      title: input.title,
+      why: input.why,
+      recommendedAction: input.recommendedAction,
+      evidenceSource: input.evidenceSource,
+      evidenceRunAt: input.evidenceRunAt
+    }, null, 2),
+    '',
+    'Diff stat:',
+    String(diffStat || '').slice(0, 4000),
+    '',
+    'Diff:',
+    String(diff || '').slice(0, 28000)
+  ].join('\n')
+  writeFileSync(promptPath, prompt)
+  const result = await run("bash", ["-lc", `codex exec --json --cd /home/deploy/seo-agent-discord --dangerously-bypass-approvals-and-sandbox - < ${promptPath}`], '/home/deploy/seo-agent-discord')
+  const usage = extractCodexUsage(result.stdout || '')
+  recordCodexUsage({
+    agent: 'seo-agent',
+    purpose: 'code_quality_review',
+    workspace: input.workspaceSlug || input.projectSlug || input.repoFullName || null,
+    status: 'ok',
+    usage,
+    actionId: input.id
+  })
+  return normalizeQualityReview(extractCodexExecText(result.stdout || ''))
+}
+
+async function reviseDiffWithCodex(repoDir, input, review, attempt) {
+  const promptPath = join('/home/deploy/seo-agent-discord/state/codex-prompts', `${input.id}.revision.${attempt}.md`)
+  mkdirSync(dirname(promptPath), { recursive: true })
+  const prompt = [
+    'You are fixing an SEO code change that failed pre-commit review.',
+    'Make the smallest correction needed. Keep the repo buildable. Do not add unrelated changes.',
+    '',
+    `SEO-action-id: ${input.id}`,
+    `Workspace: ${input.workspaceSlug || input.projectSlug || ''}`,
+    `Repo: ${input.repoFullName || ''}`,
+    `Target URL: ${input.targetUrl || ''}`,
+    `Keyword: ${input.keyword || ''}`,
+    `Title: ${input.title || ''}`,
+    '',
+    'Workspace implementation rules:',
+    workspaceImplementationRules(input),
+    '',
+    'Quality review that must be fixed:',
+    JSON.stringify(review, null, 2),
+    '',
+    'Fix requirements:',
+    review.requiredFix || review.reason || 'Make the diff workspace-correct and less generic.'
+  ].join('\n')
+  writeFileSync(promptPath, prompt)
+  const result = await run("bash", ["-lc", `codex exec --json --cd ${repoDir} --dangerously-bypass-approvals-and-sandbox - < ${promptPath}`], repoDir)
+  const usage = extractCodexUsage(result.stdout || '')
+  recordCodexUsage({
+    agent: 'seo-agent',
+    purpose: 'code_quality_revision',
+    workspace: input.workspaceSlug || input.projectSlug || input.repoFullName || null,
+    status: 'ok',
+    usage,
+    actionId: input.id
+  })
+}
+
+async function rejectDirtyWorktree(repoDir, input, review) {
+  const diff = await run('git', ['diff'], repoDir).catch(() => ({ stdout: '' }))
+  const rejectDir = '/home/deploy/seo-agent-discord/state/rejected-diffs'
+  mkdirSync(rejectDir, { recursive: true })
+  const safeId = String(input.id || input.title || Date.now()).replace(/[^a-z0-9_.-]+/gi, '-').slice(0, 160)
+  const patchPath = join(rejectDir, `${new Date().toISOString().replace(/[:.]/g, '-')}-${safeId}.patch`)
+  writeFileSync(patchPath, [
+    `# Rejected SEO action: ${input.id || ''}`,
+    `# Reason: ${review?.reason || 'quality_blocked'}`,
+    `# Required fix: ${review?.requiredFix || ''}`,
+    '',
+    diff.stdout || ''
+  ].join('\n'))
+  await run('git', ['reset', '--hard'], repoDir)
+  recordCodexUsage({
+    agent: 'seo-agent',
+    purpose: 'code_quality_rejected',
+    workspace: input.workspaceSlug || input.projectSlug || input.repoFullName || null,
+    status: 'blocked',
+    usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0, calls: 0 },
+    actionId: input.id,
+    note: `Rejected dirty worktree saved to ${patchPath}. Reason: ${review?.reason || 'quality_blocked'}`
+  })
+}
+
+function extractCodexExecText(stdout) {
+  const lines = String(stdout || '').trim().split(/\r?\n/).filter(Boolean)
+  const texts = []
+  for (const line of lines) {
+    try {
+      const event = JSON.parse(line)
+      if (typeof event.output_text === 'string') texts.push(event.output_text)
+      if (event.type === 'item.completed' && event.item?.type === 'agent_message' && typeof event.item.text === 'string') texts.push(event.item.text)
+      if (typeof event.text === 'string' && /message|response|final|agent/i.test(String(event.type || ''))) texts.push(event.text)
+      if (typeof event.message === 'string' && event.type && /message|response|final/i.test(String(event.type))) texts.push(event.message)
+      if (Array.isArray(event.output)) {
+        for (const item of event.output) {
+          for (const content of item.content || []) if (typeof content.text === 'string') texts.push(content.text)
+        }
+      }
+    } catch {}
+  }
+  if (texts.length) return texts[texts.length - 1].trim()
+  return ''
+}
+
+function normalizeQualityReview(text) {
+  const raw = String(text || '').trim()
+  const jsonText = raw.match(/\{[\s\S]*\}/)?.[0] || raw
+  let parsed = null
+  try { parsed = JSON.parse(jsonText) } catch {
+    return { decision: 'revise', reason: 'quality_review_json_parse_failed', requiredFix: 'Re-check the diff and make it clearly workspace-correct.', confidence: 0 }
+  }
+  const decision = ['allow', 'revise', 'block'].includes(parsed.decision) ? parsed.decision : 'revise'
+  return {
+    decision,
+    reason: typeof parsed.reason === 'string' ? parsed.reason.slice(0, 500) : '',
+    requiredFix: typeof parsed.requiredFix === 'string' ? parsed.requiredFix.slice(0, 1000) : '',
+    confidence: Number.isFinite(Number(parsed.confidence)) ? Number(parsed.confidence) : 0
+  }
 }
 
 function extractCodexUsage(stdout) {
