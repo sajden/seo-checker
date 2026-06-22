@@ -1196,7 +1196,9 @@ function autonomousCodeCandidateCheck(action, workspace, targetChannelId) {
   if (isIndexingCheckAction(action)) return { ok: false, reason: 'indexing_or_gsc_check' }
   const kind = actionKindForLearning(action)
   if (!['content', 'internal-links'].includes(kind)) return { ok: false, reason: `unsupported_kind:${kind}` }
-  if (!String(action.targetUrl || action.url || '').trim()) return { ok: false, reason: 'missing_target_url' }
+  const targetUrl = String(action.targetUrl || action.url || '').trim()
+  if (!targetUrl) return { ok: false, reason: 'missing_target_url' }
+  if (isLegalOrPolicyRoute(targetUrl)) return { ok: false, reason: 'legal_or_policy_route_needs_explicit_request' }
   if (kind === 'new-page') return { ok: false, reason: 'new_page_needs_human_approval' }
   const cluster = actionLearningKey(action, workspace, targetChannelId)
   const ledger = state.actionLedger?.[cluster]
@@ -5301,6 +5303,7 @@ function shouldPostActionCard(action, workspace, targetChannelId) {
   if (isIndexingCheckAction(action)) return { ok: false, reason: 'indexing_check_is_internal' }
   if (isKeywordPlanAction(action)) return { ok: false, reason: 'keyword_plan_is_strategy_not_action_card' }
   if (isCodeAction(action) && !targetUrl && kind !== 'new-page') return { ok: false, reason: 'missing_target_url' }
+  if (isCodeAction(action) && isLegalOrPolicyRoute(targetUrl)) return { ok: false, reason: 'legal_or_policy_route_needs_explicit_request' }
   if (ledger?.status === 'completed' && !isLedgerRecheckDue(ledger)) return { ok: false, reason: 'already_completed_waiting_recheck' }
   if (ledger?.status === 'ignored' && !isLedgerRecheckDue(ledger)) return { ok: false, reason: 'previously_ignored_waiting_recheck' }
   if (Number(ledger?.guardedCount || 0) >= 2 && !isLedgerRecheckDue(ledger)) return { ok: false, reason: 'repeatedly_guarded' }
@@ -5317,6 +5320,17 @@ function shouldPostActionCard(action, workspace, targetChannelId) {
     if (String(action.keyword).length > 90 || words > 8) return { ok: false, reason: 'keyword_too_long_for_action_card' }
   }
   return { ok: true, reason: 'passed' }
+}
+
+function isLegalOrPolicyRoute(value) {
+  const text = String(value || '').trim().toLowerCase()
+  if (!text) return false
+  let pathname = text
+  try {
+    pathname = new URL(text).pathname.toLowerCase()
+  } catch {}
+  const compact = pathname.replace(/\/+$/, '') || '/'
+  return /(?:^|\/)(terms|privacy|integritet|cookie|cookies|legal|terms-of-service|tos|anvandarvillkor|användarvillkor|villkor|dataskydd|gdpr)(?:\/|$)/i.test(compact)
 }
 
 function isKeywordPlanAction(action) {
