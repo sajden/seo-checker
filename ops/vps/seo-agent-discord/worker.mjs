@@ -40,6 +40,7 @@ const automationEnabled = env.SEO_AGENT_AUTONOMY_ENABLED !== 'false'
 const codeAutomationEnabled = env.SEO_AGENT_CODE_AUTOMATION_ENABLED === 'true'
 const autonomousCodeEnabled = env.SEO_AGENT_AUTONOMOUS_CODE_ENABLED !== 'false'
 const autonomousCodePerWorkspacePerDay = Number(env.SEO_AGENT_AUTONOMOUS_CODE_PER_WORKSPACE_PER_DAY || '5')
+const opportunityScoutMinIntervalMs = Number(env.SEO_AGENT_OPPORTUNITY_SCOUT_MIN_INTERVAL_MS || String(4 * 60 * 60 * 1000))
 const codexChatEnabled = env.SEO_AGENT_CODEX_CHAT_ENABLED !== 'false'
 const smartOutboundGuardEnabled = env.SEO_AGENT_SMART_OUTBOUND_GUARD !== 'false'
 const codexCli = env.CODEX_CLI || `${env.HOME || '/home/deploy'}/.npm-global/bin/codex`
@@ -1331,9 +1332,16 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
   const repoDir = resolveRepoCheckoutDir(repoFullName)
   if (!repoDir) return null
   const key = workspaceProfileKey(workspace, targetChannelId)
-  const today = new Date().toISOString().slice(0, 10)
-  if (state.codexOpportunityScout?.[key]?.date === today) {
-    logThrottled(`codex_opportunity_skipped:${key}:today`, 60 * 60 * 1000, 'codex_opportunity_skipped', { workspace: workspace?.label || workspace?.id || null, reason: 'already_scouted_today' })
+  const previousScout = state.codexOpportunityScout?.[key]
+  const previousScoutAt = Date.parse(previousScout?.at || 0)
+  const scoutAgeMs = Number.isFinite(previousScoutAt) ? Date.now() - previousScoutAt : Infinity
+  if (scoutAgeMs >= 0 && scoutAgeMs < opportunityScoutMinIntervalMs) {
+    logThrottled(`codex_opportunity_skipped:${key}:recent`, 60 * 60 * 1000, 'codex_opportunity_skipped', {
+      workspace: workspace?.label || workspace?.id || null,
+      reason: 'recently_scouted',
+      ageMinutes: Math.round(scoutAgeMs / 60000),
+      minIntervalMinutes: Math.round(opportunityScoutMinIntervalMs / 60000)
+    })
     return null
   }
   const profile = ensureWorkspaceProfile(workspace, targetChannelId)
@@ -1409,7 +1417,7 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
     maxBuffer: 8 * 1024 * 1024
   })
   state.codexOpportunityScout = state.codexOpportunityScout || {}
-  state.codexOpportunityScout[key] = { date: today, at: new Date().toISOString() }
+  state.codexOpportunityScout[key] = { at: new Date().toISOString() }
   const output = extractCodexExecText(result.stdout || '')
   const parsed = parseCodexOpportunity(output)
   if (!parsed?.action) {
