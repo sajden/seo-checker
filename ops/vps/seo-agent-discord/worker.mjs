@@ -39,7 +39,7 @@ const autoCreateWorkspaceChannels = env.SEO_AGENT_AUTO_CREATE_CHANNELS !== 'fals
 const automationEnabled = env.SEO_AGENT_AUTONOMY_ENABLED !== 'false'
 const codeAutomationEnabled = env.SEO_AGENT_CODE_AUTOMATION_ENABLED === 'true'
 const autonomousCodeEnabled = env.SEO_AGENT_AUTONOMOUS_CODE_ENABLED !== 'false'
-const autonomousCodePerWorkspacePerDay = Number(env.SEO_AGENT_AUTONOMOUS_CODE_PER_WORKSPACE_PER_DAY || '5')
+const autonomousCodePerWorkspacePerDay = Number(env.SEO_AGENT_AUTONOMOUS_CODE_PER_WORKSPACE_PER_DAY || '0')
 const opportunityScoutMinIntervalMs = Number(env.SEO_AGENT_OPPORTUNITY_SCOUT_MIN_INTERVAL_MS || String(4 * 60 * 60 * 1000))
 const codexChatEnabled = env.SEO_AGENT_CODEX_CHAT_ENABLED !== 'false'
 const smartOutboundGuardEnabled = env.SEO_AGENT_SMART_OUTBOUND_GUARD !== 'false'
@@ -892,7 +892,7 @@ async function maybeQueueAutonomousCodeActions(workspaces) {
     }
     const runKey = `${workspace.id || workspace.label || workspace.repoFullName}:${today}`
     const usedToday = Number(state.autonomousCodeRuns[runKey]?.count || 0)
-    if (usedToday >= autonomousCodePerWorkspacePerDay) {
+    if (autonomousCodePerWorkspacePerDay > 0 && usedToday >= autonomousCodePerWorkspacePerDay) {
       logThrottled(`autonomous_daily_limit:${runKey}`, 30 * 60 * 1000, 'autonomous_daily_limit', {
         workspace: workspace.label || workspace.id || null,
         usedToday,
@@ -1270,22 +1270,14 @@ async function syntheticAutonomousActionForWorkspace({ workspace, targetChannelI
     log('synthetic_autonomous_codex_brief_failed', { workspace: workspace?.label || workspace?.id || null, error: error?.message || String(error) })
     return null
   })
-  const safeBrief = isAutonomousCodexSafe(codexBrief) ? codexBrief : {
-    decision: 'allow',
-    title: action.title,
-    doThis: action.recommendedAction,
-    why: review.why || action.why,
-    risk: review.risk || 'låg, befintlig sida och begränsad contentändring',
-    expectedWork: review.expectedWork || 'Agenten gör en begränsad befintlig-sida-ändring, bygger, committar och postar GitHub-länk.',
-    recommendation: 'Approve',
-    reason: codexBrief ? `synthetic_codex_not_safe:${codexBrief.recommendation || codexBrief.decision || 'unknown'}` : 'synthetic_codex_unavailable'
-  }
   if (!isAutonomousCodexSafe(codexBrief)) {
-    log('synthetic_autonomous_codex_brief_bypassed', {
+    logThrottled(`synthetic_autonomous_skipped:${workspace?.id || workspace?.label}:${action.id}:codex`, 30 * 60 * 1000, 'synthetic_autonomous_skipped', {
       workspace: workspace?.label || workspace?.id || null,
       actionId: action.id,
-      reason: safeBrief.reason
+      reason: codexBrief ? `codex:${codexBrief.recommendation || codexBrief.decision || 'blocked'}` : 'codex:unavailable'
     })
+    rememberGuardedAction(action, workspace, targetChannelId, codexBrief ? `codex:${codexBrief.recommendation || codexBrief.decision || 'blocked'}` : 'codex:unavailable')
+    return null
   }
   log('synthetic_autonomous_action_selected', {
     workspace: workspace?.label || workspace?.id || null,
@@ -1296,8 +1288,8 @@ async function syntheticAutonomousActionForWorkspace({ workspace, targetChannelI
   return {
     action,
     review,
-    codexBrief: safeBrief,
-    reason: safeBrief.why || syntheticEvidenceReason(action)
+    codexBrief,
+    reason: codexBrief.why || syntheticEvidenceReason(action)
   }
 }
 

@@ -64,7 +64,8 @@ The agent must consult these before posting a new card. Do not repost a complete
 Default autonomy:
 
 - Low-risk edits to existing pages, copy, headings, internal links and metadata should be selected and executed by the agent.
-- Default autonomous code pace is five commits per workspace per day. More work may be analyzed, but extra same-day commits beyond that need materially fresh evidence or explicit operator direction.
+- Default autonomous code pace is quality-gated, not count-gated. Keep working while there is a concrete, low-risk, workspace-relevant experiment that passes guards, Codex review and build/quality gate. Stop by yourself when candidates are weak, repetitive, already completed, awaiting recheck, or not backed by fresh enough evidence.
+- `SEO_AGENT_AUTONOMOUS_CODE_PER_WORKSPACE_PER_DAY` is an optional emergency cap. When unset or `0`, there is no hard daily count limit.
 - Ask the operator only for high-risk changes, new pages, strategic direction changes, unclear/conflicting evidence, broken integrations, or rollback choices.
 - Avoid wording like "väntar på beslut" unless the item is genuinely `needs_operator_input`.
 
