@@ -18,6 +18,8 @@ const codeRunnerPath = env.SEO_RUNTIME_CODE_RUNNER_PATH || '/opt/ai-dashboard/ap
 const seoAgentAppRoot = env.SEO_AGENT_APP_ROOT || dirname(codeRunnerPath)
 const gscUrlInspectionToolPath = env.SEO_RUNTIME_GSC_URL_INSPECTION_TOOL_PATH || join(seoAgentAppRoot, 'gsc-url-inspection-api.mjs')
 const gscFirefoxUiToolPath = env.SEO_RUNTIME_GSC_FIREFOX_UI_TOOL_PATH || join(seoAgentAppRoot, 'gsc-firefox-ui-tool.mjs')
+const gscOauthRedirectUri = env.GSC_REDIRECT_URI || env.GOOGLE_SEARCH_CONSOLE_REDIRECT_URI || 'https://seo-api.sebcastwall.se/api/gsc/callback'
+const gscOauthState = env.GSC_OAUTH_STATE || 'seo-agent-gsc-oauth'
 
 const server = http.createServer((request, response) => {
   handleRequest(request, response).catch((error) => {
@@ -59,6 +61,15 @@ async function handleRequest(request, response) {
   if (request.method === 'POST' && url.pathname === '/seo/integrations/gsc/doctor') {
     const body = await readJsonBody(request)
     const result = await gscDoctor(body)
+    return sendJson(response, result.statusCode || 200, result.body)
+  }
+  if (request.method === 'POST' && url.pathname === '/seo/integrations/gsc/oauth/start') {
+    const result = gscOauthStart()
+    return sendJson(response, result.statusCode || 200, result.body)
+  }
+  if (request.method === 'POST' && url.pathname === '/seo/integrations/gsc/oauth/exchange') {
+    const body = await readJsonBody(request)
+    const result = await exchangeGscOauth(body)
     return sendJson(response, result.statusCode || 200, result.body)
   }
   if (request.method === 'POST' && url.pathname === '/seo/integrations/gsc/url-inspection') {
@@ -238,6 +249,100 @@ async function gscDoctor(payload = {}) {
       preferred: api.ok ? 'api' : browser?.ok ? 'browser' : 'none'
     }
   }
+}
+
+function gscOauthStart() {
+  const clientId = gscClientId()
+  const clientSecret = gscClientSecret()
+  if (!clientId || !clientSecret) {
+    return {
+      statusCode: 200,
+      body: {
+        ok: false,
+        runtimeKey,
+        status: 'missing_oauth_client',
+        missing: [
+          !clientId ? 'GSC_CLIENT_ID or GOOGLE_SEARCH_CONSOLE_CLIENT_ID' : '',
+          !clientSecret ? 'GSC_CLIENT_SECRET or GOOGLE_SEARCH_CONSOLE_CLIENT_SECRET' : ''
+        ].filter(Boolean)
+      }
+    }
+  }
+  const params = new URLSearchParams({
+    client_id: clientId,
+    redirect_uri: gscOauthRedirectUri,
+    response_type: 'code',
+    scope: 'https://www.googleapis.com/auth/webmasters.readonly',
+    access_type: 'offline',
+    prompt: 'consent',
+    state: gscOauthState
+  })
+  return {
+    statusCode: 200,
+    body: {
+      ok: true,
+      runtimeKey,
+      status: 'ready',
+      authorizationUrl: `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`,
+      redirectUri: gscOauthRedirectUri,
+      state: gscOauthState
+    }
+  }
+}
+
+async function exchangeGscOauth(payload = {}) {
+  const code = String(payload.code || '').trim()
+  if (!code) return { statusCode: 400, body: { ok: false, runtimeKey, error: 'missing_code' } }
+  const clientId = gscClientId()
+  const clientSecret = gscClientSecret()
+  if (!clientId || !clientSecret) return { statusCode: 400, body: { ok: false, runtimeKey, error: 'missing_oauth_client' } }
+  const response = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      code,
+      client_id: clientId,
+      client_secret: clientSecret,
+      redirect_uri: gscOauthRedirectUri,
+      grant_type: 'authorization_code'
+    })
+  })
+  const tokenPayload = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    return {
+      statusCode: 200,
+      body: {
+        ok: false,
+        runtimeKey,
+        status: `google_oauth_${response.status}`,
+        error: tokenPayload.error_description || tokenPayload.error || `google_oauth_${response.status}`
+      }
+    }
+  }
+  const refreshToken = tokenPayload.refresh_token ? String(tokenPayload.refresh_token) : ''
+  if (!refreshToken) {
+    return { statusCode: 200, body: { ok: false, runtimeKey, status: 'missing_refresh_token', error: 'Google returned no refresh token' } }
+  }
+  writeFileSync(join(stateDir, 'gsc-refresh-token.txt'), refreshToken, { mode: 0o600 })
+  const doctor = await runGscUrlInspectionApiTool({ command: 'doctor' }).catch((error) => ({ ok: false, status: 'doctor_failed', error: error?.message || String(error) }))
+  return {
+    statusCode: 200,
+    body: {
+      ok: true,
+      runtimeKey,
+      status: 'refresh_token_saved',
+      tokenSaved: true,
+      doctor
+    }
+  }
+}
+
+function gscClientId() {
+  return env.GSC_CLIENT_ID || env.GOOGLE_SEARCH_CONSOLE_CLIENT_ID || env.GOOGLE_CLIENT_ID || ''
+}
+
+function gscClientSecret() {
+  return env.GSC_CLIENT_SECRET || env.GOOGLE_SEARCH_CONSOLE_CLIENT_SECRET || env.GOOGLE_CLIENT_SECRET || ''
 }
 
 async function inspectGscUrl(payload = {}) {

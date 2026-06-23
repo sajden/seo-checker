@@ -17,6 +17,8 @@ GET  /healthz
 GET  /seo/today?limit=20&workspace=<workspaceKey>
 POST /seo/tick/advice
 POST /seo/integrations/gsc/doctor
+POST /seo/integrations/gsc/oauth/start
+POST /seo/integrations/gsc/oauth/exchange
 POST /seo/integrations/gsc/url-inspection
 POST /seo/workspaces/:workspaceKey/actions/live
 POST /seo/workspaces/:workspaceKey/actions/current
@@ -67,6 +69,8 @@ GSC provider payload:
 ```
 
 `POST /seo/integrations/gsc/url-inspection` owns the provider/browser execution path for URL Inspection. It tries the Google URL Inspection API first and falls back to the noVNC Firefox tool only for OAuth/API failures. `POST /seo/integrations/gsc/doctor` reports API/browser readiness without Discord owning those provider checks.
+
+`POST /seo/integrations/gsc/oauth/start` creates the Google OAuth URL from runtime env. `POST /seo/integrations/gsc/oauth/exchange` exchanges the callback code and stores `gsc-refresh-token.txt` under the runtime state directory. Hermes may open the URL in noVNC/Firefox, but it should not own token exchange or token storage.
 
 Current action payload:
 
@@ -127,6 +131,7 @@ Posted action payload:
 - `GET /seo/today?includeLedger=true` is a debug view for non-terminal ledger actions. The default intentionally does not recreate old proposed actions from historical ledger state.
 - `POST /seo/tick/advice` owns the cadence decision for expensive periodic work. Hermes still executes Discord-facing transport steps.
 - `POST /seo/integrations/gsc/url-inspection` owns GSC URL Inspection provider calls. Hermes formats the result to Discord and handles operator decisions.
+- `POST /seo/integrations/gsc/oauth/start` and `/exchange` own GSC OAuth URL generation and refresh-token persistence.
 - `POST /seo/workspaces/:workspaceKey/actions/live` fetches live SEO Monitor actions from the platform API.
 - `POST /seo/workspaces/:workspaceKey/actions/current` is the runtime-owned current work queue for Discord/Hermes: it fetches live actions, applies runtime guards, and returns one selected action or no-action.
 - `POST /seo/workspaces/:workspaceKey/actions/next` scores pending live actions against runtime state, workspace profile, prior results, ledger cooldowns, and hard guards for legal/admin/GSC/keyword-plan noise.

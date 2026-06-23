@@ -4365,7 +4365,8 @@ async function runGscBrowserTool(input) {
 }
 
 async function formatGscOauthStartMessage() {
-  const authUrl = gscOauthUrl()
+  const runtimeStart = await startGscOauthThroughRuntime().catch((error) => ({ ok: false, error: error?.message || String(error) }))
+  const authUrl = runtimeStart.ok ? runtimeStart.authorizationUrl : gscOauthUrl()
   if (gscClientId() && gscClientSecret()) {
     return [
       'Google Search Console OAuth för SEO-agentens URL Inspection API:',
@@ -4373,7 +4374,7 @@ async function formatGscOauthStartMessage() {
       '',
       ...formatNoVncAccessLines(),
       '',
-      `Redirect URI: ${gscOauthRedirectUri}`,
+      `Redirect URI: ${runtimeStart.redirectUri || gscOauthRedirectUri}`,
       'Om Google kräver manuell login/approval: gör den i noVNC-Firefox och skriv sedan `klart` eller `gsc read browser` här.',
       'Om callbacken landar på en sida med fel men URL:en fortfarande innehåller `code=...`: klistra in hela URL:en eller skriv `gsc code ...`.',
       'Agenten sparar refresh-token lokalt på VPS och använder API:t före noVNC/Firefox.'
@@ -4396,6 +4397,25 @@ async function formatGscOauthStartMessage() {
   } catch (error) {
     return `GSC OAuth kunde inte starta: ${error?.message || String(error)}`
   }
+}
+
+async function startGscOauthThroughRuntime() {
+  const response = await fetch(`${seoRuntimeUrl}/seo/integrations/gsc/oauth/start`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{}'
+  })
+  const text = await response.text()
+  let payload = null
+  try {
+    payload = text ? JSON.parse(text) : null
+  } catch {
+    payload = { raw: text }
+  }
+  if (!response.ok || !payload?.ok || !payload.authorizationUrl) {
+    throw new Error(payload?.error || payload?.status || text || `runtime_gsc_oauth_start_http_${response.status}`)
+  }
+  return payload
 }
 
 function gscOauthUrl() {
@@ -4437,13 +4457,20 @@ async function handleGscOauthCode(code, message, targetChannelId) {
     return
   }
   try {
-    const token = await exchangeGscOauthCode(code)
-    if (!token.refreshToken) {
-      await sendDiscordMessage('Google svarade utan GSC refresh token. Be mig starta om GSC OAuth och godkänn hela consent-flödet igen.', targetChannelId)
+    const exchanged = await exchangeGscOauthCodeThroughRuntime(code).catch(async () => {
+      const token = await exchangeGscOauthCode(code)
+      if (!token.refreshToken) return { ok: false, status: 'missing_refresh_token', error: 'Google returned no refresh token' }
+      saveGscRefreshToken(token.refreshToken)
+      const doctor = await runGscUrlInspectionApi({ command: 'doctor' }).catch((error) => ({ ok: false, error: error?.message || String(error) }))
+      return { ok: true, doctor }
+    })
+    if (!exchanged.ok) {
+      await sendDiscordMessage(exchanged.status === 'missing_refresh_token'
+        ? 'Google svarade utan GSC refresh token. Be mig starta om GSC OAuth och godkänn hela consent-flödet igen.'
+        : `GSC OAuth misslyckades: ${exchanged.error || exchanged.status || 'okänt fel'}`, targetChannelId)
       return
     }
-    saveGscRefreshToken(token.refreshToken)
-    const doctor = await runGscUrlInspectionApi({ command: 'doctor' }).catch((error) => ({ ok: false, error: error?.message || String(error) }))
+    const doctor = exchanged.doctor || { ok: false, status: 'doctor_missing' }
     await sendDiscordMessage([
       'GSC OAuth lyckades. Refresh-token är sparad lokalt på VPS:en.',
       doctor.ok ? 'URL Inspection API är redo.' : `URL Inspection API är fortfarande inte redo: ${doctor.error || doctor.status || 'okänt fel'}`
@@ -4452,6 +4479,23 @@ async function handleGscOauthCode(code, message, targetChannelId) {
   } catch (error) {
     await sendDiscordMessage(`GSC OAuth misslyckades: ${error?.message || String(error)}`, targetChannelId)
   }
+}
+
+async function exchangeGscOauthCodeThroughRuntime(code) {
+  const response = await fetch(`${seoRuntimeUrl}/seo/integrations/gsc/oauth/exchange`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ code })
+  })
+  const text = await response.text()
+  let payload = null
+  try {
+    payload = text ? JSON.parse(text) : null
+  } catch {
+    payload = { raw: text }
+  }
+  if (!response.ok || !payload) throw new Error(text || `runtime_gsc_oauth_exchange_http_${response.status}`)
+  return payload
 }
 
 async function exchangeGscOauthCode(code) {
@@ -4485,7 +4529,8 @@ async function openGscOauthInFirefox() {
       'Be mig kontrollera integrationsstatusen när env är uppdaterad.'
     ].join('\n')
   }
-  const authUrl = gscOauthUrl()
+  const runtimeStart = await startGscOauthThroughRuntime().catch(() => null)
+  const authUrl = runtimeStart?.authorizationUrl || gscOauthUrl()
   const result = await runGscFirefoxUiTool({ command: 'open-url', url: authUrl }).catch((error) => ({ ok: false, error: error?.message || String(error) }))
   if (!result.ok) {
     return [
@@ -4507,10 +4552,15 @@ async function openGscOauthInFirefox() {
   const completedCode = completed.ok ? extractGscOauthCode(completed.currentUrl || '') : ''
   if (completedCode) {
     try {
-      const token = await exchangeGscOauthCode(completedCode)
-      if (token.refreshToken) {
+      const exchanged = await exchangeGscOauthCodeThroughRuntime(completedCode).catch(async () => {
+        const token = await exchangeGscOauthCode(completedCode)
+        if (!token.refreshToken) return { ok: false, status: 'missing_refresh_token' }
         saveGscRefreshToken(token.refreshToken)
         const doctor = await runGscUrlInspectionApi({ command: 'doctor' }).catch((error) => ({ ok: false, error: error?.message || String(error) }))
+        return { ok: true, doctor }
+      })
+      if (exchanged.ok) {
+        const doctor = exchanged.doctor || { ok: false, status: 'doctor_missing' }
         state.pendingBrowserOauth = null
         saveState()
         return [
