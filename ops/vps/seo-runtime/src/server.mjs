@@ -76,6 +76,13 @@ async function handleRequest(request, response) {
     const result = executeAction(actionId, body)
     return sendJson(response, result.statusCode || 200, result.body)
   }
+  const postedMatch = url.pathname.match(/^\/seo\/actions\/([^/]+)\/posted$/)
+  if (request.method === 'POST' && postedMatch) {
+    const actionId = decodeURIComponent(postedMatch[1])
+    const body = await readJsonBody(request)
+    const result = markActionPosted(actionId, body)
+    return sendJson(response, result.statusCode || 200, result.body)
+  }
   if (request.method === 'POST' && url.pathname === '/seo/actions/run-next') {
     const body = await readJsonBody(request)
     const result = await runNextApprovedCodeAction(body)
@@ -343,6 +350,62 @@ function executeAction(actionId, payload = {}) {
   state.runtimeExecutions[idempotencyKey] = result
   writeState(state)
   return { statusCode: 200, body: { ok: true, result } }
+}
+
+function markActionPosted(actionId, payload = {}) {
+  if (!actionId) return { statusCode: 400, body: { ok: false, error: 'missing_action_id' } }
+  const messageId = String(payload.messageId || '').trim()
+  const channelId = String(payload.channelId || '').trim()
+  if (!messageId || !channelId) return { statusCode: 400, body: { ok: false, error: 'missing_message_or_channel' } }
+  const idempotencyKey = String(payload.idempotencyKey || `posted:${channelId}:${messageId}:${actionId}`).trim()
+  const state = readState()
+  state.runtimeExecutions = state.runtimeExecutions || {}
+  if (state.runtimeExecutions[idempotencyKey]) return { statusCode: 200, body: { ok: true, idempotent: true, result: state.runtimeExecutions[idempotencyKey] } }
+
+  const now = new Date().toISOString()
+  const action = payload.action && typeof payload.action === 'object' ? payload.action : { id: actionId, title: actionId }
+  const workspace = payload.workspace && typeof payload.workspace === 'object' ? payload.workspace : {}
+  const activeKey = String(payload.activeKey || workspace.id || workspace.gscProperty || workspace.repoFullName || channelId || 'default')
+  const systemKey = String(payload.systemKey || '')
+  const review = payload.review && typeof payload.review === 'object' ? payload.review : null
+  const posted = {
+    messageId,
+    channelId,
+    title: action.title || actionId,
+    workspaceId: workspace.id || action.workspaceId || null,
+    targetUrl: action.targetUrl || action.url || '',
+    keyword: action.keyword || '',
+    postedAt: now
+  }
+  state.postedActionIds = state.postedActionIds || {}
+  state.postedActionIds[actionId] = posted
+  state.activeActionByWorkspace = state.activeActionByWorkspace || {}
+  state.activeActionByWorkspace[activeKey] = {
+    actionId,
+    messageId,
+    channelId,
+    workspaceId: workspace.id || action.workspaceId || null,
+    firstPostedAt: now,
+    postedAt: now,
+    title: action.title || actionId
+  }
+  state.messageToAction = state.messageToAction || {}
+  state.messageToAction[messageId] = actionId
+  if (systemKey) {
+    state.postedSystemKeys = state.postedSystemKeys || {}
+    state.postedSystemKeys[systemKey] = { actionId, messageId, postedAt: now }
+  }
+  recordRuntimeLedgerEvent(state, { ...action, id: actionId }, workspace, 'posted', {
+    messageId,
+    systemKey: systemKey || undefined,
+    guard: payload.guard || undefined,
+    review: review || undefined,
+    source: 'seo-runtime'
+  })
+  const result = { status: 'posted', actionId, messageId, channelId, activeKey, at: now }
+  state.runtimeExecutions[idempotencyKey] = result
+  writeState(state)
+  return { statusCode: 200, body: { ok: true, result, posted, active: state.activeActionByWorkspace[activeKey] } }
 }
 
 async function runNextApprovedCodeAction(payload = {}) {

@@ -2348,27 +2348,39 @@ async function postPendingActions({ workspace, targetChannelId }) {
       continue
     }
     const posted = await sendDiscordMessage(message, targetChannelId, actionComponents(enrichedAction))
-    recordActionLedger(enrichedAction, workspace, targetChannelId, 'posted', { messageId: posted.id, systemKey, guard: guard.reason || 'passed', review })
-    state.postedActionIds[id] = {
+    const runtimePosted = await markActionPostedThroughRuntime({
+      action: enrichedAction,
+      workspace,
+      targetChannelId,
       messageId: posted.id,
-      channelId: targetChannelId,
-      title: enrichedAction.title || '',
-      workspaceId: workspace?.id || null,
-      postedAt: new Date().toISOString()
-    }
-    state.activeActionByWorkspace[activeKey] = {
-      actionId: id,
-      messageId: posted.id,
-      channelId: targetChannelId,
-      workspaceId: workspace?.id || null,
-      firstPostedAt: new Date().toISOString(),
-      postedAt: new Date().toISOString()
-    }
-    state.messageToAction = state.messageToAction || {}
-    state.messageToAction[posted.id] = id
-    if (systemKey) {
-      state.postedSystemKeys = state.postedSystemKeys || {}
-      state.postedSystemKeys[systemKey] = { actionId: id, messageId: posted.id, postedAt: new Date().toISOString() }
+      activeKey,
+      systemKey,
+      guard: guard.reason || 'passed',
+      review
+    })
+    if (!runtimePosted.ok) {
+      recordActionLedger(enrichedAction, workspace, targetChannelId, 'posted', { messageId: posted.id, systemKey, guard: guard.reason || 'passed', review })
+      state.postedActionIds[id] = {
+        messageId: posted.id,
+        channelId: targetChannelId,
+        title: enrichedAction.title || '',
+        workspaceId: workspace?.id || null,
+        postedAt: new Date().toISOString()
+      }
+      state.activeActionByWorkspace[activeKey] = {
+        actionId: id,
+        messageId: posted.id,
+        channelId: targetChannelId,
+        workspaceId: workspace?.id || null,
+        firstPostedAt: new Date().toISOString(),
+        postedAt: new Date().toISOString()
+      }
+      state.messageToAction = state.messageToAction || {}
+      state.messageToAction[posted.id] = id
+      if (systemKey) {
+        state.postedSystemKeys = state.postedSystemKeys || {}
+        state.postedSystemKeys[systemKey] = { actionId: id, messageId: posted.id, postedAt: new Date().toISOString() }
+      }
     }
     if (isIndexingCheckAction(enrichedAction) && !isGscAuthAction(enrichedAction)) {
       await autoRunGscInspectionForPostedAction(enrichedAction, workspace, targetChannelId).catch((error) => {
@@ -2958,6 +2970,54 @@ async function fetchCurrentSeoActionThroughRuntime(workspace, targetChannelId, l
   } catch (error) {
     logThrottled(`runtime_current_action_failed:${workspace?.id || workspace?.repoFullName || workspace?.label || 'default'}`, 15 * 60 * 1000, 'runtime_current_action_failed', {
       workspace: workspace?.label || workspace?.id || workspace?.repoFullName || null,
+      error: error?.message || String(error)
+    })
+    return { ok: false, error: error?.message || String(error) }
+  }
+}
+
+async function markActionPostedThroughRuntime({ action, workspace, targetChannelId, messageId, activeKey, systemKey, guard, review }) {
+  const actionId = String(action?.id || '')
+  if (!actionId || !messageId || !targetChannelId) return { ok: false, error: 'missing_action_posted_payload' }
+  try {
+    const response = await fetch(`${seoRuntimeUrl}/seo/actions/${encodeURIComponent(actionId)}/posted`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        action,
+        workspace,
+        channelId: targetChannelId,
+        messageId,
+        activeKey,
+        systemKey,
+        guard,
+        review,
+        idempotencyKey: `discord:${messageId}:posted`
+      })
+    })
+    const text = await response.text()
+    let payload = null
+    try {
+      payload = text ? JSON.parse(text) : null
+    } catch {
+      payload = { raw: text }
+    }
+    if (!response.ok || payload?.ok === false) {
+      throw new Error(payload?.error || payload?.detail || text || `runtime_posted_http_${response.status}`)
+    }
+    reloadStateFromDisk()
+    log('runtime_action_posted', {
+      actionId,
+      messageId,
+      channelId: targetChannelId,
+      activeKey
+    })
+    return { ok: true, payload }
+  } catch (error) {
+    logThrottled(`runtime_action_posted_failed:${actionId}`, 15 * 60 * 1000, 'runtime_action_posted_failed', {
+      actionId,
+      messageId,
+      channelId: targetChannelId,
       error: error?.message || String(error)
     })
     return { ok: false, error: error?.message || String(error) }

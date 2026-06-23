@@ -18,6 +18,7 @@ GET  /seo/today?limit=20&workspace=<workspaceKey>
 POST /seo/workspaces/:workspaceKey/actions/live
 POST /seo/workspaces/:workspaceKey/actions/current
 POST /seo/workspaces/:workspaceKey/actions/next
+POST /seo/actions/:actionId/posted
 POST /seo/actions/:actionId/execute
 POST /seo/actions/run-next
 ```
@@ -72,6 +73,21 @@ Execution payload:
 
 The runtime stores idempotency results in `state.runtimeExecutions`.
 
+Posted action payload:
+
+```json
+{
+  "action": { "id": "seo_action_123", "title": "Improve /example" },
+  "workspace": { "id": "sc-domain:example.com__owner/repo__main", "repoFullName": "owner/repo" },
+  "channelId": "151215...",
+  "messageId": "151999...",
+  "activeKey": "sc-domain:example.com__owner/repo__main",
+  "idempotencyKey": "discord:<messageId>:posted"
+}
+```
+
+`POST /seo/actions/:actionId/posted` is used by the Hermes/Discord layer after a message is successfully posted. Runtime records `postedActionIds`, `activeActionByWorkspace`, `messageToAction`, `postedSystemKeys`, and the ledger `posted` event. This keeps Discord message state as a projection of runtime state instead of the source of truth.
+
 ## Transitional Behavior
 
 - `GET /seo/today` returns only current active/approved actions derived from the existing state file.
@@ -79,6 +95,7 @@ The runtime stores idempotency results in `state.runtimeExecutions`.
 - `POST /seo/workspaces/:workspaceKey/actions/live` fetches live SEO Monitor actions from the platform API.
 - `POST /seo/workspaces/:workspaceKey/actions/current` is the runtime-owned current work queue for Discord/Hermes: it fetches live actions, applies runtime guards, and returns one selected action or no-action.
 - `POST /seo/workspaces/:workspaceKey/actions/next` scores pending live actions against runtime state, workspace profile, prior results, ledger cooldowns, and hard guards for legal/admin/GSC/keyword-plan noise.
+- `POST /seo/actions/:actionId/posted` records posted/active Discord card state in runtime after Hermes posts a card.
 - `POST /execute` with `approved` queues the action in `approvedCodeActionQueue`.
 - `POST /execute` with `skipped`, `deprioritized`, or `stopped` updates `actionLedger` and clears the active action.
 - `POST /seo/actions/run-next` owns execution for queued approved code actions: it locks `codeActionRunning`, runs `codex-runner.mjs`, writes `codeActionResults`, updates `actionLedger`, records an SEO experiment, and clears the queue item.
