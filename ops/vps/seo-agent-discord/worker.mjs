@@ -1803,10 +1803,10 @@ async function buildIntegrationDoctorReport(workspaces) {
       fix: googleAdsRepair?.ok
         ? `Självreparerad via lokal OAuth-token (${googleAdsRepair.keywordPlannerStatus || 'ready'}).`
         : googleAdsRepair?.attempted
-          ? `Agenten försökte självreparera men misslyckades: ${googleAdsRepair.error}. ${googleAdsReconnectFix()}`
+          ? `Agenten försökte självreparera men misslyckades: ${googleAdsRepair.error}. ${await googleAdsReconnectFix()}`
           : googleAdsPayload?.error
-            ? `${googleAdsReconnectFix()} Fel: ${googleAdsPayload.error}`
-            : googleAdsReconnectFix()
+            ? `${await googleAdsReconnectFix()} Fel: ${googleAdsPayload.error}`
+            : await googleAdsReconnectFix()
     },
     {
       key: 'codex',
@@ -1857,13 +1857,15 @@ function formatGscCapabilityStatus({ platform, api, browser, gscPlatformConnecte
 }
 
 async function buildGscReconnectFix() {
-  if (gscClientId() && gscClientSecret()) {
+  const runtimeStart = await startGscOauthThroughRuntime().catch((error) => ({ ok: false, error: error?.message || String(error) }))
+  if (runtimeStart.ok) {
     return [
       'Öppna OAuth-länken och godkänn Search Console-access:',
-      gscOauthUrl(),
+      runtimeStart.authorizationUrl,
       'Efter callback/localhost-fel: klistra in hela callback-URL:en här eller skriv `klart` om den öppnades i noVNC-Firefox.'
     ].join('\n')
   }
+  if (gscClientId() && gscClientSecret()) return `OAuth-länk kunde inte skapas via runtime: ${runtimeStart.error || runtimeStart.status || 'okänt fel'}`
   const payload = await fetchPlatformJson('/api/platform/integrations/gsc/start', {
     method: 'POST',
     body: JSON.stringify({ returnTo: 'https://dashboard2.sebcastwall.se/#/growth/seo-monitor' })
@@ -1878,14 +1880,16 @@ async function buildGscReconnectFix() {
   return `OAuth-länk kunde inte skapas automatiskt: ${JSON.stringify(payload).slice(0, 300)}`
 }
 
-function googleAdsReconnectFix() {
-  if (env.GOOGLE_ADS_CLIENT_ID && env.GOOGLE_ADS_CLIENT_SECRET) {
+async function googleAdsReconnectFix() {
+  const runtimeStart = await startGoogleAdsOauthThroughRuntime().catch((error) => ({ ok: false, error: error?.message || String(error) }))
+  if (runtimeStart.ok) {
     return [
       'Öppna OAuth-länken och godkänn Google Ads-access:',
-      googleAdsOauthUrl(),
+      runtimeStart.authorizationUrl,
       'Efter callback/localhost-fel: klistra in hela callback-URL:en här eller skriv `klart` om den öppnades i noVNC-Firefox.'
     ].join('\n')
   }
+  if (env.GOOGLE_ADS_CLIENT_ID && env.GOOGLE_ADS_CLIENT_SECRET) return `Google Ads OAuth-länk kunde inte skapas via runtime: ${runtimeStart.error || runtimeStart.status || 'okänt fel'}`
   return 'Google Ads OAuth-länk kan inte skapas automatiskt eftersom GOOGLE_ADS_CLIENT_ID/SECRET saknas i agentens env.'
 }
 
@@ -2737,18 +2741,12 @@ async function runGscInspectionAction(action, workspace, targetChannelId, source
     gscProperty: workspace?.gscProperty || '',
     targetUrl
   }
-  const result = await runGscInspectionThroughRuntime(input).catch(async (error) => {
+  const result = await runGscInspectionThroughRuntime(input).catch((error) => {
     logThrottled('runtime_gsc_inspection_failed', 15 * 60 * 1000, 'runtime_gsc_inspection_failed', {
       targetUrl,
       error: error?.message || String(error)
     })
-    const apiResult = await runGscUrlInspectionApi(input).catch((apiError) => ({ ok: false, status: 'api_exception', error: apiError?.message || String(apiError) }))
-    const shouldFallbackToUi = !apiResult.ok && /missing_oauth_config|google_api_401|google_api_403|api_exception/i.test(String(apiResult.status || apiResult.error || ''))
-    return apiResult.ok
-      ? apiResult
-      : shouldFallbackToUi
-        ? await runGscFirefoxUiTool(input).then((uiResult) => ({ ...uiResult, apiFallbackReason: apiResult.error || apiResult.status || 'api_unavailable' })).catch((uiError) => ({ ok: false, error: uiError?.message || String(uiError), apiFallbackReason: apiResult.error || apiResult.status || 'api_unavailable' }))
-        : apiResult
+    return { ok: false, status: 'runtime_unavailable', error: error?.message || String(error) }
   })
   const observationPath = result?.observation?.path || ''
   const indexedByGsc = result?.inspection?.status === 'indexed' && Number(result?.inspection?.confidence || 0) >= 0.8
@@ -4366,11 +4364,10 @@ async function runGscBrowserTool(input) {
 
 async function formatGscOauthStartMessage() {
   const runtimeStart = await startGscOauthThroughRuntime().catch((error) => ({ ok: false, error: error?.message || String(error) }))
-  const authUrl = runtimeStart.ok ? runtimeStart.authorizationUrl : gscOauthUrl()
-  if (gscClientId() && gscClientSecret()) {
+  if (runtimeStart.ok) {
     return [
       'Google Search Console OAuth för SEO-agentens URL Inspection API:',
-      authUrl,
+      runtimeStart.authorizationUrl,
       '',
       ...formatNoVncAccessLines(),
       '',
@@ -4379,6 +4376,9 @@ async function formatGscOauthStartMessage() {
       'Om callbacken landar på en sida med fel men URL:en fortfarande innehåller `code=...`: klistra in hela URL:en eller skriv `gsc code ...`.',
       'Agenten sparar refresh-token lokalt på VPS och använder API:t före noVNC/Firefox.'
     ].join('\n')
+  }
+  if (gscClientId() && gscClientSecret()) {
+    return `GSC OAuth kunde inte starta via runtime: ${runtimeStart.error || runtimeStart.status || 'okänt fel'}`
   }
   try {
     const payload = await fetchPlatformJson('/api/platform/integrations/gsc/start', {
@@ -4418,19 +4418,6 @@ async function startGscOauthThroughRuntime() {
   return payload
 }
 
-function gscOauthUrl() {
-  const params = new URLSearchParams({
-    client_id: gscClientId(),
-    redirect_uri: gscOauthRedirectUri,
-    response_type: 'code',
-    scope: 'https://www.googleapis.com/auth/webmasters.readonly',
-    access_type: 'offline',
-    prompt: 'consent',
-    state: gscOauthState
-  })
-  return `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`
-}
-
 function gscClientId() {
   return env.GSC_CLIENT_ID || env.GOOGLE_SEARCH_CONSOLE_CLIENT_ID || env.GOOGLE_CLIENT_ID || ''
 }
@@ -4457,13 +4444,7 @@ async function handleGscOauthCode(code, message, targetChannelId) {
     return
   }
   try {
-    const exchanged = await exchangeGscOauthCodeThroughRuntime(code).catch(async () => {
-      const token = await exchangeGscOauthCode(code)
-      if (!token.refreshToken) return { ok: false, status: 'missing_refresh_token', error: 'Google returned no refresh token' }
-      saveGscRefreshToken(token.refreshToken)
-      const doctor = await runGscUrlInspectionApi({ command: 'doctor' }).catch((error) => ({ ok: false, error: error?.message || String(error) }))
-      return { ok: true, doctor }
-    })
+    const exchanged = await exchangeGscOauthCodeThroughRuntime(code)
     if (!exchanged.ok) {
       await sendDiscordMessage(exchanged.status === 'missing_refresh_token'
         ? 'Google svarade utan GSC refresh token. Be mig starta om GSC OAuth och godkänn hela consent-flödet igen.'
@@ -4498,30 +4479,6 @@ async function exchangeGscOauthCodeThroughRuntime(code) {
   return payload
 }
 
-async function exchangeGscOauthCode(code) {
-  const response = await fetch('https://oauth2.googleapis.com/token', {
-    method: 'POST',
-    headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      code,
-      client_id: gscClientId(),
-      client_secret: gscClientSecret(),
-      redirect_uri: gscOauthRedirectUri,
-      grant_type: 'authorization_code'
-    })
-  })
-  const payload = await response.json().catch(() => ({}))
-  if (!response.ok) throw new Error(payload.error_description || payload.error || `google_oauth_${response.status}`)
-  return {
-    refreshToken: payload.refresh_token ? String(payload.refresh_token) : '',
-    accessToken: payload.access_token ? String(payload.access_token) : ''
-  }
-}
-
-function saveGscRefreshToken(refreshToken) {
-  writeFileSync(join(stateDir, 'gsc-refresh-token.txt'), refreshToken, { mode: 0o600 })
-}
-
 async function openGscOauthInFirefox() {
   if (!gscClientId() || !gscClientSecret()) {
     return [
@@ -4529,8 +4486,9 @@ async function openGscOauthInFirefox() {
       'Be mig kontrollera integrationsstatusen när env är uppdaterad.'
     ].join('\n')
   }
-  const runtimeStart = await startGscOauthThroughRuntime().catch(() => null)
-  const authUrl = runtimeStart?.authorizationUrl || gscOauthUrl()
+  const runtimeStart = await startGscOauthThroughRuntime().catch((error) => ({ ok: false, error: error?.message || String(error) }))
+  if (!runtimeStart.ok) return `GSC OAuth kunde inte starta via runtime: ${runtimeStart.error || runtimeStart.status || 'okänt fel'}`
+  const authUrl = runtimeStart.authorizationUrl
   const result = await runGscFirefoxUiTool({ command: 'open-url', url: authUrl }).catch((error) => ({ ok: false, error: error?.message || String(error) }))
   if (!result.ok) {
     return [
@@ -4552,13 +4510,7 @@ async function openGscOauthInFirefox() {
   const completedCode = completed.ok ? extractGscOauthCode(completed.currentUrl || '') : ''
   if (completedCode) {
     try {
-      const exchanged = await exchangeGscOauthCodeThroughRuntime(completedCode).catch(async () => {
-        const token = await exchangeGscOauthCode(completedCode)
-        if (!token.refreshToken) return { ok: false, status: 'missing_refresh_token' }
-        saveGscRefreshToken(token.refreshToken)
-        const doctor = await runGscUrlInspectionApi({ command: 'doctor' }).catch((error) => ({ ok: false, error: error?.message || String(error) }))
-        return { ok: true, doctor }
-      })
+      const exchanged = await exchangeGscOauthCodeThroughRuntime(completedCode)
       if (exchanged.ok) {
         const doctor = exchanged.doctor || { ok: false, status: 'doctor_missing' }
         state.pendingBrowserOauth = null
@@ -4634,7 +4586,7 @@ async function readPendingOauthFromFirefox(message, targetChannelId) {
 
 async function formatGoogleAdsOauthStartMessage() {
   const runtimeStart = await startGoogleAdsOauthThroughRuntime().catch((error) => ({ ok: false, error: error?.message || String(error) }))
-  const authUrl = runtimeStart.ok ? runtimeStart.authorizationUrl : googleAdsOauthUrl()
+  const authUrl = runtimeStart.ok ? runtimeStart.authorizationUrl : ''
   if (!env.GOOGLE_ADS_CLIENT_ID || !env.GOOGLE_ADS_CLIENT_SECRET) {
     return [
       'Google Ads OAuth kan inte starta: SEO-agenten saknar GOOGLE_ADS_CLIENT_ID eller GOOGLE_ADS_CLIENT_SECRET på VPS:en.',
@@ -4643,7 +4595,7 @@ async function formatGoogleAdsOauthStartMessage() {
   }
   return [
     'Google Ads OAuth: öppna länken, logga in med kontot som har Google Ads-access och godkänn.',
-    authUrl,
+    authUrl || `Kunde inte skapa OAuth-länk via runtime: ${runtimeStart.error || runtimeStart.status || 'okänt fel'}`,
     '',
     'Efteråt kan browsern hamna på localhost och visa fel. Det är okej: kopiera hela URL:en från adressfältet eller bara `code=...` och klistra in här.',
     'Agenten skriver aldrig ut refresh token i Discord.'
@@ -4669,19 +4621,6 @@ async function startGoogleAdsOauthThroughRuntime() {
   return payload
 }
 
-function googleAdsOauthUrl() {
-  const params = new URLSearchParams({
-    client_id: env.GOOGLE_ADS_CLIENT_ID || '',
-    redirect_uri: googleAdsOauthRedirectUri,
-    response_type: 'code',
-    scope: 'https://www.googleapis.com/auth/adwords',
-    access_type: 'offline',
-    prompt: 'consent',
-    state: googleAdsOauthState
-  })
-  return `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`
-}
-
 async function openGoogleAdsOauthInFirefox() {
   if (!env.GOOGLE_ADS_CLIENT_ID || !env.GOOGLE_ADS_CLIENT_SECRET) {
     return [
@@ -4689,8 +4628,9 @@ async function openGoogleAdsOauthInFirefox() {
       'Be mig kontrollera integrationsstatusen när env är uppdaterad.'
     ].join('\n')
   }
-  const runtimeStart = await startGoogleAdsOauthThroughRuntime().catch(() => null)
-  const authUrl = runtimeStart?.authorizationUrl || googleAdsOauthUrl()
+  const runtimeStart = await startGoogleAdsOauthThroughRuntime().catch((error) => ({ ok: false, error: error?.message || String(error) }))
+  if (!runtimeStart.ok) return `Google Ads OAuth kunde inte starta via runtime: ${runtimeStart.error || runtimeStart.status || 'okänt fel'}`
+  const authUrl = runtimeStart.authorizationUrl
   const result = await runGscFirefoxUiTool({ command: 'open-url', url: authUrl }).catch((error) => ({ ok: false, error: error?.message || String(error) }))
   if (!result.ok) {
     return [
@@ -4749,13 +4689,7 @@ async function handleGoogleAdsOauthCode(code, message, targetChannelId) {
     return
   }
   try {
-    const exchanged = await exchangeGoogleAdsOauthCodeThroughRuntime(code).catch(async () => {
-      const token = await exchangeGoogleAdsOauthCode(code)
-      if (!token.refreshToken) return { ok: false, status: 'missing_refresh_token' }
-      saveGoogleAdsRefreshToken(token.refreshToken)
-      const platformSync = await syncGoogleAdsRefreshTokenToPlatform(token.refreshToken)
-      return { ok: true, platformSync }
-    })
+    const exchanged = await exchangeGoogleAdsOauthCodeThroughRuntime(code)
     if (!exchanged.ok) {
       await sendDiscordMessage('Google svarade utan refresh token. Be mig starta om Google Ads-kopplingen och godkänn hela consent-flödet igen.', targetChannelId)
       return
@@ -4818,31 +4752,6 @@ async function syncGoogleAdsRefreshTokenToPlatform(refreshToken) {
       error: error?.message || String(error)
     }
   }
-}
-
-async function exchangeGoogleAdsOauthCode(code) {
-  const response = await fetch('https://oauth2.googleapis.com/token', {
-    method: 'POST',
-    headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      code,
-      client_id: env.GOOGLE_ADS_CLIENT_ID || '',
-      client_secret: env.GOOGLE_ADS_CLIENT_SECRET || '',
-      redirect_uri: googleAdsOauthRedirectUri,
-      grant_type: 'authorization_code'
-    })
-  })
-  const payload = await response.json().catch(() => ({}))
-  if (!response.ok) throw new Error(payload.error_description || payload.error || `google_oauth_${response.status}`)
-  return {
-    refreshToken: payload.refresh_token ? String(payload.refresh_token) : '',
-    accessToken: payload.access_token ? String(payload.access_token) : ''
-  }
-}
-
-function saveGoogleAdsRefreshToken(refreshToken) {
-  const tokenPath = join(stateDir, 'google-ads-refresh-token.txt')
-  writeFileSync(tokenPath, refreshToken, { mode: 0o600 })
 }
 
 function loadGoogleAdsRefreshToken() {
