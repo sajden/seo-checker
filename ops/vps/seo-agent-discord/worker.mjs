@@ -43,6 +43,7 @@ const codeAutomationEnabled = env.SEO_AGENT_CODE_AUTOMATION_ENABLED === 'true'
 const autonomousCodeEnabled = env.SEO_AGENT_AUTONOMOUS_CODE_ENABLED !== 'false'
 const autonomousCodePerWorkspacePerDay = Number(env.SEO_AGENT_AUTONOMOUS_CODE_PER_WORKSPACE_PER_DAY || '0')
 const opportunityScoutMinIntervalMs = Number(env.SEO_AGENT_OPPORTUNITY_SCOUT_MIN_INTERVAL_MS || String(3 * 60 * 60 * 1000))
+const opportunityScoutGrowthMinIntervalMs = Number(env.SEO_AGENT_OPPORTUNITY_SCOUT_GROWTH_MIN_INTERVAL_MS || String(60 * 60 * 1000))
 const opportunityScoutInvalidCooldownMs = Number(env.SEO_AGENT_OPPORTUNITY_SCOUT_INVALID_COOLDOWN_MS || String(3 * 60 * 60 * 1000))
 const codexChatEnabled = env.SEO_AGENT_CODEX_CHAT_ENABLED !== 'false'
 const smartOutboundGuardEnabled = env.SEO_AGENT_SMART_OUTBOUND_GUARD !== 'false'
@@ -1341,6 +1342,7 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
   const repoDir = resolveRepoCheckoutDir(repoFullName)
   if (!repoDir) return null
   const key = workspaceProfileKey(workspace, targetChannelId)
+  const profile = ensureWorkspaceProfile(workspace, targetChannelId)
   const previousScout = state.codexOpportunityScout?.[key]
   const previousInvalidScoutAt = Date.parse(previousScout?.at || '')
   const previousInvalidScoutAgeMs = Number.isFinite(previousInvalidScoutAt) ? Date.now() - previousInvalidScoutAt : Infinity
@@ -1355,16 +1357,16 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
   }
   const previousScoutAt = Date.parse(previousScout?.at || 0)
   const scoutAgeMs = Number.isFinite(previousScoutAt) ? Date.now() - previousScoutAt : Infinity
-  if (scoutAgeMs >= 0 && scoutAgeMs < opportunityScoutMinIntervalMs) {
+  const scoutMinIntervalMs = opportunityScoutIntervalForWorkspace(profile, context)
+  if (scoutAgeMs >= 0 && scoutAgeMs < scoutMinIntervalMs) {
     logThrottled(`codex_opportunity_skipped:${key}:recent`, 60 * 60 * 1000, 'codex_opportunity_skipped', {
       workspace: workspace?.label || workspace?.id || null,
       reason: 'recently_scouted',
       ageMinutes: Math.round(scoutAgeMs / 60000),
-      minIntervalMinutes: Math.round(opportunityScoutMinIntervalMs / 60000)
+      minIntervalMinutes: Math.round(scoutMinIntervalMs / 60000)
     })
     return null
   }
-  const profile = ensureWorkspaceProfile(workspace, targetChannelId)
   const keywordMap = ensureKeywordMap(workspace, targetChannelId)
   const learningSummary = buildWorkspaceLearningSummary(key)
   const experiments = Object.values(state.seoExperiments || {})
@@ -1528,6 +1530,13 @@ function parseCodexOpportunity(text) {
   }
 }
 
+function opportunityScoutIntervalForWorkspace(profile, context = {}) {
+  const rejected = Array.isArray(context.rejectionReasons) ? context.rejectionReasons : []
+  const weakQueue = !rejected.length || rejected.length >= 4 || rejected.some((item) => /already_result|missing_target_url|not_code_action|guard:|recently/i.test(String(item?.reason || '')))
+  if (profile?.siteType === 'ai_consultancy' && weakQueue) return opportunityScoutGrowthMinIntervalMs
+  return opportunityScoutMinIntervalMs
+}
+
 function keywordPriorityWeight(priority) {
   return priority === 'critical' ? 0 : priority === 'high' ? 1 : priority === 'medium' ? 2 : 3
 }
@@ -1636,6 +1645,47 @@ function buildSebcastwallGoalGapAction(workspace, targetChannelId = null) {
       keyword: 'AI agenter företag',
       why: 'Sebcastwall ska äga AI-agent/kod/automation-spåret. Befintlig AI-agentsida kan förbättras mot konkreta interna arbetsflöden istället för generisk AI-copy.',
       recommendedAction: 'I repo: uppdatera /tjanster/ai-agenter med konkreta interna agentflöden för företag, exempel på research, support, CRM/fakturaflöden utan att bli bokföringsfokuserad, mänsklig kontroll, logging, säkerhet, ROI och interna länkar till app/webbutveckling och AI-automatisering.'
+    },
+    {
+      slug: 'growth-ai-training-workshops',
+      title: 'Growth gap: stärk AI-utbildning mot workshops och team',
+      targetUrl: 'https://sebcastwall.se/tjanster/ai-utbildning',
+      keyword: 'AI workshop företag',
+      why: 'Sebcastwall har svag SEO och bör tydligare äga AI-utbildning/workshop-spåret. Detta är en befintlig tjänstesida med kommersiell intent och låg risk.',
+      recommendedAction: 'I repo: uppdatera /tjanster/ai-utbildning med tydligare workshop-erbjudande för företag/team, exempel på upplägg, målgrupper, praktiska kod/AI-agent-övningar, beslutsstöd, FAQ och CTA. Länka till AI-agenter, AI-automatisering och app/webbutveckling där det stärker köpresan.'
+    },
+    {
+      slug: 'growth-internal-ai-tools',
+      title: 'Growth gap: stärk interna verktyg som AI-konsultcase',
+      targetUrl: 'https://sebcastwall.se/tjanster/interna-verktyg',
+      keyword: 'AI interna verktyg',
+      why: 'Sebcastwall ska ranka för AI, kodning och interna verktyg. Befintlig sida för interna verktyg kan kopplas hårdare till AI-agenter och automation utan att bli integrationsspår.',
+      recommendedAction: 'I repo: uppdatera /tjanster/interna-verktyg med konkreta AI-drivna interna verktyg: researchpaneler, ärendehantering, rapportflöden, datakopplingar, behörigheter och loggar. Lägg till internlänkar till AI-agenter och AI-automatisering samt tydlig CTA för AI-konsultation.'
+    },
+    {
+      slug: 'growth-ai-services-hub',
+      title: 'Growth gap: gör tjänstehubben tydligare för AI-tjänster',
+      targetUrl: 'https://sebcastwall.se/tjanster',
+      keyword: 'AI tjänster företag',
+      why: 'När SEO:n är svag behöver tjänstehubben fördela intern auktoritet till de kommersiella AI-sidorna och göra erbjudandet lättare att förstå.',
+      recommendedAction: 'I repo: uppdatera /tjanster med tydligare hubb för AI-tjänster: AI-konsult, AI-agenter, AI-automatisering, AI-utbildning, app/web och interna verktyg. Lägg korta köpscenarion, jämförelse mellan tjänsterna och starka interna länkar.'
+    },
+    {
+      slug: 'growth-ai-internal-linking',
+      title: 'Growth gap: stärk internlänkning mellan AI-sidor',
+      targetUrl: 'https://sebcastwall.se/',
+      keyword: 'AI konsult företag',
+      category: 'internal-links',
+      why: 'Sebcastwall behöver snabbare bygga topical authority runt AI-konsult, AI-utbildning och AI-agenter. Internlänkar från startsida och relevanta artiklar är låg risk och kan stödja de kommersiella sidorna.',
+      recommendedAction: 'I repo: lägg in eller förbättra interna länkar från startsidan och relevanta artiklar till /tjanster/ai-agenter, /tjanster/ai-automatisering, /tjanster/ai-utbildning och /tjanster/interna-verktyg. Använd naturliga ankartexter som AI-konsult för företag, AI-agenter för företag, AI-utbildning för team och interna AI-verktyg. Ändra inte integration-only-sidor om det inte direkt stödjer AI-spåret.'
+    },
+    {
+      slug: 'growth-chatgpt-for-business',
+      title: 'Growth gap: stärk ChatGPT-artikeln mot företagsintent',
+      targetUrl: 'https://sebcastwall.se/artiklar/chatgpt-for-foretag-kanslig-data',
+      keyword: 'ChatGPT för företag',
+      why: 'Artikeln kan fånga informationsintent runt ChatGPT i företag och länka vidare till AI-utbildning, AI-agenter och säker automation.',
+      recommendedAction: 'I repo: uppdatera artikeln om ChatGPT för företag med tydligare praktiska scenarion, risker kring känslig data, policy/checklista, när man behöver AI-utbildning eller egen agentlösning, samt interna länkar till AI-utbildning, AI-agenter och AI-automatisering.'
     }
   ]
   for (const candidate of candidates) {
@@ -5811,7 +5861,12 @@ function defaultWorkspaceProfile(workspace) {
         { keyword: 'AI automatisering företag', targetUrl: 'https://sebcastwall.se/tjanster/ai-automatisering', intent: 'commercial', priority: 'high' },
         { keyword: 'apputveckling företag', targetUrl: 'https://sebcastwall.se/tjanster/app-webbutveckling', intent: 'commercial', priority: 'high' },
         { keyword: 'AI utbildning företag', targetUrl: 'https://sebcastwall.se/tjanster/ai-utbildning', intent: 'commercial', priority: 'medium' },
-        { keyword: 'interna AI verktyg', targetUrl: 'https://sebcastwall.se/tjanster/ai-agenter', intent: 'commercial', priority: 'medium' }
+        { keyword: 'AI workshop företag', targetUrl: 'https://sebcastwall.se/tjanster/ai-utbildning', intent: 'commercial', priority: 'high' },
+        { keyword: 'AI tjänster företag', targetUrl: 'https://sebcastwall.se/tjanster', intent: 'commercial', priority: 'high' },
+        { keyword: 'interna AI verktyg', targetUrl: 'https://sebcastwall.se/tjanster/interna-verktyg', intent: 'commercial', priority: 'high' },
+        { keyword: 'AI interna verktyg', targetUrl: 'https://sebcastwall.se/tjanster/interna-verktyg', intent: 'commercial', priority: 'medium' },
+        { keyword: 'ChatGPT för företag', targetUrl: 'https://sebcastwall.se/artiklar/chatgpt-for-foretag-kanslig-data', intent: 'informational_to_commercial', priority: 'medium' },
+        { keyword: 'Google AI Studio företag', targetUrl: 'https://sebcastwall.se/artiklar/google-ai-studio', intent: 'informational_to_commercial', priority: 'medium' }
       ],
       autonomy: 'autonomous_low_risk'
     }

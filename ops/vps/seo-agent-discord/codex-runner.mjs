@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFile } from 'node:child_process'
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 
@@ -162,13 +162,30 @@ async function runBestBuild(cwd) {
   const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'))
   const scripts = pkg.scripts || {}
   if (scripts.typecheck) await runPackageScript(cwd, 'typecheck')
-  if (scripts.build) await runPackageScript(cwd, 'build')
+  if (scripts.build) await runBuildScriptWithRecovery(cwd)
 }
 
 async function runPackageScript(cwd, script) {
   if (existsSync(join(cwd, 'pnpm-lock.yaml'))) return run('pnpm', ['run', script], cwd)
   if (existsSync(join(cwd, 'yarn.lock'))) return run('yarn', [script], cwd)
   return run('npm', ['run', script], cwd)
+}
+
+async function runBuildScriptWithRecovery(cwd) {
+  try {
+    return await runPackageScript(cwd, 'build')
+  } catch (error) {
+    if (!isRecoverableNextBuildCacheError(error)) throw error
+    rmSync(join(cwd, '.next'), { recursive: true, force: true })
+    return runPackageScript(cwd, 'build')
+  }
+}
+
+function isRecoverableNextBuildCacheError(error) {
+  const text = `${error?.message || ''}\n${error?.stdout || ''}\n${error?.stderr || ''}`.toLowerCase()
+  return text.includes('.next/')
+    && text.includes('enoent')
+    && (text.includes('build-manifest.json') || text.includes('pages-manifest.json') || text.includes('app-build-manifest.json'))
 }
 
 async function run(cmd, args, cwd) {
