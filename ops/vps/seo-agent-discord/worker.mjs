@@ -2265,7 +2265,27 @@ async function postPendingActions({ workspace, targetChannelId }) {
   }
   if (active) delete state.activeActionByWorkspace[activeKey]
   const pending = items.filter((item) => item && item.status === 'pending')
-  for (const action of prioritizeActionQueue(pending, workspace, targetChannelId)) {
+  const runtimeSelection = await selectNextActionThroughRuntime({
+    workspace,
+    targetChannelId,
+    actions: pending,
+    workspacePolicy: actions.workspacePolicy
+  })
+  let orderedPending = prioritizeActionQueue(pending, workspace, targetChannelId)
+  if (runtimeSelection.ok) {
+    const selectedId = String(runtimeSelection.payload?.selectedActionId || '')
+    if (!selectedId) {
+      logThrottled(`runtime_no_postable_candidate:${activeKey}`, 30 * 60 * 1000, 'runtime_no_postable_candidate', {
+        workspace: workspace?.label || workspace?.id || null,
+        candidateCount: runtimeSelection.payload?.candidateCount ?? pending.length,
+        rejected: runtimeSelection.payload?.rejected?.slice?.(0, 6) || []
+      })
+      return
+    }
+    const selected = pending.find((item) => String(item?.id || '') === selectedId)
+    if (selected) orderedPending = [selected]
+  }
+  for (const action of orderedPending) {
     const id = String(action.id || '')
     if (!id || recentlyPostedAction(id)) continue
     const systemKey = systemClusterKey(action)
@@ -2828,6 +2848,45 @@ async function executeActionDecisionThroughRuntime({
       actionId,
       decision,
       source,
+      error: error?.message || String(error)
+    })
+    return { ok: false, error: error?.message || String(error) }
+  }
+}
+
+async function selectNextActionThroughRuntime({ workspace, targetChannelId, actions, workspacePolicy }) {
+  const workspaceKey = encodeURIComponent(workspaceProfileKey(workspace, targetChannelId))
+  try {
+    const response = await fetch(`${seoRuntimeUrl}/seo/workspaces/${workspaceKey}/actions/next`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        workspace,
+        targetChannelId,
+        workspacePolicy: workspacePolicy || '',
+        actions: Array.isArray(actions) ? actions : []
+      })
+    })
+    const text = await response.text()
+    let payload = null
+    try {
+      payload = text ? JSON.parse(text) : null
+    } catch {
+      payload = { raw: text }
+    }
+    if (!response.ok || payload?.ok === false) {
+      throw new Error(payload?.error || payload?.detail || text || `runtime_http_${response.status}`)
+    }
+    log('runtime_next_action_selected', {
+      workspace: workspace?.label || workspace?.id || workspace?.repoFullName || null,
+      selectedActionId: payload?.selectedActionId || null,
+      acceptedCount: payload?.acceptedCount ?? null,
+      candidateCount: payload?.candidateCount ?? null
+    })
+    return { ok: true, payload }
+  } catch (error) {
+    log('runtime_next_action_failed_fallback_to_worker', {
+      workspace: workspace?.label || workspace?.id || workspace?.repoFullName || null,
       error: error?.message || String(error)
     })
     return { ok: false, error: error?.message || String(error) }

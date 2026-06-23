@@ -15,8 +15,22 @@ This lets us add the runtime contract without breaking the current Discord worke
 ```text
 GET  /healthz
 GET  /seo/today?limit=20&workspace=<workspaceKey>
+POST /seo/workspaces/:workspaceKey/actions/next
 POST /seo/actions/:actionId/execute
 ```
+
+Candidate selection payload:
+
+```json
+{
+  "workspace": { "label": "sebcastwall.se", "repoFullName": "sajden/sebcastwall" },
+  "targetChannelId": "151215...",
+  "workspacePolicy": "Prioritera AI...",
+  "actions": []
+}
+```
+
+The runtime returns `selectedActionId`, a compact review, and rejected reasons. A null `selectedActionId` means the runtime intentionally found no safe action to post.
 
 Execution payload:
 
@@ -35,11 +49,12 @@ The runtime stores idempotency results in `state.runtimeExecutions`.
 
 - `GET /seo/today` returns only current active/approved actions derived from the existing state file.
 - `GET /seo/today?includeLedger=true` is a debug view for non-terminal ledger actions. The default intentionally does not recreate old proposed actions from historical ledger state.
+- `POST /seo/workspaces/:workspaceKey/actions/next` scores pending live actions against runtime state, workspace profile, prior results, ledger cooldowns, and hard guards for legal/admin/GSC/keyword-plan noise.
 - `POST /execute` with `approved` queues the action in `approvedCodeActionQueue`.
 - `POST /execute` with `skipped`, `deprioritized`, or `stopped` updates `actionLedger` and clears the active action.
-- The existing `seo-agent-discord.service` still performs Codex/Git execution for queued actions.
+- The existing `seo-agent-discord.service` still fetches platform actions, renders Discord cards, and performs Codex/Git execution for queued actions.
 
-This is intentionally not the final architecture. The next step is to make the Discord worker call this runtime instead of mutating state directly.
+This is intentionally not the final architecture. The next step is to move platform action fetching and Codex/Git execution into the runtime as separate service-owned tools.
 
 ## VPS Layout
 
