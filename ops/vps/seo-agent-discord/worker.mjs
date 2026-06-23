@@ -944,6 +944,13 @@ async function maybeQueueAutonomousCodeActions(workspaces) {
       })
       continue
     }
+    if (autonomousCandidateAlreadyQueuedOrRunning(candidate.action, workspace, targetChannelId)) {
+      logThrottled(`autonomous_candidate_already_inflight:${candidate.action.id}`, 30 * 60 * 1000, 'autonomous_candidate_already_inflight', {
+        workspace: workspace.label || workspace.id || null,
+        actionId: candidate.action.id
+      })
+      continue
+    }
     state.approvedCodeActionQueue = state.approvedCodeActionQueue || {}
     state.approvedCodeActionQueue[candidate.action.id] = {
       ...candidate.action,
@@ -980,6 +987,27 @@ async function maybeQueueAutonomousCodeActions(workspaces) {
     saveState()
     return
   }
+}
+
+function autonomousCandidateAlreadyQueuedOrRunning(action, workspace, targetChannelId) {
+  const actionId = action?.id
+  if (!actionId) return true
+  if (state.codeActionRunning?.actionId === actionId) return true
+  if (state.approvedCodeActionQueue?.[actionId]) return true
+  const workspaceKey = activeWorkspaceActionKey(workspace, targetChannelId)
+  for (const queued of Object.values(state.approvedCodeActionQueue || {})) {
+    if (!queued) continue
+    if (queued.id === actionId) return true
+    if ((queued.channelId || '') === targetChannelId) return true
+    const queuedRepo = String(queued.repoFullName || '')
+    if (queuedRepo && queuedRepo === String(workspace?.repoFullName || '')) return true
+  }
+  if (state.codeActionRunning?.workspaceKey === workspaceKey) return true
+  return Object.values(state.actionLedger || {}).some((record) => {
+    if (record?.actionId !== actionId) return false
+    const last = Date.parse(record.lastEventAt || '')
+    return Boolean(last && Date.now() - last < 10 * 60 * 1000 && ['approved', 'running'].includes(String(record.status || '')))
+  })
 }
 
 function activeActionBlocksAutonomousCode(active) {

@@ -8,6 +8,7 @@ const exec = promisify(execFile)
 const runnerEnv = { ...process.env, PATH: `/home/deploy/.npm-global/bin:/home/deploy/.local/bin:${process.env.PATH || ""}` }
 const codexCli = process.env.CODEX_CLI || '/home/deploy/.npm-global/bin/codex'
 const workspaceRoot = '/home/deploy/seo-agent-workspaces'
+const skipGithubActions = process.env.SEO_AGENT_SKIP_GITHUB_ACTIONS !== 'false'
 const action = JSON.parse(readFileSync(process.argv[2], 'utf8'))
 const repoName = String(action.repoFullName || '').split('/')[1]
 if (!repoName) throw new Error('Missing repoFullName in action payload')
@@ -55,7 +56,7 @@ const diff = await run('git', ['diff', '--cached', '--stat'], repoDir)
 if (!diff.stdout.trim()) throw new Error('Codex made no changes')
 await run('git', ['config', 'user.name', 'SEO Agent'], repoDir)
 await run('git', ['config', 'user.email', 'seo-agent@sebcastwall.se'], repoDir)
-await run('git', ['commit', '-m', `${action.title || 'SEO action'}\n\nSEO-action-id: ${action.id}`], repoDir)
+await run('git', ['commit', '-m', seoAgentCommitMessage(action.title || 'SEO action', `SEO-action-id: ${action.id}`)], repoDir)
 const commit = await run('git', ['rev-parse', '--short', 'HEAD'], repoDir)
 await run('git', ['push', 'origin', `HEAD:${action.branch || 'main'}`], repoDir)
 
@@ -108,7 +109,7 @@ async function recoverInterruptedWorktree(cwd, input) {
   }
   await run('git', ['config', 'user.name', 'SEO Agent'], cwd)
   await run('git', ['config', 'user.email', 'seo-agent@sebcastwall.se'], cwd)
-  await run('git', ['commit', '-m', `Recover interrupted SEO agent changes\n\nPrevious action context: ${input.id || input.title || 'unknown'}`], cwd)
+  await run('git', ['commit', '-m', seoAgentCommitMessage('Recover interrupted SEO agent changes', `Previous action context: ${input.id || input.title || 'unknown'}`)], cwd)
   await run('git', ['push', 'origin', `HEAD:${input.branch || 'main'}`], cwd)
   recordCodexUsage({
     agent: 'seo-agent',
@@ -186,6 +187,14 @@ function isRecoverableNextBuildCacheError(error) {
   return text.includes('.next/')
     && text.includes('enoent')
     && (text.includes('build-manifest.json') || text.includes('pages-manifest.json') || text.includes('app-build-manifest.json'))
+}
+
+function seoAgentCommitMessage(subject, body = '') {
+  const cleanSubject = String(subject || 'SEO action').trim()
+  const suffix = skipGithubActions && !/\[(skip ci|ci skip|no ci|skip actions|actions skip)\]/i.test(cleanSubject)
+    ? ' [skip ci]'
+    : ''
+  return `${cleanSubject}${suffix}${body ? `\n\n${body}` : ''}`
 }
 
 async function run(cmd, args, cwd) {
