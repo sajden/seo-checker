@@ -54,14 +54,11 @@ if (!existsSync(stateDir)) mkdirSync(stateDir, { recursive: true })
 const state = loadState()
 ensureAutonomousAgentState()
 let tickRunning = false
+const runtimeLiveActionsCache = new Map()
 
 log('starting', { channelId, allowedUserId, platformApiUrl, seoRuntimeUrl, pollMs, dailyHourUtc, runCheckEveryMs, workspaceChannelCount: Object.keys(workspaceChannels).length, automationEnabled, codeAutomationEnabled })
 startDiscordInteractionClient()
 await postStartupOnce()
-
-setInterval(() => {
-  tickGuarded().catch((error) => log('tick_failed', { error: error?.message || String(error) }))
-}, pollMs).unref()
 
 while (true) {
   await tickGuarded().catch((error) => log('tick_failed', { error: error?.message || String(error) }))
@@ -4614,6 +4611,12 @@ async function fetchSeoMonitorActions(workspace, limit) {
 
 async function fetchSeoMonitorActionsViaRuntime(workspace, limit, options = {}) {
   const workspaceKey = encodeURIComponent(workspaceProfileKey(workspace, null))
+  const cacheTtlMs = Number(env.SEO_RUNTIME_LIVE_ACTIONS_CACHE_MS || String(2 * 60 * 1000))
+  const cacheKey = `${workspaceKey}:${limit}:${options.includeGscProperty !== false ? 'gsc' : 'repo'}`
+  const cached = runtimeLiveActionsCache.get(cacheKey)
+  if (cached && Date.now() - cached.at < cacheTtlMs) {
+    return JSON.parse(JSON.stringify(cached.payload))
+  }
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), Number(env.SEO_RUNTIME_FETCH_TIMEOUT_MS || '10000'))
   try {
@@ -4642,12 +4645,14 @@ async function fetchSeoMonitorActionsViaRuntime(workspace, limit, options = {}) 
       limit,
       actionCount: payload.actions.length
     })
-    return {
+    const runtimeResult = {
       actions: payload.actions,
       workspacePolicy: payload.workspacePolicy || '',
       workspace: payload.workspace || null,
       runtimeSource: 'seo-runtime'
     }
+    runtimeLiveActionsCache.set(cacheKey, { at: Date.now(), payload: runtimeResult })
+    return JSON.parse(JSON.stringify(runtimeResult))
   } catch (error) {
     logThrottled(`runtime_live_actions_failed:${workspace?.id || workspace?.repoFullName || workspace?.label || 'default'}`, 15 * 60 * 1000, 'runtime_live_actions_failed', {
       workspace: workspace?.label || workspace?.id || workspace?.repoFullName || null,

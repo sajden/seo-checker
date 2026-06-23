@@ -837,16 +837,55 @@ function terminalResultForAction(state, action) {
 function ledgerForAction(state, action, context) {
   const actionId = String(action?.id || '')
   if (!actionId) return null
+  const workspaceKey = runtimeWorkspaceClusterKey(context.workspaceKey)
+  const targetPath = normalizePath(action?.targetUrl || action?.url || '')
+  const kind = runtimeActionKindForLearning(action)
+  if (targetPath && ['content', 'internal-links'].includes(kind)) {
+    const exactCluster = `${workspaceKey}:${targetPath}:${kind}`
+    if (state.actionLedger?.[exactCluster]) return state.actionLedger[exactCluster]
+  }
   for (const ledger of Object.values(state.actionLedger || {})) {
     if (String(ledger?.actionId || '') === actionId) return ledger
   }
-  const targetPath = normalizePath(action?.targetUrl || action?.url || '')
   const keyword = normalize(action?.keyword || '')
+  let fallbackLedger = null
   for (const ledger of Object.values(state.actionLedger || {})) {
-    if (targetPath && normalizePath(ledger?.targetUrl || '') === targetPath) return ledger
+    if (targetPath && normalizePath(ledger?.targetUrl || '') === targetPath && ledgerKindMatchesAction(ledger, kind)) {
+      if (isBlockingLedger(ledger)) return ledger
+      fallbackLedger = fallbackLedger || ledger
+    }
     if (keyword && normalize(ledger?.keyword || '') === keyword && normalize(ledger?.workspaceKey || '').includes(normalize(context.workspaceKey))) return ledger
   }
-  return null
+  return fallbackLedger
+}
+
+function ledgerKindMatchesAction(ledger, kind) {
+  if (!kind) return true
+  const actionKind = runtimeActionKindForLearning(ledger)
+  if (actionKind === 'general') return true
+  return actionKind === kind || (['content', 'internal-links'].includes(actionKind) && ['content', 'internal-links'].includes(kind))
+}
+
+function isBlockingLedger(ledger) {
+  if (['completed', 'failed', 'deprioritized', 'ignored'].includes(String(ledger?.status || '')) && !ledgerRecheckDue(ledger)) return true
+  const latestEvent = latestLedgerEvent(ledger)
+  if (latestEvent?.event === 'guarded' && eventAgeDays(latestEvent) < 7) return true
+  return Number(ledger?.guardedCount || 0) >= 2 && !ledgerRecheckDue(ledger)
+}
+
+function runtimeActionKindForLearning(action) {
+  const text = actionText(action)
+  if (/indexering|url-inspection|gsc|oauth/.test(text) && !/title|h1|meta|copy|faq|content/.test(text)) return 'indexing'
+  if (/internlank|interna-lank|internal-link|internal-links|intern-lank|internlankning/.test(text)) return 'internal-links'
+  const explicitlyNoNewPage = /skapa-ingen-ny-sida|skapa-inte-ny-sida|ingen-ny-sida|befintlig-sida/.test(text)
+  if (!explicitlyNoNewPage && /ny-sida|new-page|skapa-ny.*sida|ny.*landningssida/.test(text)) return 'new-page'
+  if (/title|meta|h1|h2|intro|faq|copy|content|readiness|serp|keyword|ranking|kommersiell|skarp|forbattra|expandera/.test(text)) return 'content'
+  if (/landningssida/.test(text)) return 'content'
+  return 'general'
+}
+
+function runtimeWorkspaceClusterKey(value) {
+  return normalize(value).replace(/[^a-z0-9/._:-]+/g, '-').replace(/^-+|-+$/g, '')
 }
 
 function ledgerRecheckDue(ledger) {
