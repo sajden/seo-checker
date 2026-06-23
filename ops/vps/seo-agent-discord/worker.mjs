@@ -42,7 +42,8 @@ const automationEnabled = env.SEO_AGENT_AUTONOMY_ENABLED !== 'false'
 const codeAutomationEnabled = env.SEO_AGENT_CODE_AUTOMATION_ENABLED === 'true'
 const autonomousCodeEnabled = env.SEO_AGENT_AUTONOMOUS_CODE_ENABLED !== 'false'
 const autonomousCodePerWorkspacePerDay = Number(env.SEO_AGENT_AUTONOMOUS_CODE_PER_WORKSPACE_PER_DAY || '0')
-const opportunityScoutMinIntervalMs = Number(env.SEO_AGENT_OPPORTUNITY_SCOUT_MIN_INTERVAL_MS || String(12 * 60 * 60 * 1000))
+const opportunityScoutMinIntervalMs = Number(env.SEO_AGENT_OPPORTUNITY_SCOUT_MIN_INTERVAL_MS || String(3 * 60 * 60 * 1000))
+const opportunityScoutInvalidCooldownMs = Number(env.SEO_AGENT_OPPORTUNITY_SCOUT_INVALID_COOLDOWN_MS || String(3 * 60 * 60 * 1000))
 const codexChatEnabled = env.SEO_AGENT_CODEX_CHAT_ENABLED !== 'false'
 const smartOutboundGuardEnabled = env.SEO_AGENT_SMART_OUTBOUND_GUARD !== 'false'
 const codexCli = env.CODEX_CLI || `${env.HOME || '/home/deploy'}/.npm-global/bin/codex`
@@ -1341,11 +1342,14 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
   if (!repoDir) return null
   const key = workspaceProfileKey(workspace, targetChannelId)
   const previousScout = state.codexOpportunityScout?.[key]
-  if (previousScout?.blockedUntil && previousScout.blockedUntil > new Date().toISOString().slice(0, 10)) {
+  const previousInvalidScoutAt = Date.parse(previousScout?.at || '')
+  const previousInvalidScoutAgeMs = Number.isFinite(previousInvalidScoutAt) ? Date.now() - previousInvalidScoutAt : Infinity
+  if (previousScout?.blockedReason && previousInvalidScoutAgeMs >= 0 && previousInvalidScoutAgeMs < opportunityScoutInvalidCooldownMs) {
     logThrottled(`codex_opportunity_skipped:${key}:blocked`, 60 * 60 * 1000, 'codex_opportunity_skipped', {
       workspace: workspace?.label || workspace?.id || null,
       reason: previousScout.blockedReason || 'recent_invalid_scout',
-      blockedUntil: previousScout.blockedUntil
+      ageMinutes: Math.round(previousInvalidScoutAgeMs / 60000),
+      minIntervalMinutes: Math.round(opportunityScoutInvalidCooldownMs / 60000)
     })
     return null
   }
@@ -1367,6 +1371,7 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
     .filter((item) => item.workspaceKey === key)
     .sort((a, b) => Date.parse(b.completedAt || 0) - Date.parse(a.completedAt || 0))
     .slice(0, 20)
+  const recentCodeResults = recentCodeResultsForWorkspace(workspace, targetChannelId)
   const promptPath = join(stateDir, `codex-opportunity-${slugify(key).slice(0, 80)}.md`)
   const contextJson = {
     workspace: {
@@ -1386,6 +1391,7 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
       completedAt: item.completedAt,
       reviewAfter: item.reviewAfter
     })),
+    recentCodeResults,
     learningSummary,
     rejectedLiveActions: (context.rejectionReasons || []).slice(0, 12),
     workspacePolicy: context.workspacePolicy || '',
@@ -1403,8 +1409,10 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
     '- Välj bara en befintlig sida/route som verkar finnas i repo.',
     '- Skapa inte ny sida. Om bästa idén är en ny route, ny landningssida, dashboard/adminyta eller research/new-page: returnera action=null.',
     '- TargetUrl måste matcha en befintlig route från repo hints. Föreslå inte URL:er som inte redan finns.',
+    '- Läs den tänkta målfilen innan du returnerar action. Om recommendedAction redan finns i filen: returnera action=null eller välj en annan befintlig sida.',
     '- Välj inte auth, GSC, privacy, terms eller rent tekniskt driftarbete.',
     '- Repetera inte recentExperiments innan reviewAfter, om inte hypotesen är tydligt annorlunda.',
+    '- Repetera aldrig recentCodeResults med status no_changes, completed, build_failed eller failed utan en tydligt ny hypotes och annan konkret ändringsyta.',
     '- Använd learningSummary: undvik mönster som needs_more_work utan ny vinkel, och prioritera mönster som provisionally_improved när de passar dagens mål.',
     '- Kandidaten måste ha targetUrl, keyword/focus, problem, hypotes och konkret repoändring.',
     '- Workspace-profilen styr målgrupp och språk. Vägkollen får aldrig SMB/B2B/konsultspråk.',
@@ -1456,9 +1464,9 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
   if (/new-page|ny-sida|ny-landningssida|skapa-ny|ny-route|dashboard|adminyta|research-new-page/.test(candidateText)) {
     state.codexOpportunityScout[key] = {
       at: new Date().toISOString(),
-      blockedUntil: isoDatePlusDays(7),
       blockedReason: 'scout_suggested_new_page_or_admin_surface'
     }
+    rememberAgentLesson(`Codex opportunity scout suggested a new page or admin surface for ${workspace?.label || workspace?.id || key}; retry later with stricter existing-page instructions instead of blocking the workspace for days.`)
     log('codex_opportunity_invalid_action', {
       workspace: workspace?.label || workspace?.id || null,
       reason: 'scout_suggested_new_page_or_admin_surface',
@@ -2035,6 +2043,10 @@ async function runQueuedApprovedCodeAction(entry, workspace, targetChannelId) {
     const failure = classifyCodeActionFailure(error)
     state.codeActionResults[entry.id] = { status: failure.status, failedAt: new Date().toISOString(), error: error?.message || String(error), failure }
     recordActionLedger(entry, workspace, targetChannelId, failure.ledgerEvent, { error: error?.message || String(error), failure })
+    if (failure.status === 'no_changes') {
+      rememberAgentLesson(`No-op action for ${workspace?.label || entry.workspaceSlug || entry.repoFullName}: ${entry.title || entry.id}. Future scouts must inspect the target file and avoid recommending content already present.`)
+      if (state.codexOpportunityScout) delete state.codexOpportunityScout[workspaceProfileKey(workspace, targetChannelId)]
+    }
     delete state.approvedCodeActionQueue[entry.id]
     await markPostedActionHandled(entry.id, targetChannelId, 'code_action_failed')
     clearActiveAction(entry.id)
@@ -5494,6 +5506,48 @@ function buildWorkspaceLearningSummary(workspaceKey) {
     needsMoreWork: outcomes.filter((item) => item.outcome === 'needs_more_work').slice(0, 6),
     inconclusive: outcomes.filter((item) => item.outcome === 'inconclusive').slice(0, 4)
   }
+}
+
+function recentCodeResultsForWorkspace(workspace, targetChannelId = null) {
+  const key = workspaceProfileKey(workspace, targetChannelId)
+  const host = normalizeForMatch(workspaceHost(workspace) || workspace?.label || '')
+  const repo = normalizeForMatch(workspace?.repoFullName || '')
+  const ledgerByActionId = new Map(
+    Object.values(state.actionLedger || {})
+      .filter((item) => item?.actionId)
+      .map((item) => [String(item.actionId), item])
+  )
+  return Object.entries(state.codeActionResults || {})
+    .map(([actionId, result]) => {
+      const ledger = ledgerByActionId.get(actionId) || {}
+      return { actionId, result, ledger }
+    })
+    .filter(({ actionId, result, ledger }) => {
+      if (String(ledger.workspaceKey || '') === key) return true
+      const haystack = normalizeForMatch([
+        actionId,
+        result?.repoFullName,
+        result?.result?.repoFullName,
+        result?.result?.repoDir,
+        ledger.workspaceKey,
+        ledger.title,
+        ledger.targetUrl
+      ].filter(Boolean).join(' '))
+      return Boolean((host && haystack.includes(host)) || (repo && haystack.includes(repo)))
+    })
+    .sort((a, b) => Date.parse(b.result.completedAt || b.result.failedAt || 0) - Date.parse(a.result.completedAt || a.result.failedAt || 0))
+    .slice(0, 16)
+    .map(({ actionId, result, ledger }) => ({
+      actionId,
+      status: result.status || ledger.status || '',
+      title: ledger.title || result.result?.title || actionId,
+      targetUrl: ledger.targetUrl || result.result?.targetUrl || '',
+      keyword: ledger.keyword || result.result?.keyword || '',
+      commit: result.result?.commit || ledger.commit || '',
+      at: result.completedAt || result.failedAt || ledger.lastEventAt || '',
+      failureCategory: result.failure?.category || '',
+      summary: result.failure?.operatorSummary || result.error || ''
+    }))
 }
 
 function addDaysIso(dateOrIso, days) {
