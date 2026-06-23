@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 import http from 'node:http'
+import { execFile } from 'node:child_process'
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { promisify } from 'node:util'
 
 const env = loadEnv(['/opt/ai-dashboard/apps/seo-runtime/.env', '/home/deploy/seo-agent-discord/.env'])
 const host = env.SEO_RUNTIME_HOST || '127.0.0.1'
@@ -9,6 +12,9 @@ const statePath = env.SEO_RUNTIME_STATE_PATH || '/home/deploy/seo-agent-discord/
 const runtimeKey = 'seo-agent'
 const platformApiUrl = (env.PLATFORM_API_URL || 'https://dashboard2-platform-api.sebastian-castwall.workers.dev').replace(/\/$/, '')
 const platformToken = env.PLATFORM_API_TOKEN || ''
+const exec = promisify(execFile)
+const stateDir = dirname(statePath)
+const codeRunnerPath = env.SEO_RUNTIME_CODE_RUNNER_PATH || '/home/deploy/seo-agent-discord/codex-runner.mjs'
 
 const server = http.createServer((request, response) => {
   handleRequest(request, response).catch((error) => {
@@ -61,6 +67,11 @@ async function handleRequest(request, response) {
     const actionId = decodeURIComponent(executeMatch[1])
     const body = await readJsonBody(request)
     const result = executeAction(actionId, body)
+    return sendJson(response, result.statusCode || 200, result.body)
+  }
+  if (request.method === 'POST' && url.pathname === '/seo/actions/run-next') {
+    const body = await readJsonBody(request)
+    const result = await runNextApprovedCodeAction(body)
     return sendJson(response, result.statusCode || 200, result.body)
   }
   sendJson(response, 404, { ok: false, error: 'not_found' })
@@ -303,6 +314,241 @@ function executeAction(actionId, payload = {}) {
   state.runtimeExecutions[idempotencyKey] = result
   writeState(state)
   return { statusCode: 200, body: { ok: true, result } }
+}
+
+async function runNextApprovedCodeAction(payload = {}) {
+  const state = readState()
+  if (state.codeActionRunning) {
+    return { statusCode: 200, body: { ok: true, ran: false, reason: 'already_running', running: state.codeActionRunning } }
+  }
+  state.codeActionResults = state.codeActionResults || {}
+  state.approvedCodeActionQueue = state.approvedCodeActionQueue || {}
+  const entries = Object.values(state.approvedCodeActionQueue)
+    .filter((item) => item?.id)
+    .sort((a, b) => Date.parse(b.queuedAt || 0) - Date.parse(a.queuedAt || 0))
+  const entry = entries.find((item) => !state.codeActionResults?.[item.id])
+  if (!entry) return { statusCode: 200, body: { ok: true, ran: false, reason: 'queue_empty' } }
+
+  const now = new Date().toISOString()
+  const workspace = {
+    label: entry.workspaceSlug || entry.workspaceLabel || entry.repoFullName || 'workspace',
+    repoFullName: entry.repoFullName || '',
+    branch: entry.branch || 'main'
+  }
+  state.codeActionRunning = { actionId: entry.id, startedAt: now, source: 'seo-runtime' }
+  recordRuntimeLedgerEvent(state, entry, workspace, 'coding_started', { source: 'seo-runtime' })
+  writeState(state)
+
+  try {
+    const result = await runCodexAction(entry)
+    const completedResult = {
+      ...result,
+      repoFullName: entry.repoFullName || result.repoFullName || null,
+      branch: entry.branch || result.branch || 'main'
+    }
+    const fresh = readState()
+    fresh.codeActionResults = fresh.codeActionResults || {}
+    fresh.approvedCodeActionQueue = fresh.approvedCodeActionQueue || {}
+    fresh.codeActionResults[entry.id] = { status: 'completed', completedAt: new Date().toISOString(), result: completedResult }
+    delete fresh.approvedCodeActionQueue[entry.id]
+    clearActiveForAction(fresh, entry.id)
+    recordRuntimeLedgerEvent(fresh, entry, workspace, 'completed', {
+      commit: result.commit || null,
+      diffStat: result.diffStat || null,
+      repoFullName: entry.repoFullName || null,
+      source: 'seo-runtime'
+    })
+    recordRuntimeSeoExperiment(fresh, entry, workspace, completedResult, { source: 'seo-runtime' })
+    fresh.codeActionRunning = null
+    writeState(fresh)
+    return {
+      statusCode: 200,
+      body: {
+        ok: true,
+        ran: true,
+        status: 'completed',
+        action: publicAction(entry),
+        workspace,
+        result: completedResult
+      }
+    }
+  } catch (error) {
+    const failure = classifyCodeActionFailure(error)
+    const fresh = readState()
+    fresh.codeActionResults = fresh.codeActionResults || {}
+    fresh.approvedCodeActionQueue = fresh.approvedCodeActionQueue || {}
+    fresh.codeActionResults[entry.id] = {
+      status: failure.status,
+      failedAt: new Date().toISOString(),
+      error: error?.message || String(error),
+      failure
+    }
+    delete fresh.approvedCodeActionQueue[entry.id]
+    clearActiveForAction(fresh, entry.id)
+    recordRuntimeLedgerEvent(fresh, entry, workspace, failure.ledgerEvent, {
+      error: error?.message || String(error),
+      failure,
+      source: 'seo-runtime'
+    })
+    fresh.codeActionRunning = null
+    writeState(fresh)
+    return {
+      statusCode: 200,
+      body: {
+        ok: true,
+        ran: true,
+        status: failure.status,
+        action: publicAction(entry),
+        workspace,
+        error: error?.message || String(error),
+        failure
+      }
+    }
+  }
+}
+
+async function runCodexAction(action) {
+  const inputPath = join(stateDir, `codex-action-input.${process.pid}.${Date.now()}.json`)
+  writeFileSync(inputPath, JSON.stringify(action, null, 2))
+  const result = await exec('/usr/bin/node', [codeRunnerPath, inputPath], {
+    cwd: dirname(codeRunnerPath),
+    env: { ...process.env, PATH: `${process.env.HOME || '/home/deploy'}/.npm-global/bin:${process.env.HOME || '/home/deploy'}/.local/bin:${process.env.PATH || ''}` },
+    timeout: 45 * 60 * 1000,
+    maxBuffer: 20 * 1024 * 1024
+  })
+  const text = String(result.stdout || '').trim()
+  try { return JSON.parse(text) } catch {}
+  const jsonStart = text.lastIndexOf('{')
+  if (jsonStart >= 0) {
+    try { return JSON.parse(text.slice(jsonStart)) } catch {}
+  }
+  return { ok: true, stdout: text.slice(-4000) }
+}
+
+function classifyCodeActionFailure(error) {
+  const text = String(error?.message || error || '').toLowerCase()
+  if (text.includes('repo checkout missing') || text.includes('clone failed') || text.includes('could not read from remote repository') || text.includes('permission denied')) {
+    return {
+      status: 'infra_failed',
+      ledgerEvent: 'failed',
+      category: 'repo_access',
+      retryable: true,
+      operatorSummary: 'Repo-checkout eller deploy key saknas. Runnern kan försöka igen när repo-access är fixad.'
+    }
+  }
+  if (text.includes('repo is not clean')) {
+    return {
+      status: 'infra_failed',
+      ledgerEvent: 'failed',
+      category: 'dirty_worktree',
+      retryable: true,
+      operatorSummary: 'Repo-checkouten är dirty. Runnern försöker normalt återhämta avbrutna ändringar innan ny körning.'
+    }
+  }
+  if (text.includes('codex made no changes')) {
+    return {
+      status: 'no_changes',
+      ledgerEvent: 'deprioritized',
+      category: 'no_effect',
+      retryable: false,
+      operatorSummary: 'Codex hittade ingen meningsfull ändring. Kortet bör inte loopas utan ny instruktion eller färsk SEO-data.'
+    }
+  }
+  if (text.includes('npm err') || text.includes('pnpm') || text.includes('next build') || text.includes('failed to compile') || text.includes('type error')) {
+    return {
+      status: 'build_failed',
+      ledgerEvent: 'failed',
+      category: 'build',
+      retryable: true,
+      operatorSummary: 'Build/test föll efter kodändring. Nästa steg är självläkning eller Codex-reparation.'
+    }
+  }
+  return {
+    status: 'failed',
+    ledgerEvent: 'failed',
+    category: 'unknown',
+    retryable: false,
+    operatorSummary: 'Okänt fel. Runtime markerar kortet som failed så det inte loopar tyst.'
+  }
+}
+
+function publicAction(action) {
+  return {
+    id: action.id || '',
+    title: action.title || action.id || '',
+    targetUrl: action.targetUrl || action.url || '',
+    keyword: action.keyword || '',
+    repoFullName: action.repoFullName || '',
+    branch: action.branch || 'main',
+    channelId: action.channelId || ''
+  }
+}
+
+function recordRuntimeLedgerEvent(state, action, workspace, event, meta = {}) {
+  state.actionLedger = state.actionLedger || {}
+  const key = findLedgerKey(state, action.id)
+    || `${normalize(workspace?.repoFullName || action.workspaceSlug || action.projectSlug || 'runtime')}:${normalizePath(action.targetUrl || action.url || action.id)}:${actionKindForRuntime(action)}`
+  const existing = state.actionLedger[key] || {
+    key,
+    actionId: action.id,
+    title: action.title || action.id,
+    workspaceKey: action.workspaceId || action.workspaceSlug || action.projectSlug || workspace?.repoFullName || '',
+    targetUrl: action.targetUrl || action.url || '',
+    keyword: action.keyword || '',
+    firstSeenAt: meta.at || new Date().toISOString(),
+    events: []
+  }
+  const at = meta.at || new Date().toISOString()
+  const status = event === 'skipped' ? 'ignored' : event
+  state.actionLedger[key] = {
+    ...existing,
+    status,
+    lastEventAt: at,
+    commit: meta.commit || existing.commit || null,
+    diffStat: meta.diffStat || existing.diffStat || null,
+    repoFullName: meta.repoFullName || existing.repoFullName || workspace?.repoFullName || null,
+    guardedCount: event === 'guarded' ? Number(existing.guardedCount || 0) + 1 : existing.guardedCount,
+    events: [
+      { event: status, at, ...meta },
+      ...(existing.events || [])
+    ].slice(0, 30)
+  }
+}
+
+function actionKindForRuntime(action) {
+  const text = actionText(action)
+  if (/intern|internal|link|lank/.test(text)) return 'internal-links'
+  if (/new-page|ny-sida|landningssida|serp-gap|content-gap/.test(text)) return 'new-page'
+  if (/gsc|indexering|inspection/.test(text)) return 'indexing'
+  return 'content'
+}
+
+function recordRuntimeSeoExperiment(state, action, workspace, result, meta = {}) {
+  state.seoExperiments = state.seoExperiments || {}
+  const targetUrl = action.targetUrl || action.url || ''
+  const keyword = action.keyword || ''
+  const id = `${workspace?.repoFullName || action.workspaceSlug || 'workspace'}:${normalizePath(targetUrl) || normalize(keyword) || action.id || result?.commit || Date.now()}`.slice(0, 220)
+  const completedAt = new Date().toISOString()
+  const reviewDate = new Date(completedAt)
+  reviewDate.setDate(reviewDate.getDate() + 14)
+  state.seoExperiments[id] = {
+    ...(state.seoExperiments[id] || {}),
+    id,
+    actionId: action.id || null,
+    title: action.title || action.id || '',
+    workspaceKey: workspace?.repoFullName || action.workspaceSlug || '',
+    workspaceLabel: workspace?.label || '',
+    repoFullName: result?.repoFullName || workspace?.repoFullName || '',
+    branch: result?.branch || workspace?.branch || 'main',
+    targetUrl,
+    keyword,
+    commit: result?.commit || '',
+    diffStat: result?.diffStat || '',
+    completedAt,
+    reviewAfter: reviewDate.toISOString().slice(0, 10),
+    source: meta.source || 'seo-runtime',
+    baselineStatus: 'pending_gsc_snapshot'
+  }
 }
 
 function findAction(state, actionId) {

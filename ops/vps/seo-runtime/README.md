@@ -18,6 +18,7 @@ GET  /seo/today?limit=20&workspace=<workspaceKey>
 POST /seo/workspaces/:workspaceKey/actions/live
 POST /seo/workspaces/:workspaceKey/actions/next
 POST /seo/actions/:actionId/execute
+POST /seo/actions/run-next
 ```
 
 Live actions payload:
@@ -66,9 +67,10 @@ The runtime stores idempotency results in `state.runtimeExecutions`.
 - `POST /seo/workspaces/:workspaceKey/actions/next` scores pending live actions against runtime state, workspace profile, prior results, ledger cooldowns, and hard guards for legal/admin/GSC/keyword-plan noise.
 - `POST /execute` with `approved` queues the action in `approvedCodeActionQueue`.
 - `POST /execute` with `skipped`, `deprioritized`, or `stopped` updates `actionLedger` and clears the active action.
-- The existing `seo-agent-discord.service` still fetches platform actions, renders Discord cards, and performs Codex/Git execution for queued actions.
+- `POST /seo/actions/run-next` owns execution for queued approved code actions: it locks `codeActionRunning`, runs `codex-runner.mjs`, writes `codeActionResults`, updates `actionLedger`, records an SEO experiment, and clears the queue item.
+- The existing `seo-agent-discord.service` still renders Discord cards and posts completion/failure messages. During migration it falls back to the legacy runner if the runtime endpoint is unavailable.
 
-This is intentionally not the final architecture. The next step is to move platform action fetching and Codex/Git execution into the runtime as separate service-owned tools.
+This is intentionally not the final architecture. The next step is to move Discord output formatting and revert execution behind runtime-owned action/event APIs.
 
 ## VPS Layout
 
@@ -92,4 +94,5 @@ npm run check
 systemctl --user is-active seo-runtime.service
 curl -fsS http://127.0.0.1:1460/healthz | jq .
 curl -fsS 'http://127.0.0.1:1460/seo/today?limit=5' | jq .
+curl -fsS -X POST http://127.0.0.1:1460/seo/actions/run-next -H 'content-type: application/json' --data '{}' | jq .
 ```

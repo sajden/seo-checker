@@ -1903,6 +1903,13 @@ function settledErrorMessage(result) {
 async function processApprovedCodeActions(workspaces) {
   if (state.codeActionRunning) return
   state.codeActionResults = state.codeActionResults || {}
+  const runtimeRun = await runNextApprovedCodeActionThroughRuntime()
+  if (runtimeRun?.running) return true
+  if (runtimeRun?.ran) {
+    reloadStateFromDisk()
+    await postRuntimeCodeActionResult(runtimeRun)
+    return true
+  }
   const queued = await processQueuedApprovedCodeAction(workspaces)
   if (queued) return
   for (const workspace of workspaces) {
@@ -4651,6 +4658,79 @@ async function fetchSeoMonitorActionsViaRuntime(workspace, limit, options = {}) 
   } finally {
     clearTimeout(timeout)
   }
+}
+
+async function runNextApprovedCodeActionThroughRuntime() {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), Number(env.SEO_RUNTIME_CODE_RUN_TIMEOUT_MS || String(50 * 60 * 1000)))
+  try {
+    const response = await fetch(`${seoRuntimeUrl}/seo/actions/run-next`, {
+      method: 'POST',
+      signal: controller.signal,
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ source: 'seo-agent-discord' })
+    })
+    const text = await response.text()
+    let payload = null
+    try {
+      payload = text ? JSON.parse(text) : null
+    } catch {
+      payload = { raw: text }
+    }
+    if (!response.ok || payload?.ok === false) {
+      throw new Error(payload?.error || payload?.detail || text || `runtime_code_http_${response.status}`)
+    }
+    if (payload?.ran || payload?.reason === 'already_running') {
+      log('runtime_code_action_result', {
+        ran: Boolean(payload.ran),
+        status: payload.status || payload.reason || '',
+        actionId: payload.action?.id || payload.running?.actionId || null
+      })
+    }
+    return {
+      ok: true,
+      ran: Boolean(payload?.ran),
+      running: payload?.reason === 'already_running',
+      payload
+    }
+  } catch (error) {
+    logThrottled('runtime_code_action_failed_fallback_to_worker', 15 * 60 * 1000, 'runtime_code_action_failed_fallback_to_worker', {
+      error: error?.name === 'AbortError' ? 'timeout' : error?.message || String(error)
+    })
+    return { ok: false, ran: false, error: error?.message || String(error) }
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+async function postRuntimeCodeActionResult(runtimeRun) {
+  const payload = runtimeRun?.payload || {}
+  const action = payload.action || {}
+  const workspace = payload.workspace || {}
+  const targetChannelId = action.channelId || await channelForWorkspace(workspace).catch(() => null)
+  if (!targetChannelId) return
+  if (payload.status === 'completed') {
+    const result = payload.result || {}
+    const repoFullName = result.repoFullName || action.repoFullName || workspace.repoFullName || ''
+    const commitUrl = result.commit ? githubCommitUrl(repoFullName, result.commit) : ''
+    await markPostedActionHandled(action.id, targetChannelId, 'code_action_completed')
+    const posted = await sendDiscordMessage([
+      `Kodaction klar för ${workspace.label || action.repoFullName || 'workspace'}: ${action.title || action.id}`,
+      `Action ID: \`${action.id}\``,
+      result.commit ? `Commit: ${result.commit}` : '',
+      commitUrl ? `GitHub: ${commitUrl}` : '',
+      result.diffStat ? `Diff:\n\`\`\`\n${String(result.diffStat).slice(0, 1200)}\n\`\`\`` : '',
+      '',
+      'Om detta blev fel kan du trycka Backa så skapar jag en revert-commit.'
+    ].filter(Boolean).join('\n'), targetChannelId, rollbackComponents(), { kind: 'code_result' })
+    state.messageToAction = state.messageToAction || {}
+    state.messageToAction[posted.id] = action.id
+    saveState()
+    return
+  }
+  const failure = payload.failure || classifyCodeActionFailure(new Error(payload.error || payload.status || 'runtime_code_action_failed'))
+  await markPostedActionHandled(action.id, targetChannelId, 'code_action_failed')
+  await sendDiscordMessage(formatCodeActionFailureMessage(workspace.label || action.repoFullName || 'workspace', action.title || action.id, new Error(payload.error || payload.status || 'runtime_code_action_failed'), failure), targetChannelId)
 }
 
 function isSeoBatchNotFoundError(error) {
