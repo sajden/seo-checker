@@ -1703,9 +1703,10 @@ async function maybeRunIntegrationDoctor(workspaces) {
 
 async function maybeAskForGscApiOAuth() {
   const today = new Date().toISOString().slice(0, 10)
-  const api = await runGscUrlInspectionApi({ command: 'doctor' }).catch((error) => ({ ok: false, status: 'api_doctor_failed', error: error?.message || String(error) }))
+  const doctor = await runGscDoctorThroughRuntime({ includeBrowser: true, deep: true }).catch((error) => ({ ok: false, api: { ok: false, status: 'runtime_doctor_failed', error: error?.message || String(error) }, browser: null }))
+  const api = doctor.api || { ok: false, status: 'api_doctor_missing' }
   if (api.ok) return
-  const browser = await runGscFirefoxUiTool({ command: 'doctor' }).catch((error) => ({ ok: false, status: 'browser_doctor_failed', error: error?.message || String(error) }))
+  const browser = doctor.browser || { ok: false, status: 'browser_doctor_missing' }
   if (!browser.ok || !browser.canObserve) return
   await sendOncePerDay(`gsc-api-oauth-request:${today}`, channelId, formatGscApiOAuthRequest(api, browser))
 }
@@ -1739,10 +1740,9 @@ function formatNoVncAccessLines() {
 }
 
 async function buildIntegrationDoctorReport(workspaces) {
-  const [gsc, gscApi, gscBrowser, googleAdsInitial, automation] = await Promise.allSettled([
+  const [gsc, gscRuntimeDoctor, googleAdsInitial, automation] = await Promise.allSettled([
     fetchPlatformJson('/api/platform/integrations/gsc/status'),
-    runGscUrlInspectionApi({ command: 'doctor' }),
-    runGscFirefoxUiTool({ command: 'doctor' }),
+    runGscDoctorThroughRuntime({ includeBrowser: true, deep: true }),
     fetchPlatformJson('/api/platform/ad-automation/keyword-metrics', {
       method: 'POST',
       body: JSON.stringify({ keywords: ['ai agenter företag'] })
@@ -1750,16 +1750,17 @@ async function buildIntegrationDoctorReport(workspaces) {
     localAutomationStatus(),
   ])
   const gscPayload = settledValue(gsc, null)
-  const gscApiPayload = settledValue(gscApi, null)
-  const gscBrowserPayload = settledValue(gscBrowser, null)
+  const gscRuntimePayload = settledValue(gscRuntimeDoctor, null)
+  const gscApiPayload = gscRuntimePayload?.api || null
+  const gscBrowserPayload = gscRuntimePayload?.browser || null
   const gscPlatformConnected = Boolean(gscPayload?.connected ?? gscPayload?.hasStoredRefreshToken)
   const gscApiReady = Boolean(gscApiPayload?.ok)
   const gscBrowserReady = Boolean(gscBrowserPayload?.ok && gscBrowserPayload?.canObserve)
   const gscOperational = gscPlatformConnected || gscApiReady || gscBrowserReady
   const gscStatus = formatGscCapabilityStatus({
     platform: gscPayload ? String(gscPayload.connected ?? gscPayload.hasStoredRefreshToken ? 'connected' : gscPayload.status ?? 'not_connected') : settledErrorMessage(gsc),
-    api: gscApiPayload ? String(gscApiPayload.status || (gscApiPayload.ok ? 'ready' : 'unknown')) : settledErrorMessage(gscApi),
-    browser: gscBrowserPayload ? String(gscBrowserPayload.status || (gscBrowserPayload.ok ? 'ready' : 'unknown')) : settledErrorMessage(gscBrowser),
+    api: gscApiPayload ? String(gscApiPayload.status || (gscApiPayload.ok ? 'ready' : 'unknown')) : settledErrorMessage(gscRuntimeDoctor),
+    browser: gscBrowserPayload ? String(gscBrowserPayload.status || (gscBrowserPayload.ok ? 'ready' : 'unknown')) : settledErrorMessage(gscRuntimeDoctor),
     gscPlatformConnected,
     gscApiReady,
     gscBrowserReady
@@ -2831,21 +2832,6 @@ function formatGscInspectionFollowup(result) {
     attemptedStrategies ? `Försökta UI-strategier: ${attemptedStrategies}.` : '',
     'Det här är ett browser-/UI-automationsfel tills motsatsen är bevisad, inte ett krav på att koppla om GSC OAuth.'
   ].filter(Boolean).join('\n')
-}
-
-async function runGscUrlInspectionApi(input) {
-  const { execFile } = await import('node:child_process')
-  const { promisify } = await import('node:util')
-  const exec = promisify(execFile)
-  const inputPath = join(stateDir, 'gsc-url-inspection-api-input.json')
-  writeFileSync(inputPath, JSON.stringify(input, null, 2))
-  const result = await exec('/usr/bin/node', ['/home/deploy/seo-agent-discord/gsc-url-inspection-api.mjs', inputPath], {
-    cwd: '/home/deploy/seo-agent-discord',
-    env: { ...process.env, PATH: `${process.env.HOME || '/home/deploy'}/.npm-global/bin:${process.env.HOME || '/home/deploy'}/.local/bin:${process.env.PATH || ''}` },
-    timeout: 60 * 1000,
-    maxBuffer: 4 * 1024 * 1024
-  })
-  return JSON.parse(result.stdout || '{}')
 }
 
 async function findActionForWorkspace(actionId, targetChannelId) {
@@ -4289,7 +4275,7 @@ function activeActionRecordFor(workspace, targetChannelId) {
 
 async function formatGscFirefoxUiDoctorMessage() {
   const doctor = await runGscDoctorThroughRuntime({ includeBrowser: true }).catch(() => null)
-  const result = doctor?.browser || await runGscFirefoxUiTool({ command: 'doctor' }).catch((error) => ({ ok: false, error: error?.message || String(error) }))
+  const result = doctor?.browser || { ok: false, status: 'runtime_doctor_unavailable', error: 'GSC doctor måste gå via SEO runtime.' }
   return [
     'GSC Firefox UI tool',
     `Status: ${result.ok ? 'redo' : 'inte redo'}`,
