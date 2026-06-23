@@ -5,16 +5,16 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 
-const env = loadEnv(['/opt/ai-dashboard/apps/seo-runtime/.env', '/home/deploy/seo-agent-discord/.env'])
+const env = loadEnv(['/opt/ai-dashboard/apps/seo-runtime/.env', '/opt/ai-dashboard/apps/seo-agent-discord/.env', '/home/deploy/seo-agent-discord/.env'])
 const host = env.SEO_RUNTIME_HOST || '127.0.0.1'
 const port = Number(env.SEO_RUNTIME_PORT || '1460')
-const statePath = env.SEO_RUNTIME_STATE_PATH || '/home/deploy/seo-agent-discord/state/state.json'
+const statePath = env.SEO_RUNTIME_STATE_PATH || '/opt/ai-dashboard/apps/seo-agent-discord/state/state.json'
 const runtimeKey = 'seo-agent'
 const platformApiUrl = (env.PLATFORM_API_URL || 'https://dashboard2-platform-api.sebastian-castwall.workers.dev').replace(/\/$/, '')
 const platformToken = env.PLATFORM_API_TOKEN || ''
 const exec = promisify(execFile)
 const stateDir = dirname(statePath)
-const codeRunnerPath = env.SEO_RUNTIME_CODE_RUNNER_PATH || '/home/deploy/seo-agent-discord/codex-runner.mjs'
+const codeRunnerPath = env.SEO_RUNTIME_CODE_RUNNER_PATH || '/opt/ai-dashboard/apps/seo-agent-discord/codex-runner.mjs'
 
 const server = http.createServer((request, response) => {
   handleRequest(request, response).catch((error) => {

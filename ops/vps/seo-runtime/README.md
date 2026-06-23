@@ -2,10 +2,10 @@
 
 This is the first migration step toward the Hermes Agent Standard.
 
-The SEO runtime is intended to become the source of truth for SEO actions, execution, idempotency, action ledger, commits, experiments, and rechecks. During the transition it reads and writes the existing SEO Discord agent state file:
+The SEO runtime is intended to become the source of truth for SEO actions, execution, idempotency, action ledger, commits, experiments, and rechecks. During the transition it reads and writes the SEO Discord agent state file on the shared volume:
 
 ```text
-/home/deploy/seo-agent-discord/state/state.json
+/opt/ai-dashboard/apps/seo-agent-discord/state/state.json
 ```
 
 This lets us add the runtime contract without breaking the current Discord worker.
