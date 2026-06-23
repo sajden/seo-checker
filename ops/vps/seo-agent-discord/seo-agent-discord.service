@@ -1,0 +1,14 @@
+[Unit]
+Description=SEO Agent Discord Decision Worker
+After=network-online.target hermes-gateway.service seo-runtime.service
+
+[Service]
+Type=simple
+Environment=PATH=/home/deploy/.npm-global/bin:/home/deploy/.local/bin:/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=/opt/ai-dashboard/apps/seo-agent-discord
+ExecStart=/usr/bin/node /opt/ai-dashboard/apps/seo-agent-discord/worker.mjs
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

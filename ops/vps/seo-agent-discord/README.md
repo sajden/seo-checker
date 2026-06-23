@@ -5,9 +5,11 @@ This directory is a tracked snapshot of the Discord/Hermes SEO agent currently d
 ## Runtime
 
 - Server: `deploy@178.104.240.46`
-- Service directory: `/home/deploy/seo-agent-discord`
+- Service directory: `/opt/ai-dashboard/apps/seo-agent-discord`
+- Backward-compatible symlink: `/home/deploy/seo-agent-discord -> /opt/ai-dashboard/apps/seo-agent-discord`
 - User service: `seo-agent-discord.service`
-- State symlink: `/home/deploy/seo-agent-discord/state`
+- State symlink: `/opt/ai-dashboard/apps/seo-agent-discord/state`
+- Standard state link: `/opt/ai-dashboard/apps/seo-agent-discord/data/state.json`
 - Persistent state target: `/mnt/HC_Volume_105954589/deploy-storage/agent-state/seo-agent-discord-state`
 
 ## Files
@@ -23,13 +25,13 @@ AGENTS.md        Agent role and operating model.
 MEMORY.md        Persistent lessons and known bad patterns.
 ```
 
-Secrets are not stored here. Runtime secrets live in `/home/deploy/seo-agent-discord/.env` and `/home/deploy/.hermes/.env` on the VPS.
+Secrets are not stored here. Runtime secrets live in `/opt/ai-dashboard/apps/seo-agent-discord/.env` and `/home/deploy/.hermes/.env` on the VPS. The old `/home/deploy/seo-agent-discord/.env` path resolves through the compatibility symlink.
 
 For stable GSC URL Inspection, prefer API credentials over browser automation:
 
 - `GSC_CLIENT_ID` or `GOOGLE_SEARCH_CONSOLE_CLIENT_ID`
 - `GSC_CLIENT_SECRET` or `GOOGLE_SEARCH_CONSOLE_CLIENT_SECRET`
-- `GSC_REFRESH_TOKEN` or `/home/deploy/seo-agent-discord/state/gsc-refresh-token.txt`
+- `GSC_REFRESH_TOKEN` or `/opt/ai-dashboard/apps/seo-agent-discord/state/gsc-refresh-token.txt`
 
 The refresh token needs `https://www.googleapis.com/auth/webmasters.readonly` or `https://www.googleapis.com/auth/webmasters` scope. If these are missing, the worker falls back to the noVNC Firefox helper and reports browser automation failures as UI failures, not OAuth failures.
 
@@ -43,31 +45,26 @@ The known registered redirect URI for the agent GSC OAuth client is `https://seo
 
 The fallback browser is a `jlesage/firefox:latest` container named `seo-agent-gsc-browser-vnc`.
 
-- Profile mount: `/home/deploy/seo-agent-discord/state/gsc-browser-jlesage:/config`
+- Profile mount: `/opt/ai-dashboard/apps/seo-agent-discord/state/gsc-browser-jlesage:/config`
 - Local HTTP for Playwright control: `http://127.0.0.1:3015/?resize=scale`
 - Local Basic Auth proxy for websocket-friendly browser access: `http://127.0.0.1:3014/`
 - Public operator URL: `https://gsc-browser-direct.sebcastwall.se/?resize=scale`
 - Cloudflare Tunnel rules:
   - `gsc-browser-direct.sebcastwall.se -> http://127.0.0.1:3014`
 
-The container should run with Docker restart policy `unless-stopped`. The direct endpoint must stay behind Basic Auth because it contains a persistent Google login profile. Runtime credentials live in `/home/deploy/seo-agent-discord/state/secrets/gsc-browser-basic-auth.env` and can be surfaced by the Discord worker through `SEO_AGENT_NOVNC_AUTH_USER` / `SEO_AGENT_NOVNC_AUTH_PASSWORD` on the VPS.
+The container should run with Docker restart policy `unless-stopped`. The direct endpoint must stay behind Basic Auth because it contains a persistent Google login profile. Runtime credentials live in `/opt/ai-dashboard/apps/seo-agent-discord/state/secrets/gsc-browser-basic-auth.env` and can be surfaced by the Discord worker through `SEO_AGENT_NOVNC_AUTH_USER` / `SEO_AGENT_NOVNC_AUTH_PASSWORD` on the VPS.
 
 ## Deploy
 
 After editing this snapshot, deploy with:
 
 ```bash
-rsync -av ops/vps/seo-agent-discord/worker.mjs ops/vps/seo-agent-discord/codex-runner.mjs ops/vps/seo-agent-discord/repo-health-check.mjs ops/vps/seo-agent-discord/gsc-url-inspection-api.mjs ops/vps/seo-agent-discord/gsc-firefox-ui-tool.mjs ops/vps/seo-agent-discord/AGENTS.md ops/vps/seo-agent-discord/MEMORY.md deploy@178.104.240.46:/home/deploy/seo-agent-discord/
-ssh deploy@178.104.240.46 'cd /home/deploy/seo-agent-discord && node --check worker.mjs && node --check gsc-url-inspection-api.mjs && node --check gsc-firefox-ui-tool.mjs && systemctl --user restart seo-agent-discord.service && systemctl --user is-active seo-agent-discord.service'
+rsync -av ops/vps/seo-agent-discord/worker.mjs ops/vps/seo-agent-discord/codex-runner.mjs ops/vps/seo-agent-discord/repo-health-check.mjs ops/vps/seo-agent-discord/gsc-url-inspection-api.mjs ops/vps/seo-agent-discord/gsc-firefox-ui-tool.mjs ops/vps/seo-agent-discord/agent-brain.mjs ops/vps/seo-agent-discord/AGENTS.md ops/vps/seo-agent-discord/MEMORY.md ops/vps/seo-agent-discord/README.md deploy@178.104.240.46:/opt/ai-dashboard/apps/seo-agent-discord/
+scp ops/vps/seo-agent-discord/seo-agent-discord.service deploy@178.104.240.46:/home/deploy/.config/systemd/user/seo-agent-discord.service
+ssh deploy@178.104.240.46 'cd /opt/ai-dashboard/apps/seo-agent-discord && node --check worker.mjs && node --check gsc-url-inspection-api.mjs && node --check gsc-firefox-ui-tool.mjs && systemctl --user daemon-reload && systemctl --user restart seo-agent-discord.service && systemctl --user is-active seo-agent-discord.service'
 ```
 
-Do not deploy this directory with `rsync --delete`. The live runtime also contains untracked operational files such as `.env`, `node_modules`, browser tools, and the `state` symlink to the Hetzner volume. Deleting those will break the agent or make it start with empty memory.
-
-If `agent-brain.mjs` changes:
-
-```bash
-rsync -av ops/vps/seo-agent-discord/agent-brain.mjs deploy@178.104.240.46:/home/deploy/seo-agent-discord/
-```
+Do not deploy this directory with `rsync --delete`. The live runtime also contains untracked operational files such as `.env`, `node_modules`, browser profile data, and the `state` symlink to the Hetzner volume. Deleting those will break the agent or make it start with empty memory.
 
 ## Super-Agent State
 
@@ -99,7 +96,7 @@ The agent should:
 
 Rejected autonomous diffs are saved on the VPS under:
 
-`/home/deploy/seo-agent-discord/state/rejected-diffs/`
+`/opt/ai-dashboard/apps/seo-agent-discord/state/rejected-diffs/`
 
 In a workspace channel, useful commands:
 
@@ -124,5 +121,5 @@ ssh deploy@178.104.240.46 'systemctl --user status seo-agent-discord.service --n
 ssh deploy@178.104.240.46 'systemctl --user list-timers --all --no-pager | grep seo-agent-repo-health'
 ssh deploy@178.104.240.46 'tail -n 1 /mnt/HC_Volume_105954589/deploy-storage/logs/seo-agent-repo-health.jsonl | jq .'
 ssh deploy@178.104.240.46 'journalctl --user -u seo-agent-discord.service -n 100 --no-pager'
-ssh deploy@178.104.240.46 'node -e "const s=require(\"/home/deploy/seo-agent-discord/state/state.json\"); console.log(Object.keys(s.actionLedger||{}).length, Object.keys(s.approvedCodeActionQueue||{}).length, s.codeActionRunning)"'
+ssh deploy@178.104.240.46 'node -e "const s=require(\"/opt/ai-dashboard/apps/seo-agent-discord/state/state.json\"); console.log(Object.keys(s.actionLedger||{}).length, Object.keys(s.approvedCodeActionQueue||{}).length, s.codeActionRunning)"'
 ```
