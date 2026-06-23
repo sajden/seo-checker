@@ -2737,13 +2737,19 @@ async function runGscInspectionAction(action, workspace, targetChannelId, source
     gscProperty: workspace?.gscProperty || '',
     targetUrl
   }
-  const apiResult = await runGscUrlInspectionApi(input).catch((error) => ({ ok: false, status: 'api_exception', error: error?.message || String(error) }))
-  const shouldFallbackToUi = !apiResult.ok && /missing_oauth_config|google_api_401|google_api_403|api_exception/i.test(String(apiResult.status || apiResult.error || ''))
-  const result = apiResult.ok
-    ? apiResult
-    : shouldFallbackToUi
-      ? await runGscFirefoxUiTool(input).then((uiResult) => ({ ...uiResult, apiFallbackReason: apiResult.error || apiResult.status || 'api_unavailable' })).catch((error) => ({ ok: false, error: error?.message || String(error), apiFallbackReason: apiResult.error || apiResult.status || 'api_unavailable' }))
-      : apiResult
+  const result = await runGscInspectionThroughRuntime(input).catch(async (error) => {
+    logThrottled('runtime_gsc_inspection_failed', 15 * 60 * 1000, 'runtime_gsc_inspection_failed', {
+      targetUrl,
+      error: error?.message || String(error)
+    })
+    const apiResult = await runGscUrlInspectionApi(input).catch((apiError) => ({ ok: false, status: 'api_exception', error: apiError?.message || String(apiError) }))
+    const shouldFallbackToUi = !apiResult.ok && /missing_oauth_config|google_api_401|google_api_403|api_exception/i.test(String(apiResult.status || apiResult.error || ''))
+    return apiResult.ok
+      ? apiResult
+      : shouldFallbackToUi
+        ? await runGscFirefoxUiTool(input).then((uiResult) => ({ ...uiResult, apiFallbackReason: apiResult.error || apiResult.status || 'api_unavailable' })).catch((uiError) => ({ ok: false, error: uiError?.message || String(uiError), apiFallbackReason: apiResult.error || apiResult.status || 'api_unavailable' }))
+        : apiResult
+  })
   const observationPath = result?.observation?.path || ''
   const indexedByGsc = result?.inspection?.status === 'indexed' && Number(result?.inspection?.confidence || 0) >= 0.8
   if (indexedByGsc) {
@@ -2790,6 +2796,25 @@ async function runGscInspectionAction(action, workspace, targetChannelId, source
     error: result.error || result.status || '',
     observationPath
   }
+}
+
+async function runGscInspectionThroughRuntime(input) {
+  const response = await fetch(`${seoRuntimeUrl}/seo/integrations/gsc/url-inspection`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(input)
+  })
+  const text = await response.text()
+  let payload = null
+  try {
+    payload = text ? JSON.parse(text) : null
+  } catch {
+    payload = { raw: text }
+  }
+  if (!response.ok || !payload || payload.ok === false && !payload.result) {
+    throw new Error(payload?.error || payload?.detail || text || `runtime_gsc_inspection_http_${response.status}`)
+  }
+  return payload.result || payload
 }
 
 function formatGscInspectionFollowup(result) {
@@ -3018,6 +3043,11 @@ async function fetchRuntimeTickAdvice() {
     }
     if (!response.ok || payload?.ok === false) {
       throw new Error(payload?.error || payload?.detail || text || `runtime_tick_advice_http_${response.status}`)
+    }
+    state.runtimeTickAdvice = {
+      ...(state.runtimeTickAdvice || {}),
+      lastAdviceAt: payload.generatedAt || new Date().toISOString(),
+      today: payload.today || new Date().toISOString().slice(0, 10)
     }
     return payload
   } catch (error) {
@@ -4260,7 +4290,8 @@ function activeActionRecordFor(workspace, targetChannelId) {
 }
 
 async function formatGscFirefoxUiDoctorMessage() {
-  const result = await runGscFirefoxUiTool({ command: 'doctor' }).catch((error) => ({ ok: false, error: error?.message || String(error) }))
+  const doctor = await runGscDoctorThroughRuntime({ includeBrowser: true }).catch(() => null)
+  const result = doctor?.browser || await runGscFirefoxUiTool({ command: 'doctor' }).catch((error) => ({ ok: false, error: error?.message || String(error) }))
   return [
     'GSC Firefox UI tool',
     `Status: ${result.ok ? 'redo' : 'inte redo'}`,
@@ -4269,6 +4300,25 @@ async function formatGscFirefoxUiDoctorMessage() {
     result.error ? `Fel: ${result.error}` : '',
     'Detta styr den inloggade noVNC-Firefoxen. Används för GSC-flöden som Google blockerar i Selenium.'
   ].filter(Boolean).join('\n')
+}
+
+async function runGscDoctorThroughRuntime(input = {}) {
+  const response = await fetch(`${seoRuntimeUrl}/seo/integrations/gsc/doctor`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(input)
+  })
+  const text = await response.text()
+  let payload = null
+  try {
+    payload = text ? JSON.parse(text) : null
+  } catch {
+    payload = { raw: text }
+  }
+  if (!response.ok || payload?.ok === false && !payload?.api && !payload?.browser) {
+    throw new Error(payload?.error || payload?.detail || text || `runtime_gsc_doctor_http_${response.status}`)
+  }
+  return payload
 }
 
 async function runGscFirefoxUiTool(input) {

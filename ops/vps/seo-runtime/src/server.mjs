@@ -15,6 +15,9 @@ const platformToken = env.PLATFORM_API_TOKEN || ''
 const exec = promisify(execFile)
 const stateDir = dirname(statePath)
 const codeRunnerPath = env.SEO_RUNTIME_CODE_RUNNER_PATH || '/opt/ai-dashboard/apps/seo-agent-discord/codex-runner.mjs'
+const seoAgentAppRoot = env.SEO_AGENT_APP_ROOT || dirname(codeRunnerPath)
+const gscUrlInspectionToolPath = env.SEO_RUNTIME_GSC_URL_INSPECTION_TOOL_PATH || join(seoAgentAppRoot, 'gsc-url-inspection-api.mjs')
+const gscFirefoxUiToolPath = env.SEO_RUNTIME_GSC_FIREFOX_UI_TOOL_PATH || join(seoAgentAppRoot, 'gsc-firefox-ui-tool.mjs')
 
 const server = http.createServer((request, response) => {
   handleRequest(request, response).catch((error) => {
@@ -51,6 +54,16 @@ async function handleRequest(request, response) {
   if (request.method === 'POST' && url.pathname === '/seo/tick/advice') {
     const body = await readJsonBody(request)
     const result = tickAdvice(body)
+    return sendJson(response, result.statusCode || 200, result.body)
+  }
+  if (request.method === 'POST' && url.pathname === '/seo/integrations/gsc/doctor') {
+    const body = await readJsonBody(request)
+    const result = await gscDoctor(body)
+    return sendJson(response, result.statusCode || 200, result.body)
+  }
+  if (request.method === 'POST' && url.pathname === '/seo/integrations/gsc/url-inspection') {
+    const body = await readJsonBody(request)
+    const result = await inspectGscUrl(body)
     return sendJson(response, result.statusCode || 200, result.body)
   }
   const nextMatch = url.pathname.match(/^\/seo\/workspaces\/([^/]+)\/actions\/next$/)
@@ -197,6 +210,87 @@ function dueDailyRunCheck(state, nowMs, dailyHourUtc, intervalInput) {
   const now = new Date(nowMs)
   if (now.getUTCHours() < dailyHourUtc) return false
   return dueByInterval(state.lastRunCheckAt, nowMs, intervalInput, 15 * 60 * 1000)
+}
+
+async function gscDoctor(payload = {}) {
+  const command = payload.deep === true ? 'doctor' : 'doctor-shallow'
+  const api = await runGscUrlInspectionApiTool({ command }).catch((error) => ({
+    ok: false,
+    command,
+    status: 'api_tool_failed',
+    error: error?.message || String(error)
+  }))
+  const browser = payload.includeBrowser === false
+    ? null
+    : await runGscFirefoxUiTool({ command: 'doctor' }).catch((error) => ({
+      ok: false,
+      command: 'doctor',
+      status: 'browser_tool_failed',
+      error: error?.message || String(error)
+    }))
+  return {
+    statusCode: 200,
+    body: {
+      ok: Boolean(api.ok || browser?.ok),
+      runtimeKey,
+      api,
+      browser,
+      preferred: api.ok ? 'api' : browser?.ok ? 'browser' : 'none'
+    }
+  }
+}
+
+async function inspectGscUrl(payload = {}) {
+  const input = {
+    ...payload,
+    command: 'inspect-url'
+  }
+  const apiResult = await runGscUrlInspectionApiTool(input).catch((error) => ({
+    ok: false,
+    command: 'inspect-url',
+    status: 'api_exception',
+    error: error?.message || String(error)
+  }))
+  const shouldFallbackToUi = !apiResult.ok && /missing_oauth_config|google_api_401|google_api_403|api_exception|invalid_refresh_token/i.test(String(apiResult.status || apiResult.error || ''))
+  const result = apiResult.ok
+    ? apiResult
+    : shouldFallbackToUi
+      ? await runGscFirefoxUiTool(input)
+        .then((uiResult) => ({ ...uiResult, apiFallbackReason: apiResult.error || apiResult.status || 'api_unavailable' }))
+        .catch((error) => ({ ok: false, command: 'inspect-url', status: 'ui_exception', error: error?.message || String(error), apiFallbackReason: apiResult.error || apiResult.status || 'api_unavailable' }))
+      : apiResult
+  return {
+    statusCode: 200,
+    body: {
+      ok: Boolean(result.ok),
+      runtimeKey,
+      source: apiResult.ok ? 'google_url_inspection_api' : shouldFallbackToUi ? 'gsc_firefox_ui' : 'google_url_inspection_api',
+      result
+    }
+  }
+}
+
+async function runGscUrlInspectionApiTool(input) {
+  return runJsonNodeTool(gscUrlInspectionToolPath, input, 'gsc-url-inspection-api')
+}
+
+async function runGscFirefoxUiTool(input) {
+  return runJsonNodeTool(gscFirefoxUiToolPath, input, 'gsc-firefox-ui')
+}
+
+async function runJsonNodeTool(toolPath, input, prefix) {
+  const inputPath = join(stateDir, `${prefix}-input.${process.pid}.${Date.now()}.json`)
+  writeFileSync(inputPath, JSON.stringify(input, null, 2))
+  const result = await exec('/usr/bin/node', [toolPath, inputPath], {
+    cwd: seoAgentAppRoot,
+    env: {
+      ...process.env,
+      PATH: `${process.env.HOME || '/home/deploy'}/.npm-global/bin:${process.env.HOME || '/home/deploy'}/.local/bin:${process.env.PATH || ''}`
+    },
+    timeout: input.command === 'inspect-url' ? 5 * 60 * 1000 : 60 * 1000,
+    maxBuffer: 4 * 1024 * 1024
+  })
+  return JSON.parse(result.stdout || '{}')
 }
 
 function normalizeRuntimeAction(input, status = 'pending', meta = {}) {
