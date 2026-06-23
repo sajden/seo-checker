@@ -2,6 +2,7 @@
 import { Client, GatewayIntentBits, Partials } from 'discord.js'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { createHash } from 'node:crypto'
 import { agentRuntimeSnapshot } from './agent-brain.mjs'
 
 const env = loadEnv(['/home/deploy/.hermes/.env', '/home/deploy/seo-agent-discord/.env'])
@@ -1166,6 +1167,7 @@ async function chooseAutonomousCodeAction(actions, workspace, targetChannelId, w
     })
     if (!isAutonomousCodexSafe(codexBrief)) {
       rejectionReasons.push({ id: enrichedAction.id, title: enrichedAction.title || enrichedAction.id, reason: `codex:${codexBrief?.recommendation || codexBrief?.decision || 'blocked'}` })
+      rememberCodexRejectedAction(enrichedAction, workspace, targetChannelId, codexBrief, 'autonomous_live_candidate')
       continue
     }
     return {
@@ -1276,7 +1278,7 @@ async function syntheticAutonomousActionForWorkspace({ workspace, targetChannelI
       actionId: action.id,
       reason: codexBrief ? `codex:${codexBrief.recommendation || codexBrief.decision || 'blocked'}` : 'codex:unavailable'
     })
-    rememberGuardedAction(action, workspace, targetChannelId, codexBrief ? `codex:${codexBrief.recommendation || codexBrief.decision || 'blocked'}` : 'codex:unavailable')
+    rememberCodexRejectedAction(action, workspace, targetChannelId, codexBrief, 'synthetic_autonomous_candidate')
     return null
   }
   log('synthetic_autonomous_action_selected', {
@@ -1325,6 +1327,14 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
   if (!repoDir) return null
   const key = workspaceProfileKey(workspace, targetChannelId)
   const previousScout = state.codexOpportunityScout?.[key]
+  if (previousScout?.blockedUntil && previousScout.blockedUntil > new Date().toISOString().slice(0, 10)) {
+    logThrottled(`codex_opportunity_skipped:${key}:blocked`, 60 * 60 * 1000, 'codex_opportunity_skipped', {
+      workspace: workspace?.label || workspace?.id || null,
+      reason: previousScout.blockedReason || 'recent_invalid_scout',
+      blockedUntil: previousScout.blockedUntil
+    })
+    return null
+  }
   const previousScoutAt = Date.parse(previousScout?.at || 0)
   const scoutAgeMs = Number.isFinite(previousScoutAt) ? Date.now() - previousScoutAt : Infinity
   if (scoutAgeMs >= 0 && scoutAgeMs < opportunityScoutMinIntervalMs) {
@@ -1377,7 +1387,8 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
     'Regler:',
     '- Returnera ENDAST JSON.',
     '- Välj bara en befintlig sida/route som verkar finnas i repo.',
-    '- Skapa inte ny sida.',
+    '- Skapa inte ny sida. Om bästa idén är en ny route, ny landningssida, dashboard/adminyta eller research/new-page: returnera action=null.',
+    '- TargetUrl måste matcha en befintlig route från repo hints. Föreslå inte URL:er som inte redan finns.',
     '- Välj inte auth, GSC, privacy, terms eller rent tekniskt driftarbete.',
     '- Repetera inte recentExperiments innan reviewAfter, om inte hypotesen är tydligt annorlunda.',
     '- Använd learningSummary: undvik mönster som needs_more_work utan ny vinkel, och prioritera mönster som provisionally_improved när de passar dagens mål.',
@@ -1420,6 +1431,28 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
   const targetUrl = String(parsed.action.targetUrl || '').trim()
   const keyword = String(parsed.action.keyword || parsed.action.focus || '').trim()
   if (!targetUrl || !keyword) return null
+  const candidateText = normalizeForMatch([
+    parsed.action.title,
+    parsed.action.category,
+    parsed.action.why,
+    parsed.action.recommendedAction,
+    targetUrl,
+    keyword
+  ].filter(Boolean).join(' '))
+  if (/new-page|ny-sida|ny-landningssida|skapa-ny|ny-route|dashboard|adminyta|research-new-page/.test(candidateText)) {
+    state.codexOpportunityScout[key] = {
+      at: new Date().toISOString(),
+      blockedUntil: isoDatePlusDays(1),
+      blockedReason: 'scout_suggested_new_page_or_admin_surface'
+    }
+    log('codex_opportunity_invalid_action', {
+      workspace: workspace?.label || workspace?.id || null,
+      reason: 'scout_suggested_new_page_or_admin_surface',
+      title: parsed.action.title || null,
+      targetUrl
+    })
+    return null
+  }
   return {
     id: `seo_scout_${slugify(`${host}-${repoName}-${normalizeActionPath(targetUrl)}-${keyword}`).slice(0, 140)}`,
     status: 'pending',
@@ -4636,6 +4669,7 @@ function formatStatusMessage(workspace, payload, targetChannelId = null) {
 function ensureAutonomousAgentState() {
   state.workspaceProfiles = state.workspaceProfiles || {}
   state.actionLedger = state.actionLedger || {}
+  state.codexActionCardBriefCache = state.codexActionCardBriefCache || {}
   state.keywordMaps = state.keywordMaps || {}
   state.seoExperiments = state.seoExperiments || {}
   state.experimentOutcomes = state.experimentOutcomes || {}
@@ -5493,6 +5527,28 @@ function rememberGuardedAction(action, workspace, targetChannelId, reason) {
   rememberAgentLesson(`Guarded ${key}: ${reason}`)
 }
 
+function rememberCodexRejectedAction(action, workspace, targetChannelId, codexBrief, source = 'codex_guard') {
+  const recommendation = String(codexBrief?.recommendation || '').toLowerCase()
+  const decision = String(codexBrief?.decision || '').toLowerCase()
+  const reason = `codex:${codexBrief?.recommendation || codexBrief?.decision || 'unavailable'}:${codexBrief?.reason || codexBrief?.why || source}`
+  const event = recommendation === 'deprioritize' ? 'deprioritized' : recommendation === 'skip' || decision === 'block' ? 'ignored' : 'guarded'
+  const recheckDays = event === 'guarded' ? 1 : 7
+  recordActionLedger(action, workspace, targetChannelId, event, {
+    reason: reason.slice(0, 360),
+    source,
+    recheckAfter: isoDatePlusDays(recheckDays)
+  })
+  if (event === 'guarded') {
+    const key = actionLearningKey(action, workspace, targetChannelId)
+    state.guardedActions[key] = { actionId: action.id || null, title: action.title || '', reason, at: new Date().toISOString() }
+  }
+  rememberAgentLesson(`Codex stopped ${actionLearningKey(action, workspace, targetChannelId)}: ${reason.slice(0, 180)}`)
+}
+
+function isoDatePlusDays(days) {
+  return new Date(Date.now() + Number(days || 0) * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+}
+
 function recordDecisionInLedger(actionId, decision, targetChannelId, meta = {}) {
   const action = fallbackActionFromState(actionId, targetChannelId) || { id: actionId, title: actionId }
   const workspace = workspaceForChannel(targetChannelId)
@@ -5756,7 +5812,7 @@ async function buildActionCardMessage(action, workspacePolicy, workspace, review
     return null
   })
   if (codexBrief?.decision === 'block') {
-    rememberGuardedAction(action, workspace, targetChannelId, `codex_action_card_blocked:${codexBrief.reason || 'unclear_action'}`)
+    rememberCodexRejectedAction(action, workspace, targetChannelId, codexBrief, 'posted_action_card_brief')
     log('codex_action_card_blocked', {
       actionId: action?.id || null,
       workspace: workspace?.label || workspace?.id || null,
@@ -5780,6 +5836,17 @@ async function buildActionCardMessage(action, workspacePolicy, workspace, review
 async function runCodexActionCardBrief({ action, workspace, workspacePolicy, review, targetChannelId }) {
   if (!codexChatEnabled) return null
   const profile = ensureWorkspaceProfile(workspace, targetChannelId)
+  const cacheKey = actionCardBriefCacheKey(action, workspace, targetChannelId, review)
+  const cached = getCachedActionCardBrief(cacheKey)
+  if (cached.found) {
+    logThrottled(`codex_action_card_brief_cache_hit:${cacheKey}`, 30 * 60 * 1000, 'codex_action_card_brief_cache_hit', {
+      actionId: action?.id || null,
+      workspace: workspace?.label || workspace?.id || null,
+      decision: cached.result?.decision || null,
+      recommendation: cached.result?.recommendation || null
+    })
+    return cached.result
+  }
   const promptPath = join(stateDir, 'codex-action-card-brief.md')
   const context = {
     workspace: workspace ? {
@@ -5845,7 +5912,61 @@ async function runCodexActionCardBrief({ action, workspace, workspacePolicy, rev
     timeout: 3 * 60 * 1000,
     maxBuffer: 8 * 1024 * 1024
   })
-  return normalizeActionCardBrief(extractCodexExecText(result.stdout || ''))
+  const brief = normalizeActionCardBrief(extractCodexExecText(result.stdout || ''))
+  setCachedActionCardBrief(cacheKey, brief, action, workspace)
+  return brief
+}
+
+function actionCardBriefCacheKey(action, workspace, targetChannelId, review = null) {
+  const payload = JSON.stringify({
+    workspaceKey: workspaceProfileKey(workspace, targetChannelId),
+    actionId: action?.id || '',
+    title: action?.title || '',
+    targetUrl: action?.targetUrl || action?.url || '',
+    keyword: action?.keyword || '',
+    category: action?.category || '',
+    why: action?.why || '',
+    recommendedAction: action?.recommendedAction || '',
+    evidenceSource: action?.evidenceSource || '',
+    reviewRecommendation: review?.recommendation || '',
+    reviewScore: review?.score || ''
+  })
+  return createHash('sha256').update(payload).digest('hex').slice(0, 32)
+}
+
+function getCachedActionCardBrief(cacheKey) {
+  ensureAutonomousAgentState()
+  const entry = state.codexActionCardBriefCache?.[cacheKey]
+  if (!entry) return { found: false, result: null }
+  if (Number(entry.expiresAtMs || 0) <= Date.now()) {
+    delete state.codexActionCardBriefCache[cacheKey]
+    return { found: false, result: null }
+  }
+  return { found: true, result: entry.result || null }
+}
+
+function setCachedActionCardBrief(cacheKey, brief, action, workspace) {
+  ensureAutonomousAgentState()
+  const decision = String(brief?.decision || '').toLowerCase()
+  const recommendation = String(brief?.recommendation || '').toLowerCase()
+  const blocked = !brief || decision === 'block' || recommendation === 'skip' || recommendation === 'deprioritize'
+  const ttlMs = blocked ? 6 * 60 * 60 * 1000 : 60 * 60 * 1000
+  state.codexActionCardBriefCache[cacheKey] = {
+    result: brief || null,
+    actionId: action?.id || null,
+    workspace: workspace?.label || workspace?.id || null,
+    cachedAt: new Date().toISOString(),
+    expiresAtMs: Date.now() + ttlMs
+  }
+  pruneActionCardBriefCache()
+}
+
+function pruneActionCardBriefCache() {
+  const entries = Object.entries(state.codexActionCardBriefCache || {})
+    .filter(([, item]) => Number(item?.expiresAtMs || 0) > Date.now())
+    .sort((a, b) => Number(b[1]?.expiresAtMs || 0) - Number(a[1]?.expiresAtMs || 0))
+    .slice(0, 300)
+  state.codexActionCardBriefCache = Object.fromEntries(entries)
 }
 
 function normalizeActionCardBrief(text) {
