@@ -7,6 +7,8 @@ const host = env.SEO_RUNTIME_HOST || '127.0.0.1'
 const port = Number(env.SEO_RUNTIME_PORT || '1460')
 const statePath = env.SEO_RUNTIME_STATE_PATH || '/home/deploy/seo-agent-discord/state/state.json'
 const runtimeKey = 'seo-agent'
+const platformApiUrl = (env.PLATFORM_API_URL || 'https://dashboard2-platform-api.sebastian-castwall.workers.dev').replace(/\/$/, '')
+const platformToken = env.PLATFORM_API_TOKEN || ''
 
 const server = http.createServer((request, response) => {
   handleRequest(request, response).catch((error) => {
@@ -45,6 +47,13 @@ async function handleRequest(request, response) {
     const workspaceKey = decodeURIComponent(nextMatch[1])
     const body = await readJsonBody(request)
     const result = selectNextAction(workspaceKey, body)
+    return sendJson(response, result.statusCode || 200, result.body)
+  }
+  const liveMatch = url.pathname.match(/^\/seo\/workspaces\/([^/]+)\/actions\/live$/)
+  if (request.method === 'POST' && liveMatch) {
+    const workspaceKey = decodeURIComponent(liveMatch[1])
+    const body = await readJsonBody(request)
+    const result = await fetchLiveActions(workspaceKey, body)
     return sendJson(response, result.statusCode || 200, result.body)
   }
   const executeMatch = url.pathname.match(/^\/seo\/actions\/([^/]+)\/execute$/)
@@ -140,6 +149,108 @@ function normalizeRuntimeAction(input, status = 'pending', meta = {}) {
     riskFlags: input.riskFlags || [],
     source: meta.source || input.source || 'state'
   }
+}
+
+async function fetchLiveActions(workspaceKey, payload = {}) {
+  const limit = clampNumber(payload.limit, 1, 50, 10)
+  const workspace = payload.workspace && typeof payload.workspace === 'object' ? payload.workspace : {}
+  const includeGscProperty = payload.includeGscProperty !== false
+  const path = buildPlatformSeoActionsPath(workspace, limit, { includeGscProperty })
+  try {
+    const platformPayload = await fetchPlatformJson(path)
+    if (!platformPayload || !Array.isArray(platformPayload.actions)) {
+      return {
+        statusCode: 502,
+        body: {
+          ok: false,
+          runtimeKey,
+          workspaceKey,
+          error: 'platform_actions_shape_invalid',
+          path
+        }
+      }
+    }
+    return {
+      statusCode: 200,
+      body: {
+        ok: true,
+        runtimeKey,
+        workspaceKey,
+        source: 'platform',
+        path,
+        actions: platformPayload.actions,
+        workspacePolicy: platformPayload.workspacePolicy || '',
+        workspace: platformPayload.workspace || null,
+        raw: payload.includeRaw ? platformPayload : undefined
+      }
+    }
+  } catch (error) {
+    const message = error?.message || String(error)
+    return {
+      statusCode: platformErrorStatusCode(message),
+      body: {
+        ok: false,
+        runtimeKey,
+        workspaceKey,
+        error: message,
+        path,
+        resourceLimit: isPlatformResourceLimitError(message),
+        missingBatch: isSeoBatchNotFoundError(message)
+      }
+    }
+  }
+}
+
+function buildPlatformSeoActionsPath(workspace, limit, options = {}) {
+  const params = new URLSearchParams({ limit: String(limit) })
+  if (workspace && Object.keys(workspace).length) {
+    if (options.includeGscProperty !== false) params.set('gscProperty', workspace.gscProperty || '')
+    params.set('repoFullName', workspace.repoFullName || '')
+    params.set('branch', workspace.branch || '')
+  }
+  return `/api/platform/seo-monitor/actions?${params.toString()}`
+}
+
+async function fetchPlatformJson(path, init = {}) {
+  const headers = {
+    'content-type': 'application/json',
+    'accept': 'application/json',
+    ...(platformToken ? { authorization: `Bearer ${platformToken}` } : {}),
+    ...(init.headers || {})
+  }
+  const response = await fetch(`${platformApiUrl}${path}`, { ...init, headers })
+  const text = await response.text()
+  const contentType = response.headers.get('content-type') || ''
+  let payload = {}
+  if (text) {
+    try {
+      payload = JSON.parse(text)
+    } catch {
+      const preview = text.replace(/\s+/g, ' ').slice(0, 180)
+      const htmlHint = /^\s*</.test(text) || contentType.includes('text/html') ? 'html_response' : 'invalid_json'
+      throw new Error(`platform_${response.status}_${htmlHint}: ${path} returned ${contentType || 'unknown content-type'} · ${preview}`)
+    }
+  }
+  if (!response.ok) {
+    const message = payload && typeof payload === 'object' && payload.error ? payload.error : text.slice(0, 200)
+    throw new Error(`platform_${response.status}: ${message}`)
+  }
+  return payload
+}
+
+function platformErrorStatusCode(message) {
+  const match = String(message || '').match(/platform_(\d{3})/)
+  const status = match ? Number(match[1]) : 502
+  return Number.isFinite(status) && status >= 400 && status < 600 ? status : 502
+}
+
+function isSeoBatchNotFoundError(message) {
+  return String(message || '').toLowerCase().includes('seo_batch_not_found')
+}
+
+function isPlatformResourceLimitError(message) {
+  const text = String(message || '').toLowerCase()
+  return text.includes('platform_503') && (text.includes('error 1102') || text.includes('resource limit'))
 }
 
 function executeAction(actionId, payload = {}) {

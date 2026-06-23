@@ -15,9 +15,22 @@ This lets us add the runtime contract without breaking the current Discord worke
 ```text
 GET  /healthz
 GET  /seo/today?limit=20&workspace=<workspaceKey>
+POST /seo/workspaces/:workspaceKey/actions/live
 POST /seo/workspaces/:workspaceKey/actions/next
 POST /seo/actions/:actionId/execute
 ```
+
+Live actions payload:
+
+```json
+{
+  "workspace": { "gscProperty": "sc-domain:sebcastwall.se", "repoFullName": "sajden/sebcastwall", "branch": "main" },
+  "limit": 12,
+  "includeGscProperty": true
+}
+```
+
+The runtime fetches `/api/platform/seo-monitor/actions` with the configured `PLATFORM_API_URL` and `PLATFORM_API_TOKEN`. During migration the Discord worker falls back to its legacy platform fetch when this endpoint fails.
 
 Candidate selection payload:
 
@@ -49,6 +62,7 @@ The runtime stores idempotency results in `state.runtimeExecutions`.
 
 - `GET /seo/today` returns only current active/approved actions derived from the existing state file.
 - `GET /seo/today?includeLedger=true` is a debug view for non-terminal ledger actions. The default intentionally does not recreate old proposed actions from historical ledger state.
+- `POST /seo/workspaces/:workspaceKey/actions/live` fetches live SEO Monitor actions from the platform API.
 - `POST /seo/workspaces/:workspaceKey/actions/next` scores pending live actions against runtime state, workspace profile, prior results, ledger cooldowns, and hard guards for legal/admin/GSC/keyword-plan noise.
 - `POST /execute` with `approved` queues the action in `approvedCodeActionQueue`.
 - `POST /execute` with `skipped`, `deprioritized`, or `stopped` updates `actionLedger` and clears the active action.

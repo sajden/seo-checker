@@ -4519,6 +4519,8 @@ async function fetchActionsForChat(workspace) {
 }
 
 async function fetchSeoMonitorActions(workspace, limit) {
+  const runtimePayload = await fetchSeoMonitorActionsViaRuntime(workspace, limit)
+  if (runtimePayload) return runtimePayload
   const activeFallback = activeSeoActionsResourceLimitFallback(workspace)
   const preferRepoOnlyRoute = shouldPreferRepoOnlySeoActionsRoute(workspace)
   if (activeFallback || preferRepoOnlyRoute) {
@@ -4600,6 +4602,54 @@ async function fetchSeoMonitorActions(workspace, limit) {
         originalError: error?.message || String(error)
       }
     }
+  }
+}
+
+async function fetchSeoMonitorActionsViaRuntime(workspace, limit, options = {}) {
+  const workspaceKey = encodeURIComponent(workspaceProfileKey(workspace, null))
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), Number(env.SEO_RUNTIME_FETCH_TIMEOUT_MS || '10000'))
+  try {
+    const response = await fetch(`${seoRuntimeUrl}/seo/workspaces/${workspaceKey}/actions/live`, {
+      method: 'POST',
+      signal: controller.signal,
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        workspace,
+        limit,
+        includeGscProperty: options.includeGscProperty !== false
+      })
+    })
+    const text = await response.text()
+    let payload = null
+    try {
+      payload = text ? JSON.parse(text) : null
+    } catch {
+      payload = { raw: text }
+    }
+    if (!response.ok || payload?.ok === false || !Array.isArray(payload?.actions)) {
+      throw new Error(payload?.error || payload?.detail || text || `runtime_live_http_${response.status}`)
+    }
+    log('runtime_live_actions_fetched', {
+      workspace: workspace?.label || workspace?.id || workspace?.repoFullName || null,
+      limit,
+      actionCount: payload.actions.length
+    })
+    return {
+      actions: payload.actions,
+      workspacePolicy: payload.workspacePolicy || '',
+      workspace: payload.workspace || null,
+      runtimeSource: 'seo-runtime'
+    }
+  } catch (error) {
+    logThrottled(`runtime_live_actions_failed:${workspace?.id || workspace?.repoFullName || workspace?.label || 'default'}`, 15 * 60 * 1000, 'runtime_live_actions_failed', {
+      workspace: workspace?.label || workspace?.id || workspace?.repoFullName || null,
+      limit,
+      error: error?.name === 'AbortError' ? 'timeout' : error?.message || String(error)
+    })
+    return null
+  } finally {
+    clearTimeout(timeout)
   }
 }
 
