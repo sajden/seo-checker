@@ -12,6 +12,7 @@ const channelId = required('DISCORD_CHANNEL_ID')
 const allowedUserId = required('DISCORD_ALLOWED_USER_ID')
 const platformApiUrl = (env.PLATFORM_API_URL || 'https://dashboard2-platform-api.sebastian-castwall.workers.dev').replace(/\/$/, '')
 const platformToken = env.PLATFORM_API_TOKEN || ''
+const seoRuntimeUrl = (env.SEO_RUNTIME_URL || 'http://127.0.0.1:1460').replace(/\/$/, '')
 const googleAdsOauthRedirectUri = env.GOOGLE_ADS_OAUTH_REDIRECT_URI || 'http://localhost:1455/oauth/google-ads/callback'
 const googleAdsOauthState = env.GOOGLE_ADS_OAUTH_STATE || 'seo-agent-google-ads-oauth'
 const gscOauthRedirectUri = env.GSC_REDIRECT_URI || env.GOOGLE_SEARCH_CONSOLE_REDIRECT_URI || 'https://seo-api.sebcastwall.se/api/gsc/callback'
@@ -54,7 +55,7 @@ const state = loadState()
 ensureAutonomousAgentState()
 let tickRunning = false
 
-log('starting', { channelId, allowedUserId, platformApiUrl, pollMs, dailyHourUtc, runCheckEveryMs, workspaceChannelCount: Object.keys(workspaceChannels).length, automationEnabled, codeAutomationEnabled })
+log('starting', { channelId, allowedUserId, platformApiUrl, seoRuntimeUrl, pollMs, dailyHourUtc, runCheckEveryMs, workspaceChannelCount: Object.keys(workspaceChannels).length, automationEnabled, codeAutomationEnabled })
 startDiscordInteractionClient()
 await postStartupOnce()
 
@@ -2604,20 +2605,27 @@ function startDiscordInteractionClient() {
       }
 
       const decision = customId.slice('seo-decision:'.length)
-      const result = await saveActionDecision({
+      const decisionInput = {
         actionId,
         decision,
         reason: null,
         source: 'discord_button',
         discordMessageId: interaction.message.id,
         discordChannelId: interaction.channelId,
-      })
-      recordDecisionInLedger(actionId, decision, interaction.channelId, { source: 'discord_button' })
-      if (decision === 'approved') {
-        await rememberApprovedCodeAction(actionId, interaction.channelId)
-        clearActiveAction(actionId)
-      } else clearActiveAction(actionId)
-      await interaction.reply({ content: decision === 'approved' ? `Approve sparad för ${result.decision?.actionId || actionId}. Jag startar kodautomation på nästa agent-tick och postar commit/diff här.` : `Sparat beslut: ${decision} för ${result.decision?.actionId || actionId}.`, ephemeral: true })
+      }
+      saveState()
+      const runtimeResult = await executeActionDecisionThroughRuntime(decisionInput)
+      const result = runtimeResult.ok
+        ? await saveActionDecisionBestEffort(decisionInput)
+        : await saveActionDecision(decisionInput)
+      if (!runtimeResult.ok) {
+        recordDecisionInLedger(actionId, decision, interaction.channelId, { source: 'discord_button' })
+        if (decision === 'approved') {
+          await rememberApprovedCodeAction(actionId, interaction.channelId)
+          clearActiveAction(actionId)
+        } else clearActiveAction(actionId)
+      }
+      await interaction.reply({ content: decision === 'approved' ? `Approve sparad för ${result?.decision?.actionId || actionId}. Jag startar kodautomation på nästa agent-tick och postar commit/diff här.` : `Sparat beslut: ${decision} för ${result?.decision?.actionId || actionId}.`, ephemeral: true })
       await interaction.message.edit({ components: [] }).catch(() => null)
       log('button_decision_saved', { actionId, decision, discordMessageId: interaction.message.id })
     } catch (error) {
@@ -2665,15 +2673,22 @@ async function runGscInspectionAction(action, workspace, targetChannelId, source
   const observationPath = result?.observation?.path || ''
   const indexedByGsc = result?.inspection?.status === 'indexed' && Number(result?.inspection?.confidence || 0) >= 0.8
   if (indexedByGsc) {
-    await saveActionDecision({
+    const decisionInput = {
       actionId: action.id,
       decision: 'skipped',
       reason: `GSC URL Inspection verified indexed (${result.inspection.reason}, confidence ${Number(result.inspection.confidence).toFixed(2)}).`,
       source: `${source}_indexed`,
       discordMessageId: null,
       discordChannelId: targetChannelId
-    }).catch((error) => log('gsc_indexed_decision_failed', { actionId: action.id, error: error?.message || String(error) }))
-    clearActiveAction(action.id)
+    }
+    saveState()
+    const runtimeResult = await executeActionDecisionThroughRuntime(decisionInput)
+    if (runtimeResult.ok) {
+      await saveActionDecisionBestEffort(decisionInput)
+    } else {
+      await saveActionDecision(decisionInput).catch((error) => log('gsc_indexed_decision_failed', { actionId: action.id, error: error?.message || String(error) }))
+      clearActiveAction(action.id)
+    }
     state.indexingConfirmations = state.indexingConfirmations || {}
     state.indexingConfirmations[`${workspace?.label || workspace?.id || 'workspace'}:${normalizeActionPath(action.targetUrl || '')}`] = {
       status: 'indexed',
@@ -2759,6 +2774,77 @@ async function saveActionDecision({ actionId, decision, reason, source, discordM
       }
     })
   })
+}
+
+function reloadStateFromDisk() {
+  const fresh = loadState()
+  for (const key of Object.keys(state)) delete state[key]
+  Object.assign(state, fresh)
+  ensureAutonomousAgentState()
+}
+
+async function executeActionDecisionThroughRuntime({
+  actionId,
+  decision,
+  reason,
+  source,
+  discordMessageId,
+  discordChannelId,
+  operatorId = allowedUserId
+}) {
+  const idempotencyKey = [
+    'discord',
+    source || 'decision',
+    discordMessageId || discordChannelId || 'no-message',
+    actionId,
+    decision
+  ].join(':')
+  try {
+    const response = await fetch(`${seoRuntimeUrl}/seo/actions/${encodeURIComponent(actionId)}/execute`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        decision,
+        operatorId: operatorId ? `discord:${operatorId}` : 'discord:unknown',
+        reason: reason || source || 'discord_decision',
+        idempotencyKey
+      })
+    })
+    const text = await response.text()
+    let payload = null
+    try {
+      payload = text ? JSON.parse(text) : null
+    } catch {
+      payload = { raw: text }
+    }
+    if (!response.ok || payload?.ok === false) {
+      throw new Error(payload?.error || payload?.detail || text || `runtime_http_${response.status}`)
+    }
+    reloadStateFromDisk()
+    log('runtime_decision_saved', { actionId, decision, source, idempotencyKey })
+    return { ok: true, payload }
+  } catch (error) {
+    log('runtime_decision_failed_fallback_to_worker', {
+      actionId,
+      decision,
+      source,
+      error: error?.message || String(error)
+    })
+    return { ok: false, error: error?.message || String(error) }
+  }
+}
+
+async function saveActionDecisionBestEffort(input) {
+  try {
+    return await saveActionDecision(input)
+  } catch (error) {
+    log('platform_decision_save_failed_non_blocking', {
+      actionId: input?.actionId || null,
+      decision: input?.decision || null,
+      error: error?.message || String(error)
+    })
+    return null
+  }
 }
 
 async function handleChatMessage(content, message, targetChannelId) {
@@ -2941,18 +3027,25 @@ async function maybeHandleOperatorIntent(message, targetChannelId) {
   if (!active) return false
   const directDecision = directNaturalDecisionForActiveAction(message)
   if (directDecision) {
-    await saveActionDecision({
+    const decisionInput = {
       actionId: active.id,
       decision: directDecision.decision,
       reason: `${directDecision.reason}: ${String(message || '').slice(0, 240)}`,
       source: 'discord_natural_chat',
       discordMessageId: null,
       discordChannelId: targetChannelId
-    })
-    recordDecisionInLedger(active.id, directDecision.decision, targetChannelId, { source: 'discord_natural_chat', reason: directDecision.reason })
-    if (directDecision.decision === 'approved') await rememberApprovedCodeAction(active.id, targetChannelId)
-    clearActiveAction(active.id)
+    }
     saveState()
+    const runtimeResult = await executeActionDecisionThroughRuntime(decisionInput)
+    if (runtimeResult.ok) {
+      await saveActionDecisionBestEffort(decisionInput)
+    } else {
+      await saveActionDecision(decisionInput)
+      recordDecisionInLedger(active.id, directDecision.decision, targetChannelId, { source: 'discord_natural_chat', reason: directDecision.reason })
+      if (directDecision.decision === 'approved') await rememberApprovedCodeAction(active.id, targetChannelId)
+      clearActiveAction(active.id)
+      saveState()
+    }
     await sendDiscordMessage(directDecision.confirmation(active), targetChannelId)
     return true
   }
@@ -2963,30 +3056,44 @@ async function maybeHandleOperatorIntent(message, targetChannelId) {
     return true
   }
   if (intent.intent === 'mark_handled') {
-    await saveActionDecision({
+    const decisionInput = {
       actionId: active.id,
       decision: 'skipped',
       reason: `User confirmed handled in Discord: ${String(message || '').slice(0, 240)}`,
       source: 'discord_operator_intent',
       discordMessageId: null,
       discordChannelId: targetChannelId
-    })
-    clearActiveAction(active.id)
+    }
     saveState()
+    const runtimeResult = await executeActionDecisionThroughRuntime(decisionInput)
+    if (runtimeResult.ok) {
+      await saveActionDecisionBestEffort(decisionInput)
+    } else {
+      await saveActionDecision(decisionInput)
+      clearActiveAction(active.id)
+      saveState()
+    }
     await sendDiscordMessage(`Jag markerade kortet som hanterat: ${active.title || active.id}`, targetChannelId)
     return true
   }
   if (intent.intent === 'deprioritize') {
-    await saveActionDecision({
+    const decisionInput = {
       actionId: active.id,
       decision: 'deprioritized',
       reason: `User deprioritized in natural language: ${String(message || '').slice(0, 240)}`,
       source: 'discord_operator_intent',
       discordMessageId: null,
       discordChannelId: targetChannelId
-    })
-    clearActiveAction(active.id)
+    }
     saveState()
+    const runtimeResult = await executeActionDecisionThroughRuntime(decisionInput)
+    if (runtimeResult.ok) {
+      await saveActionDecisionBestEffort(decisionInput)
+    } else {
+      await saveActionDecision(decisionInput)
+      clearActiveAction(active.id)
+      saveState()
+    }
     await sendDiscordMessage(`Jag prioriterade bort kortet tills vidare: ${active.title || active.id}`, targetChannelId)
     return true
   }
@@ -3201,15 +3308,22 @@ async function handleUserIndexingConfirmation(workspace, targetChannelId, messag
   const action = (activeId ? actions.find((item) => String(item.id || '') === String(activeId)) : null)
     || actions.find((item) => isIndexingCheckAction(item))
   if (!action || !isIndexingCheckAction(action)) return false
-  await saveActionDecision({
+  const decisionInput = {
     actionId: action.id,
     decision: 'skipped',
     reason: `User confirmed indexed in Discord: ${String(message || '').slice(0, 240)}`,
     source: 'discord_indexing_confirmation',
     discordMessageId: null,
     discordChannelId: targetChannelId
-  })
-  clearActiveAction(action.id)
+  }
+  saveState()
+  const runtimeResult = await executeActionDecisionThroughRuntime(decisionInput)
+  if (runtimeResult.ok) {
+    await saveActionDecisionBestEffort(decisionInput)
+  } else {
+    await saveActionDecision(decisionInput)
+    clearActiveAction(action.id)
+  }
   state.indexingConfirmations = state.indexingConfirmations || {}
   state.indexingConfirmations[`${workspace?.label || workspace?.id || 'workspace'}:${normalizeActionPath(action.targetUrl || '')}`] = {
     status: 'indexed',
