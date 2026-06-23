@@ -48,6 +48,11 @@ async function handleRequest(request, response) {
       actions: currentActions(readState(), { workspace, limit, includeLedger })
     })
   }
+  if (request.method === 'POST' && url.pathname === '/seo/tick/advice') {
+    const body = await readJsonBody(request)
+    const result = tickAdvice(body)
+    return sendJson(response, result.statusCode || 200, result.body)
+  }
   const nextMatch = url.pathname.match(/^\/seo\/workspaces\/([^/]+)\/actions\/next$/)
   if (request.method === 'POST' && nextMatch) {
     const workspaceKey = decodeURIComponent(nextMatch[1])
@@ -144,6 +149,54 @@ function currentActions(state, { workspace = '', limit = 20, includeLedger = fal
   return deduped
     .sort((a, b) => Date.parse(b.updatedAt || b.createdAt || 0) - Date.parse(a.updatedAt || a.createdAt || 0))
     .slice(0, limit)
+}
+
+function tickAdvice(payload = {}) {
+  const state = readState()
+  const nowMs = Number.isFinite(Date.parse(payload.now)) ? Date.parse(payload.now) : Date.now()
+  const today = new Date(nowMs).toISOString().slice(0, 10)
+  const dailyHourUtc = clampNumber(payload.dailyHourUtc, 0, 23, 4)
+  const intervals = payload.intervals && typeof payload.intervals === 'object' ? payload.intervals : {}
+  const steps = {
+    processDiscordReplies: true,
+    listWorkspaces: true,
+    syncWorkspaceRepoCommits: dueByInterval(state.lastRepoCommitSyncAt, nowMs, intervals.repoCommitSyncMs, 15 * 60 * 1000),
+    ensureDailyRunsForWorkspaces: dueDailyRunCheck(state, nowMs, dailyHourUtc, intervals.runCheckMs),
+    runDailyRankingReviews: new Date(nowMs).getUTCHours() >= dailyHourUtc,
+    postReadinessForWorkspaces: true,
+    checkGscIssuesForWorkspaces: dueByInterval(state.lastGscIssueCheckAt, nowMs, intervals.gscIssueCheckMs, 6 * 60 * 60 * 1000),
+    postPendingActionsForWorkspaces: true,
+    prepareAutonomousCodeWork: true,
+    runIntegrationDoctor: dueByInterval(state.lastIntegrationDoctorAt, nowMs, intervals.integrationDoctorMs, 12 * 60 * 60 * 1000),
+    askForGscApiOauth: true
+  }
+  state.runtimeTickAdvice = {
+    ...(state.runtimeTickAdvice || {}),
+    lastAdviceAt: new Date(nowMs).toISOString()
+  }
+  writeState(state)
+  return {
+    statusCode: 200,
+    body: {
+      ok: true,
+      runtimeKey,
+      today,
+      generatedAt: new Date(nowMs).toISOString(),
+      steps
+    }
+  }
+}
+
+function dueByInterval(lastAt, nowMs, intervalInput, fallbackMs) {
+  const intervalMs = clampNumber(intervalInput, 60 * 1000, 7 * 24 * 60 * 60 * 1000, fallbackMs)
+  const lastMs = Date.parse(lastAt || '')
+  return !lastMs || nowMs - lastMs >= intervalMs
+}
+
+function dueDailyRunCheck(state, nowMs, dailyHourUtc, intervalInput) {
+  const now = new Date(nowMs)
+  if (now.getUTCHours() < dailyHourUtc) return false
+  return dueByInterval(state.lastRunCheckAt, nowMs, intervalInput, 15 * 60 * 1000)
 }
 
 function normalizeRuntimeAction(input, status = 'pending', meta = {}) {

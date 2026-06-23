@@ -15,6 +15,7 @@ This lets us add the runtime contract without breaking the current Discord worke
 ```text
 GET  /healthz
 GET  /seo/today?limit=20&workspace=<workspaceKey>
+POST /seo/tick/advice
 POST /seo/workspaces/:workspaceKey/actions/live
 POST /seo/workspaces/:workspaceKey/actions/current
 POST /seo/workspaces/:workspaceKey/actions/next
@@ -34,6 +35,23 @@ Live actions payload:
 ```
 
 The runtime fetches `/api/platform/seo-monitor/actions` with the configured `PLATFORM_API_URL` and `PLATFORM_API_TOKEN`. During migration the Discord worker falls back to its legacy platform fetch when this endpoint fails.
+
+Tick advice payload:
+
+```json
+{
+  "now": "2026-06-23T11:45:00.000Z",
+  "dailyHourUtc": 4,
+  "intervals": {
+    "runCheckMs": 900000,
+    "integrationDoctorMs": 43200000,
+    "gscIssueCheckMs": 21600000,
+    "repoCommitSyncMs": 900000
+  }
+}
+```
+
+`POST /seo/tick/advice` returns a `steps` object that tells the Hermes/Discord transport which periodic jobs are due. This moves cadence decisions out of Hermes while keeping Discord I/O in Hermes.
 
 Current action payload:
 
@@ -92,6 +110,7 @@ Posted action payload:
 
 - `GET /seo/today` returns only current active/approved actions derived from the existing state file.
 - `GET /seo/today?includeLedger=true` is a debug view for non-terminal ledger actions. The default intentionally does not recreate old proposed actions from historical ledger state.
+- `POST /seo/tick/advice` owns the cadence decision for expensive periodic work. Hermes still executes Discord-facing transport steps.
 - `POST /seo/workspaces/:workspaceKey/actions/live` fetches live SEO Monitor actions from the platform API.
 - `POST /seo/workspaces/:workspaceKey/actions/current` is the runtime-owned current work queue for Discord/Hermes: it fetches live actions, applies runtime guards, and returns one selected action or no-action.
 - `POST /seo/workspaces/:workspaceKey/actions/next` scores pending live actions against runtime state, workspace profile, prior results, ledger cooldowns, and hard guards for legal/admin/GSC/keyword-plan noise.

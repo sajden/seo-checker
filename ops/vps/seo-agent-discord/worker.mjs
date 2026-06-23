@@ -80,7 +80,11 @@ async function tickGuarded() {
 
 async function tick() {
   cleanupStaleRuntimeState()
-  await runTickStep('process_discord_replies', () => processDiscordReplies())
+  const tickAdvice = await fetchRuntimeTickAdvice()
+  const steps = tickAdvice?.steps || {}
+  if (steps.processDiscordReplies !== false) {
+    await runTickStep('process_discord_replies', () => processDiscordReplies())
+  }
   const workspaces = await listWorkspaces().catch((error) => {
     recordTickStepFailure('list_workspaces', error)
     return null
@@ -89,15 +93,15 @@ async function tick() {
     saveState()
     return
   }
-  await runTickStep('sync_workspace_repo_commits', () => syncWorkspaceRepoCommits(workspaces))
-  await runTickStep('ensure_daily_runs_for_workspaces', () => ensureDailyRunsForWorkspaces(workspaces))
-  await runTickStep('run_daily_ranking_reviews', () => runDailyRankingReviews(workspaces))
-  await runTickStep('post_readiness_for_workspaces', () => postReadinessForWorkspaces(workspaces))
-  await runTickStep('check_gsc_issues_for_workspaces', () => checkGscIssuesForWorkspaces(workspaces))
-  await runTickStep('post_pending_actions_for_workspaces', () => postPendingActionsForWorkspaces(workspaces))
-  await runTickStep('prepare_autonomous_code_work', () => maybePrepareAutonomousCodeWork(workspaces))
-  await runTickStep('run_integration_doctor', () => maybeRunIntegrationDoctor(workspaces))
-  await runTickStep('ask_for_gsc_api_oauth', () => maybeAskForGscApiOAuth())
+  if (steps.syncWorkspaceRepoCommits !== false) await runTickStep('sync_workspace_repo_commits', () => syncWorkspaceRepoCommits(workspaces))
+  if (steps.ensureDailyRunsForWorkspaces !== false) await runTickStep('ensure_daily_runs_for_workspaces', () => ensureDailyRunsForWorkspaces(workspaces))
+  if (steps.runDailyRankingReviews !== false) await runTickStep('run_daily_ranking_reviews', () => runDailyRankingReviews(workspaces))
+  if (steps.postReadinessForWorkspaces !== false) await runTickStep('post_readiness_for_workspaces', () => postReadinessForWorkspaces(workspaces))
+  if (steps.checkGscIssuesForWorkspaces !== false) await runTickStep('check_gsc_issues_for_workspaces', () => checkGscIssuesForWorkspaces(workspaces))
+  if (steps.postPendingActionsForWorkspaces !== false) await runTickStep('post_pending_actions_for_workspaces', () => postPendingActionsForWorkspaces(workspaces))
+  if (steps.prepareAutonomousCodeWork !== false) await runTickStep('prepare_autonomous_code_work', () => maybePrepareAutonomousCodeWork(workspaces))
+  if (steps.runIntegrationDoctor !== false) await runTickStep('run_integration_doctor', () => maybeRunIntegrationDoctor(workspaces))
+  if (steps.askForGscApiOauth !== false) await runTickStep('ask_for_gsc_api_oauth', () => maybeAskForGscApiOAuth())
   saveState()
 }
 
@@ -2985,6 +2989,57 @@ async function fetchCurrentSeoActionThroughRuntime(workspace, targetChannelId, l
       error: error?.message || String(error)
     })
     return { ok: false, error: error?.message || String(error) }
+  }
+}
+
+async function fetchRuntimeTickAdvice() {
+  try {
+    const response = await fetch(`${seoRuntimeUrl}/seo/tick/advice`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        now: new Date().toISOString(),
+        dailyHourUtc,
+        intervals: {
+          runCheckMs: runCheckEveryMs,
+          integrationDoctorMs: integrationDoctorEveryMs,
+          gscIssueCheckMs: gscIssueCheckEveryMs,
+          repoCommitSyncMs: repoCommitSyncEveryMs,
+          opportunityScoutMinMs: opportunityScoutMinIntervalMs
+        }
+      })
+    })
+    const text = await response.text()
+    let payload = null
+    try {
+      payload = text ? JSON.parse(text) : null
+    } catch {
+      payload = { raw: text }
+    }
+    if (!response.ok || payload?.ok === false) {
+      throw new Error(payload?.error || payload?.detail || text || `runtime_tick_advice_http_${response.status}`)
+    }
+    return payload
+  } catch (error) {
+    logThrottled('runtime_tick_advice_failed', 15 * 60 * 1000, 'runtime_tick_advice_failed', {
+      error: error?.message || String(error)
+    })
+    return {
+      ok: false,
+      fallback: true,
+      steps: {
+        processDiscordReplies: true,
+        syncWorkspaceRepoCommits: true,
+        ensureDailyRunsForWorkspaces: true,
+        runDailyRankingReviews: true,
+        postReadinessForWorkspaces: true,
+        checkGscIssuesForWorkspaces: true,
+        postPendingActionsForWorkspaces: true,
+        prepareAutonomousCodeWork: true,
+        runIntegrationDoctor: true,
+        askForGscApiOauth: true
+      }
+    }
   }
 }
 
