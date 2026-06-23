@@ -78,7 +78,7 @@ function currentActions(state, { workspace = '', limit = 20, includeLedger = fal
   if (includeLedger) {
     for (const ledger of Object.values(state.actionLedger || {})) {
       if (!ledger?.actionId || resultById[ledger.actionId]) continue
-      if (!['approved', 'coding', 'failed'].includes(String(ledger.status || ''))) continue
+      if (!['approved', 'coding'].includes(String(ledger.status || ''))) continue
       actions.push(normalizeRuntimeAction({
         id: ledger.actionId,
         title: ledger.title || ledger.actionId,

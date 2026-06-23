@@ -41,7 +41,7 @@ const automationEnabled = env.SEO_AGENT_AUTONOMY_ENABLED !== 'false'
 const codeAutomationEnabled = env.SEO_AGENT_CODE_AUTOMATION_ENABLED === 'true'
 const autonomousCodeEnabled = env.SEO_AGENT_AUTONOMOUS_CODE_ENABLED !== 'false'
 const autonomousCodePerWorkspacePerDay = Number(env.SEO_AGENT_AUTONOMOUS_CODE_PER_WORKSPACE_PER_DAY || '0')
-const opportunityScoutMinIntervalMs = Number(env.SEO_AGENT_OPPORTUNITY_SCOUT_MIN_INTERVAL_MS || String(4 * 60 * 60 * 1000))
+const opportunityScoutMinIntervalMs = Number(env.SEO_AGENT_OPPORTUNITY_SCOUT_MIN_INTERVAL_MS || String(12 * 60 * 60 * 1000))
 const codexChatEnabled = env.SEO_AGENT_CODEX_CHAT_ENABLED !== 'false'
 const smartOutboundGuardEnabled = env.SEO_AGENT_SMART_OUTBOUND_GUARD !== 'false'
 const codexCli = env.CODEX_CLI || `${env.HOME || '/home/deploy'}/.npm-global/bin/codex`
@@ -1442,7 +1442,7 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
   if (/new-page|ny-sida|ny-landningssida|skapa-ny|ny-route|dashboard|adminyta|research-new-page/.test(candidateText)) {
     state.codexOpportunityScout[key] = {
       at: new Date().toISOString(),
-      blockedUntil: isoDatePlusDays(1),
+      blockedUntil: isoDatePlusDays(7),
       blockedReason: 'scout_suggested_new_page_or_admin_surface'
     }
     log('codex_opportunity_invalid_action', {
