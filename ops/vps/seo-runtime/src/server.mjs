@@ -20,6 +20,8 @@ const gscUrlInspectionToolPath = env.SEO_RUNTIME_GSC_URL_INSPECTION_TOOL_PATH ||
 const gscFirefoxUiToolPath = env.SEO_RUNTIME_GSC_FIREFOX_UI_TOOL_PATH || join(seoAgentAppRoot, 'gsc-firefox-ui-tool.mjs')
 const gscOauthRedirectUri = env.GSC_REDIRECT_URI || env.GOOGLE_SEARCH_CONSOLE_REDIRECT_URI || 'https://seo-api.sebcastwall.se/api/gsc/callback'
 const gscOauthState = env.GSC_OAUTH_STATE || 'seo-agent-gsc-oauth'
+const googleAdsOauthRedirectUri = env.GOOGLE_ADS_OAUTH_REDIRECT_URI || 'http://localhost:1455/oauth/google-ads/callback'
+const googleAdsOauthState = env.GOOGLE_ADS_OAUTH_STATE || 'seo-agent-google-ads-oauth'
 
 const server = http.createServer((request, response) => {
   handleRequest(request, response).catch((error) => {
@@ -70,6 +72,15 @@ async function handleRequest(request, response) {
   if (request.method === 'POST' && url.pathname === '/seo/integrations/gsc/oauth/exchange') {
     const body = await readJsonBody(request)
     const result = await exchangeGscOauth(body)
+    return sendJson(response, result.statusCode || 200, result.body)
+  }
+  if (request.method === 'POST' && url.pathname === '/seo/integrations/google-ads/oauth/start') {
+    const result = googleAdsOauthStart()
+    return sendJson(response, result.statusCode || 200, result.body)
+  }
+  if (request.method === 'POST' && url.pathname === '/seo/integrations/google-ads/oauth/exchange') {
+    const body = await readJsonBody(request)
+    const result = await exchangeGoogleAdsOauth(body)
     return sendJson(response, result.statusCode || 200, result.body)
   }
   if (request.method === 'POST' && url.pathname === '/seo/integrations/gsc/url-inspection') {
@@ -343,6 +354,114 @@ function gscClientId() {
 
 function gscClientSecret() {
   return env.GSC_CLIENT_SECRET || env.GOOGLE_SEARCH_CONSOLE_CLIENT_SECRET || env.GOOGLE_CLIENT_SECRET || ''
+}
+
+function googleAdsOauthStart() {
+  const clientId = env.GOOGLE_ADS_CLIENT_ID || ''
+  const clientSecret = env.GOOGLE_ADS_CLIENT_SECRET || ''
+  if (!clientId || !clientSecret) {
+    return {
+      statusCode: 200,
+      body: {
+        ok: false,
+        runtimeKey,
+        status: 'missing_oauth_client',
+        missing: [
+          !clientId ? 'GOOGLE_ADS_CLIENT_ID' : '',
+          !clientSecret ? 'GOOGLE_ADS_CLIENT_SECRET' : ''
+        ].filter(Boolean)
+      }
+    }
+  }
+  const params = new URLSearchParams({
+    client_id: clientId,
+    redirect_uri: googleAdsOauthRedirectUri,
+    response_type: 'code',
+    scope: 'https://www.googleapis.com/auth/adwords',
+    access_type: 'offline',
+    prompt: 'consent',
+    state: googleAdsOauthState
+  })
+  return {
+    statusCode: 200,
+    body: {
+      ok: true,
+      runtimeKey,
+      status: 'ready',
+      authorizationUrl: `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`,
+      redirectUri: googleAdsOauthRedirectUri,
+      state: googleAdsOauthState
+    }
+  }
+}
+
+async function exchangeGoogleAdsOauth(payload = {}) {
+  const code = String(payload.code || '').trim()
+  if (!code) return { statusCode: 400, body: { ok: false, runtimeKey, error: 'missing_code' } }
+  const clientId = env.GOOGLE_ADS_CLIENT_ID || ''
+  const clientSecret = env.GOOGLE_ADS_CLIENT_SECRET || ''
+  if (!clientId || !clientSecret) return { statusCode: 400, body: { ok: false, runtimeKey, error: 'missing_oauth_client' } }
+  const response = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      code,
+      client_id: clientId,
+      client_secret: clientSecret,
+      redirect_uri: googleAdsOauthRedirectUri,
+      grant_type: 'authorization_code'
+    })
+  })
+  const tokenPayload = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    return {
+      statusCode: 200,
+      body: {
+        ok: false,
+        runtimeKey,
+        status: `google_oauth_${response.status}`,
+        error: tokenPayload.error_description || tokenPayload.error || `google_oauth_${response.status}`
+      }
+    }
+  }
+  const refreshToken = tokenPayload.refresh_token ? String(tokenPayload.refresh_token) : ''
+  if (!refreshToken) {
+    return { statusCode: 200, body: { ok: false, runtimeKey, status: 'missing_refresh_token', error: 'Google returned no refresh token' } }
+  }
+  writeFileSync(join(stateDir, 'google-ads-refresh-token.txt'), refreshToken, { mode: 0o600 })
+  const platformSync = await syncGoogleAdsRefreshTokenToPlatform(refreshToken)
+  return {
+    statusCode: 200,
+    body: {
+      ok: true,
+      runtimeKey,
+      status: 'refresh_token_saved',
+      tokenSaved: true,
+      platformSync
+    }
+  }
+}
+
+async function syncGoogleAdsRefreshTokenToPlatform(refreshToken) {
+  try {
+    const payload = await fetchPlatformJson('/api/platform/ad-automation/google-ads/oauth-token', {
+      method: 'PUT',
+      body: JSON.stringify({ refreshToken })
+    })
+    return {
+      ok: Boolean(payload?.stored),
+      verified: Boolean(payload?.verified),
+      keywordPlannerStatus: payload?.keywordPlannerStatus || payload?.status || '',
+      error: payload?.error || ''
+    }
+  } catch (error) {
+    return {
+      ok: false,
+      verified: false,
+      keywordPlannerStatus: '',
+      error: error?.message || String(error)
+    }
+  }
 }
 
 async function inspectGscUrl(payload = {}) {

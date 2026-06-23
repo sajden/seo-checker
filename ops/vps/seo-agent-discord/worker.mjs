@@ -3164,11 +3164,11 @@ async function handleChatMessage(content, message, targetChannelId) {
     return
   }
   if (/koppla.*(google ads|ads|keyword planner)|(?:google ads|ads|keyword planner).*koppla|google ads.*oauth|ads oauth|keyword planner.*oauth|google ads.*login/i.test(trimmed)) {
-    await sendDiscordMessage(formatGoogleAdsOauthStartMessage(), targetChannelId)
+    await sendDiscordMessage(await formatGoogleAdsOauthStartMessage(), targetChannelId)
     return
   }
   if (/google ads.*oauth|ads oauth|keyword planner.*oauth|google ads.*login/i.test(trimmed)) {
-    await sendDiscordMessage(formatGoogleAdsOauthStartMessage(), targetChannelId)
+    await sendDiscordMessage(await formatGoogleAdsOauthStartMessage(), targetChannelId)
     return
   }
   if (/^(doctor|integrations?|integration doctor|status integrations?)$/i.test(trimmed)) {
@@ -3295,7 +3295,7 @@ async function handlePendingIntegrationRepair(targetChannelId) {
     return true
   }
   if (pending.type === 'google_ads') {
-    await sendDiscordMessage(formatGoogleAdsOauthStartMessage(), targetChannelId)
+    await sendDiscordMessage(await formatGoogleAdsOauthStartMessage(), targetChannelId)
     return true
   }
   await sendDiscordMessage('Jag kan inte avgöra vilken integration som ska kopplas. Skriv `koppla Search Console` eller `koppla Google Ads`.', targetChannelId)
@@ -4632,8 +4632,9 @@ async function readPendingOauthFromFirefox(message, targetChannelId) {
   return false
 }
 
-function formatGoogleAdsOauthStartMessage() {
-  const authUrl = googleAdsOauthUrl()
+async function formatGoogleAdsOauthStartMessage() {
+  const runtimeStart = await startGoogleAdsOauthThroughRuntime().catch((error) => ({ ok: false, error: error?.message || String(error) }))
+  const authUrl = runtimeStart.ok ? runtimeStart.authorizationUrl : googleAdsOauthUrl()
   if (!env.GOOGLE_ADS_CLIENT_ID || !env.GOOGLE_ADS_CLIENT_SECRET) {
     return [
       'Google Ads OAuth kan inte starta: SEO-agenten saknar GOOGLE_ADS_CLIENT_ID eller GOOGLE_ADS_CLIENT_SECRET på VPS:en.',
@@ -4647,6 +4648,25 @@ function formatGoogleAdsOauthStartMessage() {
     'Efteråt kan browsern hamna på localhost och visa fel. Det är okej: kopiera hela URL:en från adressfältet eller bara `code=...` och klistra in här.',
     'Agenten skriver aldrig ut refresh token i Discord.'
   ].join('\n')
+}
+
+async function startGoogleAdsOauthThroughRuntime() {
+  const response = await fetch(`${seoRuntimeUrl}/seo/integrations/google-ads/oauth/start`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{}'
+  })
+  const text = await response.text()
+  let payload = null
+  try {
+    payload = text ? JSON.parse(text) : null
+  } catch {
+    payload = { raw: text }
+  }
+  if (!response.ok || !payload?.ok || !payload.authorizationUrl) {
+    throw new Error(payload?.error || payload?.status || text || `runtime_google_ads_oauth_start_http_${response.status}`)
+  }
+  return payload
 }
 
 function googleAdsOauthUrl() {
@@ -4669,7 +4689,8 @@ async function openGoogleAdsOauthInFirefox() {
       'Be mig kontrollera integrationsstatusen när env är uppdaterad.'
     ].join('\n')
   }
-  const authUrl = googleAdsOauthUrl()
+  const runtimeStart = await startGoogleAdsOauthThroughRuntime().catch(() => null)
+  const authUrl = runtimeStart?.authorizationUrl || googleAdsOauthUrl()
   const result = await runGscFirefoxUiTool({ command: 'open-url', url: authUrl }).catch((error) => ({ ok: false, error: error?.message || String(error) }))
   if (!result.ok) {
     return [
@@ -4728,13 +4749,18 @@ async function handleGoogleAdsOauthCode(code, message, targetChannelId) {
     return
   }
   try {
-    const token = await exchangeGoogleAdsOauthCode(code)
-    if (!token.refreshToken) {
+    const exchanged = await exchangeGoogleAdsOauthCodeThroughRuntime(code).catch(async () => {
+      const token = await exchangeGoogleAdsOauthCode(code)
+      if (!token.refreshToken) return { ok: false, status: 'missing_refresh_token' }
+      saveGoogleAdsRefreshToken(token.refreshToken)
+      const platformSync = await syncGoogleAdsRefreshTokenToPlatform(token.refreshToken)
+      return { ok: true, platformSync }
+    })
+    if (!exchanged.ok) {
       await sendDiscordMessage('Google svarade utan refresh token. Be mig starta om Google Ads-kopplingen och godkänn hela consent-flödet igen.', targetChannelId)
       return
     }
-    saveGoogleAdsRefreshToken(token.refreshToken)
-    const platformSync = await syncGoogleAdsRefreshTokenToPlatform(token.refreshToken)
+    const platformSync = exchanged.platformSync || { ok: false, error: 'platform_sync_missing' }
     const statusLines = [
       'Google Ads OAuth lyckades. Ny refresh token är sparad lokalt på VPS:en.',
       platformSync.ok
@@ -4753,6 +4779,23 @@ async function handleGoogleAdsOauthCode(code, message, targetChannelId) {
   } catch (error) {
     await sendDiscordMessage(`Google Ads OAuth misslyckades: ${error?.message || String(error)}`, targetChannelId)
   }
+}
+
+async function exchangeGoogleAdsOauthCodeThroughRuntime(code) {
+  const response = await fetch(`${seoRuntimeUrl}/seo/integrations/google-ads/oauth/exchange`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ code })
+  })
+  const text = await response.text()
+  let payload = null
+  try {
+    payload = text ? JSON.parse(text) : null
+  } catch {
+    payload = { raw: text }
+  }
+  if (!response.ok || !payload) throw new Error(text || `runtime_google_ads_oauth_exchange_http_${response.status}`)
+  return payload
 }
 
 async function syncGoogleAdsRefreshTokenToPlatform(refreshToken) {
