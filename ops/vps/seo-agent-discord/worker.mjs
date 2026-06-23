@@ -604,28 +604,40 @@ async function postGscIssueAction({ action, issue, workspace, targetChannelId, s
   const message = await buildActionCardMessage(action, sourceLabel, workspace, review, targetChannelId)
   if (!message) return null
   const posted = await sendDiscordMessage(message, targetChannelId, actionComponents(action), { kind: 'action_card' })
-  state.postedActionIds = state.postedActionIds || {}
-  state.postedActionIds[action.id] = {
-    messageId: posted.id,
-    channelId: targetChannelId,
-    title: action.title,
-    workspaceId: workspace.id || null,
-    postedAt: new Date().toISOString()
-  }
-  state.activeActionByWorkspace = state.activeActionByWorkspace || {}
   const activeKey = activeWorkspaceActionKey(workspace, targetChannelId)
-  state.activeActionByWorkspace[activeKey] = {
-    actionId: action.id,
+  const runtimePosted = await markActionPostedThroughRuntime({
+    action,
+    workspace,
+    targetChannelId,
     messageId: posted.id,
-    channelId: targetChannelId,
-    workspaceId: workspace.id || null,
-    firstPostedAt: new Date().toISOString(),
-    postedAt: new Date().toISOString()
+    activeKey,
+    systemKey: gscIssueSeenKey(action, workspace, issue),
+    guard: 'gsc_issue',
+    review
+  })
+  if (!runtimePosted.ok) {
+    state.postedActionIds = state.postedActionIds || {}
+    state.postedActionIds[action.id] = {
+      messageId: posted.id,
+      channelId: targetChannelId,
+      title: action.title,
+      workspaceId: workspace.id || null,
+      postedAt: new Date().toISOString()
+    }
+    state.activeActionByWorkspace = state.activeActionByWorkspace || {}
+    state.activeActionByWorkspace[activeKey] = {
+      actionId: action.id,
+      messageId: posted.id,
+      channelId: targetChannelId,
+      workspaceId: workspace.id || null,
+      firstPostedAt: new Date().toISOString(),
+      postedAt: new Date().toISOString()
+    }
+    state.messageToAction = state.messageToAction || {}
+    state.messageToAction[posted.id] = action.id
+    recordActionLedger(action, workspace, targetChannelId, 'posted', { source: action.source || 'gsc_issue_poll', issueType: issue.type, messageId: posted.id, review })
   }
-  state.messageToAction = state.messageToAction || {}
-  state.messageToAction[posted.id] = action.id
   rememberGscIssueAction(action, workspace, issue)
-  recordActionLedger(action, workspace, targetChannelId, 'posted', { source: action.source || 'gsc_issue_poll', issueType: issue.type, messageId: posted.id, review })
   rememberAgentLesson(`GSC issue action posted for ${workspace.label || workspace.id}: ${issue.type}`)
 }
 
@@ -3341,27 +3353,39 @@ async function maybeHandleGscIssueMessage(message, targetChannelId) {
   const actionMessage = await buildActionCardMessage(action, 'GSC issue från Search Console', workspace, review, targetChannelId)
   if (!actionMessage) return true
   const posted = await sendDiscordMessage(actionMessage, targetChannelId, actionComponents(action), { kind: 'action_card' })
-  state.postedActionIds = state.postedActionIds || {}
-  state.postedActionIds[action.id] = {
-    messageId: posted.id,
-    channelId: targetChannelId,
-    title: action.title,
-    workspaceId: workspace.id || null,
-    postedAt: new Date().toISOString()
-  }
-  state.activeActionByWorkspace = state.activeActionByWorkspace || {}
   const activeKey = activeWorkspaceActionKey(workspace, targetChannelId)
-  state.activeActionByWorkspace[activeKey] = {
-    actionId: action.id,
+  const runtimePosted = await markActionPostedThroughRuntime({
+    action,
+    workspace,
+    targetChannelId,
     messageId: posted.id,
-    channelId: targetChannelId,
-    workspaceId: workspace.id || null,
-    firstPostedAt: new Date().toISOString(),
-    postedAt: new Date().toISOString()
+    activeKey,
+    systemKey: gscIssueSeenKey(action, workspace, issue),
+    guard: 'gsc_issue_message',
+    review
+  })
+  if (!runtimePosted.ok) {
+    state.postedActionIds = state.postedActionIds || {}
+    state.postedActionIds[action.id] = {
+      messageId: posted.id,
+      channelId: targetChannelId,
+      title: action.title,
+      workspaceId: workspace.id || null,
+      postedAt: new Date().toISOString()
+    }
+    state.activeActionByWorkspace = state.activeActionByWorkspace || {}
+    state.activeActionByWorkspace[activeKey] = {
+      actionId: action.id,
+      messageId: posted.id,
+      channelId: targetChannelId,
+      workspaceId: workspace.id || null,
+      firstPostedAt: new Date().toISOString(),
+      postedAt: new Date().toISOString()
+    }
+    state.messageToAction = state.messageToAction || {}
+    state.messageToAction[posted.id] = action.id
+    recordActionLedger(action, workspace, targetChannelId, 'posted', { source: 'gsc_issue_message', issueType: issue.type, messageId: posted.id, review })
   }
-  state.messageToAction = state.messageToAction || {}
-  state.messageToAction[posted.id] = action.id
-  recordActionLedger(action, workspace, targetChannelId, 'posted', { source: 'gsc_issue_message', issueType: issue.type, messageId: posted.id, review })
   rememberAgentLesson(`GSC issue captured for ${workspace.label || workspace.id}: ${issue.type}`)
   saveState()
   return true
@@ -4036,28 +4060,39 @@ async function repostActiveActionCard(workspace, payload, targetChannelId, optio
     actionMessage
   ].join('\n\n')
   const posted = await sendDiscordMessage(message, targetChannelId, actionComponents(enrichedAction))
-  state.postedActionIds = state.postedActionIds || {}
-  state.postedActionIds[action.id] = {
-    ...(state.postedActionIds[action.id] || {}),
+  const runtimePosted = await markActionPostedThroughRuntime({
+    action: enrichedAction,
+    workspace,
+    targetChannelId,
     messageId: posted.id,
-    channelId: targetChannelId,
-    title: enrichedAction.title || '',
-    workspaceId: workspace?.id || null,
-    repostedAt: new Date().toISOString()
+    activeKey,
+    guard: 'repost_active_action',
+    review
+  })
+  if (!runtimePosted.ok) {
+    state.postedActionIds = state.postedActionIds || {}
+    state.postedActionIds[action.id] = {
+      ...(state.postedActionIds[action.id] || {}),
+      messageId: posted.id,
+      channelId: targetChannelId,
+      title: enrichedAction.title || '',
+      workspaceId: workspace?.id || null,
+      repostedAt: new Date().toISOString()
+    }
+    state.activeActionByWorkspace = state.activeActionByWorkspace || {}
+    state.activeActionByWorkspace[activeKey] = {
+      ...(activeRecord || {}),
+      actionId: action.id,
+      messageId: posted.id,
+      channelId: targetChannelId,
+      workspaceId: workspace?.id || null,
+      firstPostedAt: activeRecord?.firstPostedAt || activeRecord?.postedAt || new Date().toISOString(),
+      postedAt: new Date().toISOString(),
+      reposted: true
+    }
+    state.messageToAction = state.messageToAction || {}
+    state.messageToAction[posted.id] = action.id
   }
-  state.activeActionByWorkspace = state.activeActionByWorkspace || {}
-  state.activeActionByWorkspace[activeKey] = {
-    ...(activeRecord || {}),
-    actionId: action.id,
-    messageId: posted.id,
-    channelId: targetChannelId,
-    workspaceId: workspace?.id || null,
-    firstPostedAt: activeRecord?.firstPostedAt || activeRecord?.postedAt || new Date().toISOString(),
-    postedAt: new Date().toISOString(),
-    reposted: true
-  }
-  state.messageToAction = state.messageToAction || {}
-  state.messageToAction[posted.id] = action.id
   saveState()
   return posted
 }
