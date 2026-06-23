@@ -55,6 +55,13 @@ async function handleRequest(request, response) {
     const result = selectNextAction(workspaceKey, body)
     return sendJson(response, result.statusCode || 200, result.body)
   }
+  const currentMatch = url.pathname.match(/^\/seo\/workspaces\/([^/]+)\/actions\/current$/)
+  if (request.method === 'POST' && currentMatch) {
+    const workspaceKey = decodeURIComponent(currentMatch[1])
+    const body = await readJsonBody(request)
+    const result = await fetchCurrentAction(workspaceKey, body)
+    return sendJson(response, result.statusCode || 200, result.body)
+  }
   const liveMatch = url.pathname.match(/^\/seo\/workspaces\/([^/]+)\/actions\/live$/)
   if (request.method === 'POST' && liveMatch) {
     const workspaceKey = decodeURIComponent(liveMatch[1])
@@ -262,6 +269,28 @@ function isSeoBatchNotFoundError(message) {
 function isPlatformResourceLimitError(message) {
   const text = String(message || '').toLowerCase()
   return text.includes('platform_503') && (text.includes('error 1102') || text.includes('resource limit'))
+}
+
+async function fetchCurrentAction(workspaceKey, payload = {}) {
+  const live = await fetchLiveActions(workspaceKey, payload)
+  if (live.body?.ok === false) return live
+  const actions = Array.isArray(live.body?.actions) ? live.body.actions : []
+  const next = selectNextAction(workspaceKey, {
+    ...payload,
+    actions,
+    workspacePolicy: live.body?.workspacePolicy || payload.workspacePolicy || ''
+  })
+  return {
+    statusCode: next.statusCode || 200,
+    body: {
+      ...(next.body || {}),
+      source: 'runtime_current',
+      actions,
+      workspacePolicy: live.body?.workspacePolicy || '',
+      workspace: live.body?.workspace || payload.workspace || null,
+      liveSource: live.body?.source || ''
+    }
+  }
 }
 
 function executeAction(actionId, payload = {}) {

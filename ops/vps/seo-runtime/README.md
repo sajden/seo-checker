@@ -16,6 +16,7 @@ This lets us add the runtime contract without breaking the current Discord worke
 GET  /healthz
 GET  /seo/today?limit=20&workspace=<workspaceKey>
 POST /seo/workspaces/:workspaceKey/actions/live
+POST /seo/workspaces/:workspaceKey/actions/current
 POST /seo/workspaces/:workspaceKey/actions/next
 POST /seo/actions/:actionId/execute
 POST /seo/actions/run-next
@@ -32,6 +33,18 @@ Live actions payload:
 ```
 
 The runtime fetches `/api/platform/seo-monitor/actions` with the configured `PLATFORM_API_URL` and `PLATFORM_API_TOKEN`. During migration the Discord worker falls back to its legacy platform fetch when this endpoint fails.
+
+Current action payload:
+
+```json
+{
+  "workspace": { "gscProperty": "sc-domain:sebcastwall.se", "repoFullName": "sajden/sebcastwall", "branch": "main" },
+  "targetChannelId": "151215...",
+  "limit": 10
+}
+```
+
+`POST /seo/workspaces/:workspaceKey/actions/current` is the preferred Hermes polling endpoint. It combines platform live fetch + runtime candidate selection and returns `selectedActionId`, `selectedAction`, `rejected`, `actions`, and `workspacePolicy`. A null `selectedActionId` means the runtime intentionally found no safe action to post.
 
 Candidate selection payload:
 
@@ -64,6 +77,7 @@ The runtime stores idempotency results in `state.runtimeExecutions`.
 - `GET /seo/today` returns only current active/approved actions derived from the existing state file.
 - `GET /seo/today?includeLedger=true` is a debug view for non-terminal ledger actions. The default intentionally does not recreate old proposed actions from historical ledger state.
 - `POST /seo/workspaces/:workspaceKey/actions/live` fetches live SEO Monitor actions from the platform API.
+- `POST /seo/workspaces/:workspaceKey/actions/current` is the runtime-owned current work queue for Discord/Hermes: it fetches live actions, applies runtime guards, and returns one selected action or no-action.
 - `POST /seo/workspaces/:workspaceKey/actions/next` scores pending live actions against runtime state, workspace profile, prior results, ledger cooldowns, and hard guards for legal/admin/GSC/keyword-plan noise.
 - `POST /execute` with `approved` queues the action in `approvedCodeActionQueue`.
 - `POST /execute` with `skipped`, `deprioritized`, or `stopped` updates `actionLedger` and clears the active action.
