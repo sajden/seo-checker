@@ -135,6 +135,7 @@ async function finalizeExistingSeoAgentCommit(cwd, input, codexUsage = null) {
     || String(body || '').includes(input.id || '')
     || bySeoAgent
   if (!bySeoAgent || !related) return null
+  await ensureSeoAgentCommitSkipsGithubActions(cwd)
   await runBestBuild(bestBuildDir(cwd))
   const diff = await run('git', ['diff', '--stat', `origin/${branch}..HEAD`], cwd)
   await run('git', ['push', 'origin', `HEAD:${branch}`], cwd)
@@ -195,6 +196,14 @@ function seoAgentCommitMessage(subject, body = '') {
     ? ' [skip ci]'
     : ''
   return `${cleanSubject}${suffix}${body ? `\n\n${body}` : ''}`
+}
+
+async function ensureSeoAgentCommitSkipsGithubActions(cwd) {
+  if (!skipGithubActions) return
+  const meta = await run('git', ['show', '-s', '--format=%s%x00%b', 'HEAD'], cwd)
+  const [subject, body = ''] = meta.stdout.split('\u0000')
+  if (/\[(skip ci|ci skip|no ci|skip actions|actions skip)\]/i.test(subject || '')) return
+  await run('git', ['commit', '--amend', '-m', seoAgentCommitMessage(subject || 'SEO action', String(body || '').trim())], cwd)
 }
 
 async function run(cmd, args, cwd) {
