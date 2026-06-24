@@ -2429,6 +2429,11 @@ async function postPendingActions({ workspace, targetChannelId }) {
     if (systemKey && recentlyPostedSystemKey(systemKey)) continue
     const enrichedAction = await enrichActionWithKeywordMetrics(action)
     if (shouldSkipUnknownVolumeKeywordAction(enrichedAction)) {
+      recordActionLedger(enrichedAction, workspace, targetChannelId, 'ignored', {
+        reason: 'keyword-only action saknar target-URL och verifierad sökvolym',
+        source: 'unknown_volume_keyword_guard',
+        recheckAfter: isoDatePlusDays(14)
+      })
       log("skipped_unknown_volume_keyword_action", { id, keyword: enrichedAction.keyword || null })
       continue
     }
