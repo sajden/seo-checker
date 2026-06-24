@@ -2009,6 +2009,7 @@ async function processApprovedCodeActions(workspaces) {
   state.codeActionResults = state.codeActionResults || {}
   const runtimeRun = await runNextApprovedCodeActionThroughRuntime()
   if (runtimeRun?.running) return true
+  if (runtimeRun?.uncertain) return true
   if (runtimeRun?.ran) {
     reloadStateFromDisk()
     await postRuntimeCodeActionResult(runtimeRun)
@@ -5049,10 +5050,12 @@ async function runNextApprovedCodeActionThroughRuntime() {
       payload
     }
   } catch (error) {
+    const uncertain = error?.name === 'AbortError' || /fetch failed|terminated|socket|timeout/i.test(error?.message || String(error))
     logThrottled('runtime_code_action_failed_fallback_to_worker', 15 * 60 * 1000, 'runtime_code_action_failed_fallback_to_worker', {
-      error: error?.name === 'AbortError' ? 'timeout' : error?.message || String(error)
+      error: error?.name === 'AbortError' ? 'timeout' : error?.message || String(error),
+      fallbackSuppressed: uncertain
     })
-    return { ok: false, ran: false, error: error?.message || String(error) }
+    return { ok: false, ran: false, uncertain, error: error?.message || String(error) }
   } finally {
     clearTimeout(timeout)
   }
