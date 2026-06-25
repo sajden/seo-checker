@@ -13,7 +13,7 @@ This file is a human-readable layer. Runtime state remains in `state/state.json`
 
 ### sebcastwall.se
 
-Focus more on AI, coding, AI education, AI workshops/courses, app/web development and internal tools. Demote invoice/bookkeeping/Fortnox/Visma/integration-only actions unless strongly tied to AI/coding education.
+Focus more on AI, coding, AI education, AI workshops/courses, app/web development and internal tools. Microsoft 365, Power Automate, Teams and SharePoint are allowed as supporting proof or implementation context only when they clearly strengthen AI/coding/internal-tool outcomes. Demote invoice/bookkeeping/Fortnox/Visma/integration-only, generic IT/helpdesk and M365-only actions unless strongly tied to AI/coding/internal-tools/education.
 
 ### natverkskollen.se
 
@@ -37,6 +37,7 @@ Treat Vagkollen as a road-weather and route-planning utility for ordinary driver
 - Fetching 100 SEO actions can trigger Cloudflare Worker 1102 resource limits. Agent queue posting should fetch small batches; current `postPendingActions` limit is 10 and repo-only fallback is capped at 5.
 - Reposting the same target/topic/action under a new title after it has already been completed, ignored or guarded.
 - Treating noisy imported queries such as Abicart/Klarna/account UI text as valid sebcastwall strategy.
+- Letting Sebcastwall drift into Microsoft 365/Power Automate/helpdesk as the primary SEO position instead of AI, coding, app/web, education and internal tools.
 
 ## Runtime Learning
 

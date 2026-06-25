@@ -1740,6 +1740,20 @@ function isSebcastwallWorkspace(workspace, profile = null) {
     .some((value) => String(value).toLowerCase().includes('sebcastwall'))
 }
 
+function sebcastwallPrimaryFocusPolicy(action) {
+  const text = actionText(action)
+  const hasSupportToolTrack = /\b(microsoft 365|m365|office 365|teams|sharepoint|onedrive|outlook|power automate|power platform|copilot|helpdesk|it-hjalp|it-hjälp|supportarende|supportärende|behorighet|behörighet|konto|konton|hardvara|hårdvara|licens|licenser)\b/.test(text)
+  if (!hasSupportToolTrack) return { ok: true, reason: 'sebcastwall_focus_passed' }
+
+  const hasPrimaryFocus = /\b(ai|ai-agent|ai-agenter|ai agent|ai agenter|agentflode|agentflöde|automation|automatisering|automatisera|internverktyg|interna verktyg|internt verktyg|app|webb|webbutveckling|apputveckling|kod|kodning|workshop|utbildning|kurs|arbetsflode|arbetsflöde|workflow|implementering|konsult)\b/.test(text)
+  if (hasPrimaryFocus) return { ok: true, reason: 'sebcastwall_support_tool_tied_to_primary_focus' }
+
+  return {
+    ok: false,
+    reason: 'sebcastwall_m365_support_only'
+  }
+}
+
 function rememberNoAutonomousCandidate(workspace, targetChannelId, pending, rejectionReasons) {
   const key = workspaceProfileKey(workspace, targetChannelId)
   state.noAutonomousCandidate = state.noAutonomousCandidate || {}
@@ -5890,7 +5904,8 @@ function defaultWorkspaceProfile(workspace) {
       audience: 'företag som vill köpa AI/kod/automation',
       goals: ['rank higher for AI consulting, AI agents, automation, app/web and AI education leads'],
       prefer: ['AI konsult', 'AI-agenter', 'AI-automation', 'kodning', 'app/web', 'interna verktyg', 'AI-utbildningar', 'workshops'],
-      avoid: ['Fortnox-only', 'Visma-only', 'Business Central-only', 'Abicart/Klarna', 'generic integration-only', 'invoice/bookkeeping-only'],
+      avoid: ['Fortnox-only', 'Visma-only', 'Business Central-only', 'Abicart/Klarna', 'generic integration-only', 'invoice/bookkeeping-only', 'Microsoft 365-only', 'Power Automate-only', 'generic IT/helpdesk-only'],
+      positioningPolicy: 'Microsoft 365, Power Automate, Teams, SharePoint and similar tools are allowed only as supporting proof for AI, coding, app/web, automation, education or internal-tool outcomes. They must not become the primary Sebcastwall positioning.',
       keywordMap: [
         { keyword: 'AI konsult företag', targetUrl: 'https://sebcastwall.se/', intent: 'commercial', priority: 'high' },
         { keyword: 'AI agenter företag', targetUrl: 'https://sebcastwall.se/tjanster/ai-agenter', intent: 'commercial', priority: 'high' },
@@ -6052,10 +6067,12 @@ function shouldPostActionCard(action, workspace, targetChannelId) {
   if (profile.avoid?.some((term) => text.includes(normalizeForMatch(term))) && !profile.prefer?.some((term) => text.includes(normalizeForMatch(term)))) {
     return { ok: false, reason: 'workspace_avoid_terms_without_preferred_context' }
   }
-  if (workspaceProfileKey(workspace, targetChannelId).includes('sebcastwall') || String(profile.label || '').toLowerCase().includes('sebcastwall')) {
+  if (isSebcastwallWorkspace(workspace, profile)) {
     if (/\b(abicart|klarna|fortnox|fortknox|visma|business-central|business central|mailchimp|monday|zendesk|account-status|help-outline)\b/.test(text)) {
       return { ok: false, reason: 'sebcastwall_noise_keyword' }
     }
+    const focus = sebcastwallPrimaryFocusPolicy(action)
+    if (!focus.ok) return focus
   }
   if (action.keyword) {
     const words = String(action.keyword).trim().split(/\s+/).filter(Boolean).length
@@ -6112,6 +6129,13 @@ function reviewActionForPosting(action, workspace, targetChannelId, workspacePol
   if (avoidedHits.length && !preferredHits.length) {
     score -= 40
     negatives.push(`drar mot lågprioriterat spår: ${avoidedHits.slice(0, 3).join(', ')}`)
+  }
+  if (isSebcastwallWorkspace(workspace, profile)) {
+    const focus = sebcastwallPrimaryFocusPolicy(action)
+    if (!focus.ok) {
+      score -= 55
+      negatives.push('M365/IT-spår utan tydlig koppling till AI, kod, app/web eller interna verktyg')
+    }
   }
 
   if (isCodeAction(action)) {

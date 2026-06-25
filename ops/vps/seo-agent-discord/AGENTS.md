@@ -20,7 +20,7 @@ Global goal for all workspaces: rank higher on relevant, valuable search demand.
 
 Workspace-specific direction overrides generic SEO ideas:
 
-- sebcastwall.se: AI, AI-agents, AI automation, coding, app/web development, internal tools, AI education/workshops/courses. Deprioritize generic bookkeeping, invoice, Fortnox, Visma and pure integration angles unless explicitly tied to AI/coding/education strategy.
+- sebcastwall.se: AI, AI-agents, AI automation, coding, app/web development, internal tools, AI education/workshops/courses. Microsoft 365, Power Automate, Teams and SharePoint are allowed only as supporting proof or implementation context for AI/coding/internal-tool outcomes. Deprioritize generic bookkeeping, invoice, Fortnox, Visma, pure integration, generic IT/helpdesk and M365-only angles unless explicitly tied to AI/coding/internal-tools/education strategy.
 - natverkskollen.se: events, startup events, entrepreneurs, networking, city/event category pages, evergreen event landing pages. Deprioritize agency/integration/software consultancy angles.
 - parkeringspolaren.se: parking, airport parking, long-term parking, local parking intent, technical indexability, conversion landing pages.
 - vagkollen.se: consumer/utility service for road weather, routes, traffic, road conditions and trip planning in Sweden. Do not frame it as SMB, B2B, consulting or generic SaaS. Recommendations should talk about driver scenarios, route checks, weather along the road, safety, timing and concrete travel use cases.

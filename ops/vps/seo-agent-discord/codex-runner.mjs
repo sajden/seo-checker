@@ -514,7 +514,8 @@ function workspaceImplementationRules(input) {
     return [
       'sebcastwall.se is an AI/coding/automation consultancy.',
       'Prioritize AI agents, AI automation, app/web development, internal tools, AI education, workshops and practical implementation credibility.',
-      'Deprioritize pure bookkeeping, invoice, Fortnox, Visma and generic integration angles unless tied to AI/coding strategy.',
+      'Microsoft 365, Power Automate, Teams and SharePoint may be used only as supporting proof for AI/coding/internal-tool outcomes; do not let them become the primary positioning.',
+      'Deprioritize pure bookkeeping, invoice, Fortnox, Visma, generic integration, generic IT/helpdesk and M365-only angles unless tied to AI/coding/internal-tools/education strategy.',
     ].join(' ')
   }
   return 'Infer the workspace from repo, URL and page content. Do not use generic SEO filler if it does not match the actual product/site.'
