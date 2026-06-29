@@ -1483,23 +1483,16 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
   const targetUrl = String(parsed.action.targetUrl || '').trim()
   const keyword = String(parsed.action.keyword || parsed.action.focus || '').trim()
   if (!targetUrl || !keyword) return null
-  const candidateText = normalizeForMatch([
-    parsed.action.title,
-    parsed.action.category,
-    parsed.action.why,
-    parsed.action.recommendedAction,
-    targetUrl,
-    keyword
-  ].filter(Boolean).join(' '))
-  if (/new-page|ny-sida|ny-landningssida|skapa-ny|ny-route|dashboard|adminyta|research-new-page/.test(candidateText)) {
+  const scoutSurface = codexOpportunitySurfaceCheck(parsed.action, targetUrl)
+  if (!scoutSurface.ok) {
     state.codexOpportunityScout[key] = {
       at: new Date().toISOString(),
-      blockedReason: 'scout_suggested_new_page_or_admin_surface'
+      blockedReason: scoutSurface.reason
     }
-    rememberAgentLesson(`Codex opportunity scout suggested a new page or admin surface for ${workspace?.label || workspace?.id || key}; retry later with stricter existing-page instructions instead of blocking the workspace for days.`)
+    rememberAgentLesson(`Codex opportunity scout suggested an unsupported surface for ${workspace?.label || workspace?.id || key}: ${scoutSurface.reason}; retry later with stricter existing-page instructions instead of blocking the workspace for days.`)
     log('codex_opportunity_invalid_action', {
       workspace: workspace?.label || workspace?.id || null,
-      reason: 'scout_suggested_new_page_or_admin_surface',
+      reason: scoutSurface.reason,
       title: parsed.action.title || null,
       targetUrl
     })
@@ -1524,6 +1517,17 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
     evidenceBatchId: context.sourcePayload?.batchId || null,
     evidenceRunAt: context.sourcePayload?.runAt || context.sourcePayload?.lastRunAt || null
   }
+}
+
+function codexOpportunitySurfaceCheck(action, targetUrl) {
+  const path = normalizeActionPath(targetUrl)
+  const titleText = normalizeForMatch([action?.title, action?.category, action?.keyword || action?.focus].filter(Boolean).join(' '))
+  const instructionText = normalizeForMatch([action?.why, action?.recommendedAction].filter(Boolean).join(' '))
+  if (isLegalOrPolicyRoute(targetUrl)) return { ok: false, reason: 'scout_suggested_legal_or_policy_surface' }
+  if (/(^|\/)(admin|dashboard|login|auth|konto|account|settings|installningar|cms|api)(\/|$)/.test(path)) return { ok: false, reason: 'scout_suggested_admin_surface' }
+  if (/\b(new-page|research-new-page|ny-route|ny-landningssida)\b/.test(titleText)) return { ok: false, reason: 'scout_suggested_new_page' }
+  if (/\b(skapa|bygg|lagg-till|lägg-till)\b.{0,40}\b(ny-route|ny-sida|ny-landningssida|landningssida)\b/.test(instructionText)) return { ok: false, reason: 'scout_suggested_new_page' }
+  return { ok: true, reason: 'existing_page_surface' }
 }
 
 async function repoPageInventory(repoDir) {
