@@ -5934,6 +5934,7 @@ function defaultWorkspaceProfile(workspace) {
       goals: ['rank higher for startup events, networking and evergreen event landing pages'],
       prefer: ['startup events', 'nätverkande', 'entreprenörer', 'city pages', 'event category pages'],
       avoid: ['agency consulting', 'software integration', 'unrelated AI consultancy'],
+      canonicalPolicy: 'Use /evenemang as the canonical event listing route. Do not add new internal links to the legacy /events alias.',
       keywordMap: [
         { keyword: 'startup events', targetUrl: 'https://natverkskollen.se/evenemang/startup-events', intent: 'event_discovery', priority: 'high' },
         { keyword: 'nätverksevent', targetUrl: 'https://natverkskollen.se/evenemang', intent: 'event_discovery', priority: 'high' },
@@ -6004,6 +6005,7 @@ function inferWorkspaceProfile(workspace) {
       goals: ['rank higher for event discovery and event landing page searches'],
       prefer: ['events', 'startup events', 'nätverkande', 'stadssidor', 'eventkategori', 'kalender'],
       avoid: ['software consulting', 'integration-only', 'generic SaaS'],
+      canonicalPolicy: 'Use /evenemang as the canonical event listing route. Do not add new internal links to the legacy /events alias.',
       keywordMap: [
         { keyword: 'startup events', targetUrl: 'https://natverkskollen.se/evenemang/startup-events', intent: 'event_discovery', priority: 'high' },
         { keyword: 'nätverksevent', targetUrl: 'https://natverkskollen.se/evenemang', intent: 'event_discovery', priority: 'high' }

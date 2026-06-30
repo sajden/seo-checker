@@ -18,6 +18,7 @@ Focus more on AI, coding, AI education, AI workshops/courses, app/web developmen
 ### natverkskollen.se
 
 Keep focus on events/startups/networking and evergreen event discovery pages.
+Use `/evenemang` as the canonical event listing route. Do not add new internal links to the legacy `/events` alias; point internal links to `/evenemang` or specific canonical event/category pages.
 
 ### parkeringspolaren.se
 
@@ -38,6 +39,7 @@ Treat Vagkollen as a road-weather and route-planning utility for ordinary driver
 - Reposting the same target/topic/action under a new title after it has already been completed, ignored or guarded.
 - Treating noisy imported queries such as Abicart/Klarna/account UI text as valid sebcastwall strategy.
 - Letting Sebcastwall drift into Microsoft 365/Power Automate/helpdesk as the primary SEO position instead of AI, coding, app/web, education and internal tools.
+- Adding Natverkskollen internal links to `/events` instead of canonical `/evenemang`.
 
 ## Runtime Learning
 

@@ -507,6 +507,7 @@ function workspaceImplementationRules(input) {
     return [
       'natverkskollen.se is an event/networking discovery service.',
       'Use startup events, entrepreneurs, networking, city/event category pages and evergreen event landing pages.',
+      'Use /evenemang as the canonical event listing URL. Do not add internal links to the legacy /events alias; point links to /evenemang or specific canonical event/category pages.',
       'Avoid agency, integration and software-consultancy angles unless explicitly requested.',
     ].join(' ')
   }
