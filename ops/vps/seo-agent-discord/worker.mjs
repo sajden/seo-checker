@@ -2025,6 +2025,18 @@ function settledErrorMessage(result) {
 
 async function processApprovedCodeActions(workspaces) {
   if (state.codeActionRunning) return
+  const uncertainUntil = Date.parse(state.runtimeCodeActionUncertain?.until || '')
+  if (uncertainUntil && Date.now() < uncertainUntil) {
+    logThrottled('runtime_code_action_uncertain_cooldown_active', 5 * 60 * 1000, 'runtime_code_action_uncertain_cooldown_active', {
+      until: state.runtimeCodeActionUncertain.until,
+      error: state.runtimeCodeActionUncertain.error || null
+    })
+    return true
+  }
+  if (state.runtimeCodeActionUncertain) {
+    delete state.runtimeCodeActionUncertain
+    saveState()
+  }
   state.codeActionResults = state.codeActionResults || {}
   const runtimeRun = await runNextApprovedCodeActionThroughRuntime()
   if (runtimeRun?.running) return true
@@ -5082,6 +5094,14 @@ async function runNextApprovedCodeActionThroughRuntime() {
       error: error?.name === 'AbortError' ? 'timeout' : error?.message || String(error),
       fallbackSuppressed: uncertain
     })
+    if (uncertain) {
+      state.runtimeCodeActionUncertain = {
+        at: new Date().toISOString(),
+        until: new Date(Date.now() + Number(env.SEO_RUNTIME_UNCERTAIN_COOLDOWN_MS || String(30 * 60 * 1000))).toISOString(),
+        error: error?.name === 'AbortError' ? 'timeout' : error?.message || String(error)
+      }
+      saveState()
+    }
     return { ok: false, ran: false, uncertain, error: error?.message || String(error) }
   } finally {
     clearTimeout(timeout)
