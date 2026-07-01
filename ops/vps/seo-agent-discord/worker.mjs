@@ -5121,11 +5121,13 @@ async function runNextApprovedCodeActionThroughRuntime() {
       fallbackSuppressed: uncertain
     })
     if (uncertain) {
-      state.runtimeCodeActionUncertain = {
+      const uncertainty = {
         at: new Date().toISOString(),
         until: new Date(Date.now() + Number(env.SEO_RUNTIME_UNCERTAIN_COOLDOWN_MS || String(30 * 60 * 1000))).toISOString(),
         error: error?.name === 'AbortError' ? 'timeout' : error?.message || String(error)
       }
+      state.runtimeCodeActionUncertain = uncertainty
+      state.lastRuntimeCodeActionUncertain = uncertainty
       saveState()
     }
     return { ok: false, ran: false, uncertain, error: error?.message || String(error) }
@@ -5160,8 +5162,108 @@ async function postRuntimeCodeActionResult(runtimeRun) {
     return
   }
   const failure = payload.failure || classifyCodeActionFailure(new Error(payload.error || payload.status || 'runtime_code_action_failed'))
+  if (failure.status === 'no_changes') {
+    const recovered = await recoverRuntimeNoChangesAfterRecentCommit(action, workspace)
+    if (recovered) {
+      state.codeActionResults = state.codeActionResults || {}
+      state.codeActionResults[action.id] = {
+        status: 'completed',
+        completedAt: new Date().toISOString(),
+        result: recovered,
+        recoveredFrom: 'runtime_no_changes_after_uncertain_commit'
+      }
+      recordActionLedger(action, workspace, targetChannelId, 'completed', {
+        commit: recovered.commit || null,
+        diffStat: recovered.diffStat || null,
+        repoFullName: recovered.repoFullName || null,
+        recoveredFrom: 'runtime_no_changes_after_uncertain_commit'
+      })
+      recordSeoExperiment(action, workspace, targetChannelId, recovered, { source: 'runtime_recovered_no_changes' })
+      await markPostedActionHandled(action.id, targetChannelId, 'code_action_completed')
+      const commitUrl = githubCommitUrl(recovered.repoFullName, recovered.commit)
+      const posted = await sendDiscordMessage([
+        `Kodaction var redan klar för ${workspace.label || action.repoFullName || 'workspace'}: ${action.title || action.id}`,
+        `Action ID: \`${action.id}\``,
+        recovered.commit ? `Commit: ${recovered.commit}` : '',
+        commitUrl ? `GitHub: ${commitUrl}` : '',
+        recovered.diffStat ? `Diff:\n\`\`\`\n${String(recovered.diffStat).slice(0, 1200)}\n\`\`\`` : '',
+        '',
+        'Jag fick först ett osäkert runtime-svar, men hittade den färdiga SEO Agent-committen i repot och sparade actionen som klar.'
+      ].filter(Boolean).join('\n'), targetChannelId, rollbackComponents(), { kind: 'code_result' })
+      state.messageToAction = state.messageToAction || {}
+      state.messageToAction[posted.id] = action.id
+      saveState()
+      return
+    }
+  }
   await markPostedActionHandled(action.id, targetChannelId, 'code_action_failed')
   await sendDiscordMessage(formatCodeActionFailureMessage(workspace.label || action.repoFullName || 'workspace', action.title || action.id, new Error(payload.error || payload.status || 'runtime_code_action_failed'), failure), targetChannelId)
+}
+
+async function recoverRuntimeNoChangesAfterRecentCommit(action, workspace) {
+  const repoFullName = String(action?.repoFullName || workspace?.repoFullName || '').trim()
+  const branch = String(action?.branch || workspace?.branch || 'main').trim() || 'main'
+  if (!repoFullName) return null
+  const uncertaintyAt = Date.parse(state.lastRuntimeCodeActionUncertain?.at || '')
+  const sinceMs = uncertaintyAt ? Math.max(uncertaintyAt - 5 * 60 * 1000, Date.now() - 2 * 60 * 60 * 1000) : Date.now() - 90 * 60 * 1000
+  const commit = await findRecentSeoAgentCommit(repoFullName, branch, sinceMs).catch((error) => {
+    log('runtime_no_changes_recovery_lookup_failed', { actionId: action?.id || null, repoFullName, error: error?.message || String(error) })
+    return null
+  })
+  if (!commit?.commit) return null
+  const alreadyRecorded = Object.values(state.codeActionResults || {}).some((result) => {
+    const recordedCommit = String(result?.result?.commit || '').trim()
+    return recordedCommit && (recordedCommit === commit.commit || commit.fullCommit?.startsWith(recordedCommit) || recordedCommit.startsWith(commit.commit))
+  })
+  if (alreadyRecorded) return null
+  log('runtime_no_changes_recovered_recent_commit', {
+    actionId: action?.id || null,
+    repoFullName,
+    commit: commit.commit,
+    subject: commit.subject || ''
+  })
+  return {
+    commit: commit.commit,
+    fullCommit: commit.fullCommit || commit.commit,
+    diffStat: commit.diffStat || '',
+    repoFullName,
+    branch,
+    recovered: true
+  }
+}
+
+async function findRecentSeoAgentCommit(repoFullName, branch, sinceMs) {
+  const { execFile } = await import('node:child_process')
+  const { promisify } = await import('node:util')
+  const exec = promisify(execFile)
+  const repoName = String(repoFullName || '').split('/').pop()
+  if (!repoName) return null
+  const repoDir = `/home/deploy/seo-agent-workspaces/${repoName}`
+  if (!existsSync(join(repoDir, '.git'))) return null
+  const sinceIso = new Date(sinceMs).toISOString()
+  const envWithPath = { ...process.env, PATH: `${process.env.HOME || '/home/deploy'}/.npm-global/bin:${process.env.HOME || '/home/deploy'}/.local/bin:${process.env.PATH || ''}` }
+  await exec('git', ['fetch', 'origin', branch], { cwd: repoDir, env: envWithPath, timeout: 2 * 60 * 1000, maxBuffer: 2 * 1024 * 1024 }).catch(() => null)
+  const logResult = await exec('git', [
+    'log',
+    '-1',
+    `--since=${sinceIso}`,
+    '--author=SEO Agent',
+    '--format=%H%x00%ct%x00%s',
+    branch
+  ], { cwd: repoDir, env: envWithPath, timeout: 2 * 60 * 1000, maxBuffer: 2 * 1024 * 1024 })
+  const line = String(logResult.stdout || '').trim()
+  if (!line) return null
+  const [fullCommit, ts, subject] = line.split('\u0000')
+  if (!fullCommit) return null
+  const shortResult = await exec('git', ['rev-parse', '--short', fullCommit], { cwd: repoDir, env: envWithPath, timeout: 60 * 1000, maxBuffer: 1024 * 1024 })
+  const statResult = await exec('git', ['show', '--stat', '--oneline', '--format=', fullCommit], { cwd: repoDir, env: envWithPath, timeout: 60 * 1000, maxBuffer: 4 * 1024 * 1024 })
+  return {
+    fullCommit,
+    commit: String(shortResult.stdout || '').trim() || fullCommit.slice(0, 7),
+    committedAt: ts ? new Date(Number(ts) * 1000).toISOString() : '',
+    subject: subject || '',
+    diffStat: String(statResult.stdout || '').trim()
+  }
 }
 
 function isSeoBatchNotFoundError(error) {
