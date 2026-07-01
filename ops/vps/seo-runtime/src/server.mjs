@@ -990,7 +990,10 @@ function recordRuntimeSeoExperiment(state, action, workspace, result, meta = {})
   state.seoExperiments = state.seoExperiments || {}
   const targetUrl = action.targetUrl || action.url || ''
   const keyword = action.keyword || ''
-  const id = `${workspace?.repoFullName || action.workspaceSlug || 'workspace'}:${normalizePath(targetUrl) || normalize(keyword) || action.id || result?.commit || Date.now()}`.slice(0, 220)
+  const workspaceKey = workspace?.repoFullName || action.workspaceSlug || 'workspace'
+  const surface = normalizePath(targetUrl) || normalize(keyword) || 'unknown-surface'
+  const unique = normalize(action.id || result?.commit || String(Date.now())) || String(Date.now())
+  const id = `${workspaceKey}:${surface}:${unique}`.slice(0, 220)
   const completedAt = new Date().toISOString()
   const reviewDate = new Date(completedAt)
   reviewDate.setDate(reviewDate.getDate() + 14)
