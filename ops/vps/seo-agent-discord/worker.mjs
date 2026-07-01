@@ -45,6 +45,8 @@ const autonomousCodePerWorkspacePerDay = Number(env.SEO_AGENT_AUTONOMOUS_CODE_PE
 const opportunityScoutMinIntervalMs = Number(env.SEO_AGENT_OPPORTUNITY_SCOUT_MIN_INTERVAL_MS || String(3 * 60 * 60 * 1000))
 const opportunityScoutGrowthMinIntervalMs = Number(env.SEO_AGENT_OPPORTUNITY_SCOUT_GROWTH_MIN_INTERVAL_MS || String(60 * 60 * 1000))
 const opportunityScoutInvalidCooldownMs = Number(env.SEO_AGENT_OPPORTUNITY_SCOUT_INVALID_COOLDOWN_MS || String(3 * 60 * 60 * 1000))
+const sameTargetAutonomousCooldownMs = Number(env.SEO_AGENT_SAME_TARGET_AUTONOMOUS_COOLDOWN_MS || String(24 * 60 * 60 * 1000))
+const sameTargetAutonomousMaxRecent = Number(env.SEO_AGENT_SAME_TARGET_AUTONOMOUS_MAX_RECENT || '2')
 const codexChatEnabled = env.SEO_AGENT_CODEX_CHAT_ENABLED !== 'false'
 const smartOutboundGuardEnabled = env.SEO_AGENT_SMART_OUTBOUND_GUARD !== 'false'
 const codexCli = env.CODEX_CLI || `${env.HOME || '/home/deploy'}/.npm-global/bin/codex`
@@ -1247,6 +1249,8 @@ function autonomousCodeCandidateCheck(action, workspace, targetChannelId) {
   const targetUrl = String(action.targetUrl || action.url || '').trim()
   if (!targetUrl) return { ok: false, reason: 'missing_target_url' }
   if (isLegalOrPolicyRoute(targetUrl)) return { ok: false, reason: 'legal_or_policy_route_needs_explicit_request' }
+  const sameTargetCheck = sameTargetRecentExperimentCheck(action, workspace, targetChannelId)
+  if (!sameTargetCheck.ok) return sameTargetCheck
   if (kind === 'new-page') return { ok: false, reason: 'new_page_needs_human_approval' }
   const cluster = actionLearningKey(action, workspace, targetChannelId)
   const ledger = state.actionLedger?.[cluster]
@@ -1254,6 +1258,28 @@ function autonomousCodeCandidateCheck(action, workspace, targetChannelId) {
   if (ledger?.status === 'deprioritized' && !isLedgerRecheckDue(ledger)) return { ok: false, reason: 'recently_deprioritized_waiting_recheck' }
   if (ledger?.status === 'ignored' && !isLedgerRecheckDue(ledger)) return { ok: false, reason: 'recently_ignored_waiting_recheck' }
   return { ok: true, reason: 'candidate' }
+}
+
+function sameTargetRecentExperimentCheck(action, workspace, targetChannelId) {
+  if (!sameTargetAutonomousCooldownMs || sameTargetAutonomousMaxRecent <= 0) return { ok: true, reason: 'same_target_ok' }
+  const targetUrl = String(action?.targetUrl || action?.url || '').trim()
+  if (!targetUrl) return { ok: true, reason: 'same_target_ok' }
+  const workspaceKey = workspaceProfileKey(workspace, targetChannelId)
+  const now = Date.now()
+  const recent = Object.values(state.seoExperiments || {}).filter((experiment) => {
+    if (experiment?.workspaceKey !== workspaceKey) return false
+    if (!experiment?.targetUrl || !sameSeoUrl(experiment.targetUrl, targetUrl)) return false
+    const completedAt = Date.parse(experiment.completedAt || '')
+    return Boolean(completedAt && now - completedAt < sameTargetAutonomousCooldownMs)
+  })
+  if (recent.length >= sameTargetAutonomousMaxRecent) {
+    return {
+      ok: false,
+      reason: 'same_target_recent_experiment_limit',
+      recentCount: recent.length
+    }
+  }
+  return { ok: true, reason: 'same_target_ok' }
 }
 
 async function syntheticAutonomousActionForWorkspace({ workspace, targetChannelId, pending, rejectionReasons, workspacePolicy, sourcePayload = null }) {
@@ -5902,7 +5928,9 @@ function recordSeoExperiment(action, workspace, targetChannelId, result, meta = 
   reviewDate.setDate(reviewDate.getDate() + 14)
   const targetUrl = action.targetUrl || action.url || mapped?.targetUrl || ''
   const keyword = action.keyword || mapped?.keyword || ''
-  const id = `${workspaceKey}:${normalizeActionPath(targetUrl) || normalizeKeywordCluster(keyword) || action.id || result?.commit || Date.now()}`.slice(0, 220)
+  const surface = normalizeActionPath(targetUrl) || normalizeKeywordCluster(keyword) || 'unknown-surface'
+  const unique = normalizeClusterPart(action.id || result?.commit || completedAt)
+  const id = `${workspaceKey}:${surface}:${unique}`.slice(0, 220)
   state.seoExperiments[id] = {
     ...(state.seoExperiments[id] || {}),
     id,
