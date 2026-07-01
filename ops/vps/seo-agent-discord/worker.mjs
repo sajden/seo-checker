@@ -1024,9 +1024,6 @@ function codeActionResultBlocks(action, workspace, targetChannelId) {
   if (!result) return false
   const status = String(result.status || '')
   if (status === 'archived_failed') return false
-  if (codeActionSameIdCooldownBlocks(action)) return true
-  const ledger = state.actionLedger?.[actionLearningKey(action, workspace, targetChannelId)]
-  if (ledger?.recheckAfter) return !isLedgerRecheckDue(ledger)
 
   const terminalAt = result.completedAt || result.failedAt || result.archivedAt || ''
   const terminalMs = Date.parse(terminalAt)
@@ -1034,7 +1031,11 @@ function codeActionResultBlocks(action, workspace, targetChannelId) {
   const waitMs = status === 'completed'
     ? 14 * 24 * 60 * 60 * 1000
     : 7 * 24 * 60 * 60 * 1000
-  return Date.now() - terminalMs < waitMs
+  if (Date.now() - terminalMs < waitMs) return true
+
+  const ledger = state.actionLedger?.[actionLearningKey(action, workspace, targetChannelId)]
+  if (ledger?.recheckAfter) return !isLedgerRecheckDue(ledger)
+  return false
 }
 
 function codeActionLedgerCooldownBlocks(action, cooldownMs = 24 * 60 * 60 * 1000) {
@@ -2763,6 +2764,14 @@ function startDiscordInteractionClient() {
 
   client.once('clientReady', () => {
     log('discord_interactions_ready', { user: client.user?.tag || null })
+  })
+
+  client.on('error', (error) => {
+    log('discord_client_error', { error: error?.message || String(error) })
+  })
+
+  client.on('shardError', (error) => {
+    log('discord_shard_error', { error: error?.message || String(error) })
   })
 
   client.on('interactionCreate', async (interaction) => {
