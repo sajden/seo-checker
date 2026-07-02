@@ -5129,6 +5129,9 @@ async function runNextApprovedCodeActionThroughRuntime() {
       state.runtimeCodeActionUncertain = uncertainty
       state.lastRuntimeCodeActionUncertain = uncertainty
       saveState()
+      await recoverUncertainRuntimeApprovedQueue(uncertainty).catch((recoveryError) => {
+        log('runtime_uncertain_queue_recovery_failed', { error: recoveryError?.message || String(recoveryError) })
+      })
     }
     return { ok: false, ran: false, uncertain, error: error?.message || String(error) }
   } finally {
@@ -5198,6 +5201,81 @@ async function postRuntimeCodeActionResult(runtimeRun) {
   }
   await markPostedActionHandled(action.id, targetChannelId, 'code_action_failed')
   await sendDiscordMessage(formatCodeActionFailureMessage(workspace.label || action.repoFullName || 'workspace', action.title || action.id, new Error(payload.error || payload.status || 'runtime_code_action_failed'), failure), targetChannelId)
+}
+
+async function recoverUncertainRuntimeApprovedQueue(uncertainty) {
+  const queueEntries = Object.values(state.approvedCodeActionQueue || {}).filter((entry) => entry?.id && entry?.repoFullName)
+  if (!queueEntries.length) return 0
+  const sinceAt = Date.parse(uncertainty?.at || '')
+  const sinceMs = sinceAt ? sinceAt - 5 * 60 * 1000 : Date.now() - 60 * 60 * 1000
+  let recoveredCount = 0
+  for (const entry of queueEntries) {
+    const repoFullName = String(entry.repoFullName || '').trim()
+    const branch = String(entry.branch || 'main').trim() || 'main'
+    const commit = await findRecentSeoAgentCommit(repoFullName, branch, sinceMs).catch((error) => {
+      log('runtime_uncertain_queue_commit_lookup_failed', { actionId: entry.id, repoFullName, error: error?.message || String(error) })
+      return null
+    })
+    if (!commit?.commit) continue
+    const alreadyRecorded = Object.values(state.codeActionResults || {}).some((result) => {
+      const recordedCommit = String(result?.result?.commit || '').trim()
+      return recordedCommit && (recordedCommit === commit.commit || commit.fullCommit?.startsWith(recordedCommit) || recordedCommit.startsWith(commit.commit))
+    })
+    if (alreadyRecorded) continue
+    const workspace = { label: entry.workspaceSlug || repoFullName, repoFullName, branch }
+    const targetChannelId = entry.channelId || await channelForWorkspace(workspace).catch(() => null)
+    const completedResult = {
+      commit: commit.commit,
+      fullCommit: commit.fullCommit || commit.commit,
+      diffStat: commit.diffStat || '',
+      repoFullName,
+      branch,
+      recovered: true
+    }
+    state.codeActionResults = state.codeActionResults || {}
+    state.codeActionResults[entry.id] = {
+      status: 'completed',
+      completedAt: new Date().toISOString(),
+      result: completedResult,
+      recoveredFrom: 'runtime_fetch_failed_recent_commit'
+    }
+    recordActionLedger(entry, workspace, targetChannelId, 'completed', {
+      commit: completedResult.commit,
+      diffStat: completedResult.diffStat,
+      repoFullName,
+      recoveredFrom: 'runtime_fetch_failed_recent_commit'
+    })
+    recordSeoExperiment(entry, workspace, targetChannelId, completedResult, { source: 'runtime_uncertain_queue_recovery' })
+    delete state.approvedCodeActionQueue[entry.id]
+    clearActiveAction(entry.id)
+    if (targetChannelId) {
+      await markPostedActionHandled(entry.id, targetChannelId, 'code_action_completed')
+      const commitUrl = githubCommitUrl(repoFullName, completedResult.commit)
+      const posted = await sendDiscordMessage([
+        `Kodaction var redan klar för ${workspace.label}: ${entry.title || entry.id}`,
+        `Action ID: \`${entry.id}\``,
+        `Commit: ${completedResult.commit}`,
+        commitUrl ? `GitHub: ${commitUrl}` : '',
+        completedResult.diffStat ? `Diff:\n\`\`\`\n${String(completedResult.diffStat).slice(0, 1200)}\n\`\`\`` : '',
+        '',
+        'Jag fick ett osäkert runtime-svar, men hittade den färdiga SEO Agent-committen i repot och tog bort actionen från kön.'
+      ].filter(Boolean).join('\n'), targetChannelId, rollbackComponents(), { kind: 'code_result' })
+      state.messageToAction = state.messageToAction || {}
+      state.messageToAction[posted.id] = entry.id
+    }
+    log('runtime_uncertain_queue_recovered_recent_commit', {
+      actionId: entry.id,
+      repoFullName,
+      commit: completedResult.commit,
+      subject: commit.subject || ''
+    })
+    recoveredCount++
+  }
+  if (recoveredCount > 0) {
+    delete state.runtimeCodeActionUncertain
+    saveState()
+  }
+  return recoveredCount
 }
 
 async function recoverRuntimeNoChangesAfterRecentCommit(action, workspace) {
