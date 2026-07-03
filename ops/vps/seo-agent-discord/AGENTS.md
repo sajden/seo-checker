@@ -79,6 +79,8 @@ For every completed SEO commit, create or update an SEO experiment:
 
 Default review delay is 14 days. Do not repeat the same page/keyword experiment before its review date unless fresh data shows a materially different problem.
 
+The default target-URL guard is stricter than keyword-level memory: only one autonomous experiment may run for the same target URL during the 14-day review window. This is intentional. It stops the agent from adding many small keyword/FAQ variants to the same page before there is a recheck signal.
+
 At follow-up time, classify each due experiment conservatively:
 
 - `provisionally_improved`: no matching live SEO Monitor action remains. Treat as a weak positive until GSC/query metrics confirm it.

@@ -95,10 +95,13 @@ The agent should:
 - record commits and diffstats so Discord can explain what was created.
 - run a Codex pre-commit SEO quality gate before every autonomous commit. The gate can `allow`, request one small `revise` pass, or `block` the commit if the diff is generic, wrong-workspace, repetitive, or mismatched with the workspace profile.
 - treat each completed SEO commit as an experiment and review it after 14 days before repeating similar work.
+- block additional autonomous edits to the same target URL during the 14-day review window by default. This prevents the agent from stacking many small FAQ/keyword tweaks on one page before there is a recheck signal.
 
 Rejected autonomous diffs are saved on the VPS under:
 
 `/opt/ai-dashboard/apps/seo-agent-discord/state/rejected-diffs/`
+
+Deploy note: do not run `rsync --delete` directly against `/opt/ai-dashboard/apps/seo-agent-discord/` unless `node_modules/`, `.env` and `state/` are explicitly preserved and verified afterward. `state/` must remain a symlink to `/mnt/HC_Volume_105954589/deploy-storage/agent-state/seo-agent-discord-state`.
 
 In a workspace channel, useful commands:
 
