@@ -5199,6 +5199,39 @@ async function postRuntimeCodeActionResult(runtimeRun) {
       return
     }
   }
+  const recovered = await recoverRuntimeFailureAfterRecentCommit(action, workspace, failure)
+  if (recovered) {
+    state.codeActionResults = state.codeActionResults || {}
+    state.codeActionResults[action.id] = {
+      status: 'completed',
+      completedAt: new Date().toISOString(),
+      result: recovered,
+      recoveredFrom: 'runtime_failure_after_recent_commit'
+    }
+    recordActionLedger(action, workspace, targetChannelId, 'completed', {
+      commit: recovered.commit || null,
+      diffStat: recovered.diffStat || null,
+      repoFullName: recovered.repoFullName || null,
+      recoveredFrom: 'runtime_failure_after_recent_commit',
+      originalFailure: failure.status || 'failed'
+    })
+    recordSeoExperiment(action, workspace, targetChannelId, recovered, { source: 'runtime_recovered_after_failure' })
+    await markPostedActionHandled(action.id, targetChannelId, 'code_action_completed')
+    const commitUrl = githubCommitUrl(recovered.repoFullName, recovered.commit)
+    const posted = await sendDiscordMessage([
+      `Kodaction var redan klar för ${workspace.label || action.repoFullName || 'workspace'}: ${action.title || action.id}`,
+      `Action ID: \`${action.id}\``,
+      recovered.commit ? `Commit: ${recovered.commit}` : '',
+      commitUrl ? `GitHub: ${commitUrl}` : '',
+      recovered.diffStat ? `Diff:\n\`\`\`\n${String(recovered.diffStat).slice(0, 1200)}\n\`\`\`` : '',
+      '',
+      'Runtime rapporterade först ett fel, men jag hittade en färdig SEO Agent-commit i repot och sparade actionen som klar.'
+    ].filter(Boolean).join('\n'), targetChannelId, rollbackComponents(), { kind: 'code_result' })
+    state.messageToAction = state.messageToAction || {}
+    state.messageToAction[posted.id] = action.id
+    saveState()
+    return
+  }
   await markPostedActionHandled(action.id, targetChannelId, 'code_action_failed')
   await sendDiscordMessage(formatCodeActionFailureMessage(workspace.label || action.repoFullName || 'workspace', action.title || action.id, new Error(payload.error || payload.status || 'runtime_code_action_failed'), failure), targetChannelId)
 }
@@ -5308,6 +5341,18 @@ async function recoverRuntimeNoChangesAfterRecentCommit(action, workspace) {
     branch,
     recovered: true
   }
+}
+
+async function recoverRuntimeFailureAfterRecentCommit(action, workspace, failure) {
+  const recovered = await recoverRuntimeNoChangesAfterRecentCommit(action, workspace)
+  if (!recovered) return null
+  log('runtime_failure_recovered_recent_commit', {
+    actionId: action?.id || null,
+    repoFullName: recovered.repoFullName || null,
+    commit: recovered.commit || null,
+    failureStatus: failure?.status || null
+  })
+  return recovered
 }
 
 async function findRecentSeoAgentCommit(repoFullName, branch, sinceMs) {
