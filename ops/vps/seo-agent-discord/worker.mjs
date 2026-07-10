@@ -2139,10 +2139,71 @@ async function processQueuedApprovedCodeAction(workspaces) {
       saveState()
       continue
     }
+    const recovered = await recoverQueuedActionAlreadyCommitted(entry, workspace, targetChannelId)
+    if (recovered) continue
     delete state.codeActionResults[entry.id]
     return await runQueuedApprovedCodeAction(entry, workspace, targetChannelId)
   }
   return false
+}
+
+async function recoverQueuedActionAlreadyCommitted(entry, workspace, targetChannelId) {
+  const repoFullName = String(entry?.repoFullName || workspace?.repoFullName || '').trim()
+  const branch = String(entry?.branch || workspace?.branch || 'main').trim() || 'main'
+  if (!entry?.id || !repoFullName) return false
+  const commit = await findSeoAgentCommitForAction(entry.id, repoFullName, branch).catch((error) => {
+    log('approved_queue_action_id_commit_lookup_failed', { actionId: entry.id, repoFullName, error: error?.message || String(error) })
+    return null
+  })
+  if (!commit?.commit) return false
+  const workspaceLabel = workspace?.label || entry.workspaceSlug || repoFullName
+  const completedResult = {
+    commit: commit.commit,
+    fullCommit: commit.fullCommit || commit.commit,
+    diffStat: commit.diffStat || '',
+    repoFullName,
+    branch,
+    recovered: true
+  }
+  state.codeActionResults = state.codeActionResults || {}
+  state.codeActionResults[entry.id] = {
+    status: 'completed',
+    completedAt: new Date().toISOString(),
+    result: completedResult,
+    recoveredFrom: 'approved_queue_existing_action_id_commit'
+  }
+  recordActionLedger(entry, workspace, targetChannelId, 'completed', {
+    commit: completedResult.commit,
+    diffStat: completedResult.diffStat,
+    repoFullName,
+    recoveredFrom: 'approved_queue_existing_action_id_commit'
+  })
+  recordSeoExperiment(entry, workspace, targetChannelId, completedResult, { source: 'approved_queue_existing_action_id_commit' })
+  delete state.approvedCodeActionQueue[entry.id]
+  clearActiveAction(entry.id)
+  if (targetChannelId) {
+    await markPostedActionHandled(entry.id, targetChannelId, 'code_action_completed')
+    const commitUrl = githubCommitUrl(repoFullName, completedResult.commit)
+    const posted = await sendDiscordMessage([
+      `Kodaction var redan klar för ${workspaceLabel}: ${entry.title || entry.id}`,
+      `Action ID: \`${entry.id}\``,
+      `Commit: ${completedResult.commit}`,
+      commitUrl ? `GitHub: ${commitUrl}` : '',
+      completedResult.diffStat ? `Diff:\n\`\`\`\n${String(completedResult.diffStat).slice(0, 1200)}\n\`\`\`` : '',
+      '',
+      'Jag hittade redan en SEO Agent-commit med samma action-id och tog bort actionen från kön utan att köra den igen.'
+    ].filter(Boolean).join('\n'), targetChannelId, rollbackComponents(), { kind: 'code_result' })
+    state.messageToAction = state.messageToAction || {}
+    state.messageToAction[posted.id] = entry.id
+  }
+  log('approved_queue_existing_action_id_commit_recovered', {
+    actionId: entry.id,
+    repoFullName,
+    commit: completedResult.commit,
+    subject: commit.subject || ''
+  })
+  saveState()
+  return true
 }
 
 async function runQueuedApprovedCodeAction(entry, workspace, targetChannelId) {
@@ -5245,7 +5306,11 @@ async function recoverUncertainRuntimeApprovedQueue(uncertainty) {
   for (const entry of queueEntries) {
     const repoFullName = String(entry.repoFullName || '').trim()
     const branch = String(entry.branch || 'main').trim() || 'main'
-    const commit = await findRecentSeoAgentCommit(repoFullName, branch, sinceMs).catch((error) => {
+    const exactCommit = await findSeoAgentCommitForAction(entry.id, repoFullName, branch).catch((error) => {
+      log('runtime_uncertain_queue_action_id_commit_lookup_failed', { actionId: entry.id, repoFullName, error: error?.message || String(error) })
+      return null
+    })
+    const commit = exactCommit || await findRecentSeoAgentCommit(repoFullName, branch, sinceMs).catch((error) => {
       log('runtime_uncertain_queue_commit_lookup_failed', { actionId: entry.id, repoFullName, error: error?.message || String(error) })
       return null
     })
@@ -5353,6 +5418,44 @@ async function recoverRuntimeFailureAfterRecentCommit(action, workspace, failure
     failureStatus: failure?.status || null
   })
   return recovered
+}
+
+async function findSeoAgentCommitForAction(actionId, repoFullName, branch) {
+  const { execFile } = await import('node:child_process')
+  const { promisify } = await import('node:util')
+  const exec = promisify(execFile)
+  const repoName = String(repoFullName || '').split('/').pop()
+  const id = String(actionId || '').trim()
+  if (!repoName || !id) return null
+  const repoDir = `/home/deploy/seo-agent-workspaces/${repoName}`
+  if (!existsSync(join(repoDir, '.git'))) return null
+  const envWithPath = { ...process.env, PATH: `${process.env.HOME || '/home/deploy'}/.npm-global/bin:${process.env.HOME || '/home/deploy'}/.local/bin:${process.env.PATH || ''}` }
+  await exec('git', ['fetch', 'origin', branch], { cwd: repoDir, env: envWithPath, timeout: 2 * 60 * 1000, maxBuffer: 2 * 1024 * 1024 }).catch(() => null)
+  const logResult = await exec('git', [
+    'log',
+    '--all',
+    '--author=SEO Agent',
+    '--max-count=60',
+    '--format=%H%x00%ct%x00%s%x00%B%x1e'
+  ], { cwd: repoDir, env: envWithPath, timeout: 2 * 60 * 1000, maxBuffer: 8 * 1024 * 1024 })
+  const records = String(logResult.stdout || '').split('\u001e').map((item) => item.trim()).filter(Boolean)
+  const needle = `SEO-action-id: ${id}`
+  for (const record of records) {
+    const [fullCommit, ts, subject, ...bodyParts] = record.split('\u0000')
+    if (!fullCommit) continue
+    const body = bodyParts.join('\u0000')
+    if (!body.includes(needle) && !record.includes(needle)) continue
+    const shortResult = await exec('git', ['rev-parse', '--short', fullCommit], { cwd: repoDir, env: envWithPath, timeout: 60 * 1000, maxBuffer: 1024 * 1024 })
+    const statResult = await exec('git', ['show', '--stat', '--oneline', '--format=', fullCommit], { cwd: repoDir, env: envWithPath, timeout: 60 * 1000, maxBuffer: 4 * 1024 * 1024 })
+    return {
+      fullCommit,
+      commit: String(shortResult.stdout || '').trim() || fullCommit.slice(0, 7),
+      committedAt: ts ? new Date(Number(ts) * 1000).toISOString() : '',
+      subject: subject || '',
+      diffStat: String(statResult.stdout || '').trim()
+    }
+  }
+  return null
 }
 
 async function findRecentSeoAgentCommit(repoFullName, branch, sinceMs) {
