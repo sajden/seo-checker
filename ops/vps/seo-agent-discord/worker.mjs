@@ -2051,6 +2051,10 @@ function settledErrorMessage(result) {
 
 async function processApprovedCodeActions(workspaces) {
   if (state.codeActionRunning) return
+  if (state.runtimeCodeActionUncertain) {
+    const recoveredCount = await recoverUncertainRuntimeApprovedQueue(state.runtimeCodeActionUncertain)
+    if (recoveredCount > 0) return true
+  }
   const uncertainUntil = Date.parse(state.runtimeCodeActionUncertain?.until || '')
   if (uncertainUntil && Date.now() < uncertainUntil) {
     logThrottled('runtime_code_action_uncertain_cooldown_active', 5 * 60 * 1000, 'runtime_code_action_uncertain_cooldown_active', {
