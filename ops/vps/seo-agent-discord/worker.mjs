@@ -1282,6 +1282,32 @@ function sameTargetRecentExperimentCheck(action, workspace, targetChannelId) {
   return { ok: true, reason: 'same_target_ok' }
 }
 
+function shouldSkipCodexOpportunityScoutForLiveRejections(pending, rejectionReasons) {
+  if (!Array.isArray(pending) || !pending.length) return false
+  const rejected = Array.isArray(rejectionReasons) ? rejectionReasons.filter(Boolean) : []
+  if (rejected.length < Math.min(pending.length, 4)) return false
+  return rejected.every((item) => isWaitOrGuardRejectionReason(item?.reason))
+}
+
+function isWaitOrGuardRejectionReason(reason) {
+  const text = String(reason || '')
+  return (
+    /^already_result:/.test(text)
+    || text === 'already_queued'
+    || text === 'same_target_recent_experiment_limit'
+    || text === 'already_completed_waiting_recheck'
+    || text === 'recently_deprioritized_waiting_recheck'
+    || text === 'recently_ignored_waiting_recheck'
+    || text === 'indexing_or_gsc_check'
+    || text === 'integration_check_not_content_work'
+    || text === 'not_code_action'
+    || /^legal_or_policy_route/.test(text)
+    || /^guard:/.test(text)
+    || /^review:(Skip|Deprioritize|Block|blocked)/i.test(text)
+    || /^codex:(Skip|Deprioritize|Block|blocked)/i.test(text)
+  )
+}
+
 async function syntheticAutonomousActionForWorkspace({ workspace, targetChannelId, pending, rejectionReasons, workspacePolicy, sourcePayload = null }) {
   const profile = ensureWorkspaceProfile(workspace, targetChannelId)
   const hasGoodLiveCandidate = pending.some((action) => {
@@ -1295,8 +1321,18 @@ async function syntheticAutonomousActionForWorkspace({ workspace, targetChannelI
     logThrottled(`synthetic_autonomous_skipped:${workspace?.id || workspace?.label}:live`, 30 * 60 * 1000, 'synthetic_autonomous_skipped', { workspace: workspace?.label || workspace?.id || null, reason: 'good_live_candidate_available', pendingCount: pending.length })
     return null
   }
-  const rawAction = buildWorkspaceGoalGapAction(workspace, targetChannelId, sourcePayload)
-    || await buildCodexOpportunityAction(workspace, targetChannelId, {
+  let rawAction = buildWorkspaceGoalGapAction(workspace, targetChannelId, sourcePayload)
+  if (!rawAction && shouldSkipCodexOpportunityScoutForLiveRejections(pending, rejectionReasons)) {
+    logThrottled(`codex_opportunity_skipped:${workspace?.id || workspace?.label}:live-rejections`, 60 * 60 * 1000, 'codex_opportunity_skipped', {
+      workspace: workspace?.label || workspace?.id || null,
+      reason: 'live_rejections_waiting_recheck_or_guard',
+      pendingCount: pending.length,
+      rejectedCount: rejectionReasons.length,
+      sampleReasons: rejectionReasons.slice(0, 6).map((item) => item?.reason || 'unknown')
+    })
+    return null
+  }
+  rawAction = rawAction || await buildCodexOpportunityAction(workspace, targetChannelId, {
       pending,
       rejectionReasons,
       workspacePolicy,
