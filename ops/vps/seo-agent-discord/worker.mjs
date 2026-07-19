@@ -1289,6 +1289,17 @@ function shouldSkipCodexOpportunityScoutForLiveRejections(pending, rejectionReas
   return rejected.every((item) => isWaitOrGuardRejectionReason(item?.reason))
 }
 
+function shouldSkipCodexOpportunityScoutForRecentNoCandidate(key, scoutMinIntervalMs) {
+  const recent = state.noAutonomousCandidate?.[key]
+  const recentAt = Date.parse(recent?.at || '')
+  const ageMs = Number.isFinite(recentAt) ? Date.now() - recentAt : Infinity
+  if (ageMs < 0 || ageMs >= scoutMinIntervalMs) return false
+  const reasons = Array.isArray(recent?.reasons) ? recent.reasons.filter(Boolean) : []
+  const pendingCount = Math.max(Number(recent?.pendingCount || 0), reasons.length)
+  if (!pendingCount || reasons.length < Math.min(pendingCount, 4)) return false
+  return reasons.every((item) => isWaitOrGuardRejectionReason(item?.reason))
+}
+
 function isWaitOrGuardRejectionReason(reason) {
   const text = String(reason || '')
   return (
@@ -1437,6 +1448,7 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
   const previousScout = state.codexOpportunityScout?.[key]
   const previousInvalidScoutAt = Date.parse(previousScout?.at || '')
   const previousInvalidScoutAgeMs = Number.isFinite(previousInvalidScoutAt) ? Date.now() - previousInvalidScoutAt : Infinity
+  const scoutMinIntervalMs = opportunityScoutIntervalForWorkspace(profile, context)
   if (previousScout?.blockedReason && previousInvalidScoutAgeMs >= 0 && previousInvalidScoutAgeMs < opportunityScoutInvalidCooldownMs) {
     logThrottled(`codex_opportunity_skipped:${key}:blocked`, 60 * 60 * 1000, 'codex_opportunity_skipped', {
       workspace: workspace?.label || workspace?.id || null,
@@ -1446,9 +1458,18 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
     })
     return null
   }
+  if (shouldSkipCodexOpportunityScoutForRecentNoCandidate(key, scoutMinIntervalMs)) {
+    const recentAt = Date.parse(state.noAutonomousCandidate?.[key]?.at || '')
+    logThrottled(`codex_opportunity_skipped:${key}:recent-no-candidate`, 60 * 60 * 1000, 'codex_opportunity_skipped', {
+      workspace: workspace?.label || workspace?.id || null,
+      reason: 'recent_no_autonomous_candidate_waiting_recheck_or_guard',
+      ageMinutes: Math.round((Date.now() - recentAt) / 60000),
+      minIntervalMinutes: Math.round(scoutMinIntervalMs / 60000)
+    })
+    return null
+  }
   const previousScoutAt = Date.parse(previousScout?.at || 0)
   const scoutAgeMs = Number.isFinite(previousScoutAt) ? Date.now() - previousScoutAt : Infinity
-  const scoutMinIntervalMs = opportunityScoutIntervalForWorkspace(profile, context)
   if (scoutAgeMs >= 0 && scoutAgeMs < scoutMinIntervalMs) {
     logThrottled(`codex_opportunity_skipped:${key}:recent`, 60 * 60 * 1000, 'codex_opportunity_skipped', {
       workspace: workspace?.label || workspace?.id || null,
