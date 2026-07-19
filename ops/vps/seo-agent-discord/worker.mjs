@@ -1331,9 +1331,12 @@ function isWaitOrGuardRejectionReason(reason) {
     || text === 'already_completed_waiting_recheck'
     || text === 'recently_deprioritized_waiting_recheck'
     || text === 'recently_ignored_waiting_recheck'
+    || text === 'missing_target_url'
+    || text === 'new_page_needs_human_approval'
     || text === 'indexing_or_gsc_check'
     || text === 'integration_check_not_content_work'
     || text === 'not_code_action'
+    || /^unsupported_kind:/.test(text)
     || /^legal_or_policy_route/.test(text)
     || /^guard:/.test(text)
     || /^review:(Review|Skip|Deprioritize|Block|blocked)/i.test(text)
