@@ -937,6 +937,18 @@ async function maybeQueueAutonomousCodeActions(workspaces) {
     }
     const payload = await fetchActionsForChat(workspace).catch((error) => ({ error: error?.message || String(error), actions: [] }))
     const actions = Array.isArray(payload.actions) ? payload.actions : []
+    const runtimeCurrent = await fetchCurrentSeoActionThroughRuntime(workspace, targetChannelId, 10)
+    if (runtimeCurrentBlocksAutonomousCode(runtimeCurrent.payload)) {
+      const pending = actions.filter((item) => item?.status === 'pending')
+      rememberNoAutonomousCandidate(workspace, targetChannelId, pending, runtimeCurrent.payload?.rejected || [])
+      logThrottled(`autonomous_runtime_current_block:${workspace.id || workspace.label || workspace.repoFullName}`, 30 * 60 * 1000, 'autonomous_runtime_current_block', {
+        workspace: workspace.label || workspace.id || null,
+        acceptedCount: runtimeCurrent.payload?.acceptedCount ?? null,
+        candidateCount: runtimeCurrent.payload?.candidateCount ?? null,
+        rejectedCount: runtimeCurrent.payload?.rejected?.length || 0
+      })
+      continue
+    }
     const candidate = await chooseAutonomousCodeAction(actions, workspace, targetChannelId, payload.workspacePolicy, payload)
     if (!candidate) {
       logThrottled(`autonomous_no_candidate_tick:${workspace.id || workspace.label || workspace.repoFullName}`, 30 * 60 * 1000, 'autonomous_no_candidate_tick', {
@@ -1298,6 +1310,16 @@ function shouldSkipCodexOpportunityScoutForRecentNoCandidate(key, scoutMinInterv
   const pendingCount = Math.max(Number(recent?.pendingCount || 0), reasons.length)
   if (!pendingCount || reasons.length < Math.min(pendingCount, 4)) return false
   return reasons.every((item) => isWaitOrGuardRejectionReason(item?.reason))
+}
+
+function runtimeCurrentBlocksAutonomousCode(payload) {
+  if (!payload || String(payload.selectedActionId || '')) return false
+  if (Number(payload.acceptedCount ?? 0) !== 0) return false
+  const candidateCount = Number(payload.candidateCount || 0)
+  if (!candidateCount) return false
+  const rejected = Array.isArray(payload.rejected) ? payload.rejected.filter(Boolean) : []
+  if (rejected.length < Math.min(candidateCount, 4)) return false
+  return rejected.every((item) => isWaitOrGuardRejectionReason(item?.reason))
 }
 
 function isWaitOrGuardRejectionReason(reason) {
