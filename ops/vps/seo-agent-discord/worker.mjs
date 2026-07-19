@@ -1303,8 +1303,8 @@ function isWaitOrGuardRejectionReason(reason) {
     || text === 'not_code_action'
     || /^legal_or_policy_route/.test(text)
     || /^guard:/.test(text)
-    || /^review:(Skip|Deprioritize|Block|blocked)/i.test(text)
-    || /^codex:(Skip|Deprioritize|Block|blocked)/i.test(text)
+    || /^review:(Review|Skip|Deprioritize|Block|blocked)/i.test(text)
+    || /^codex:(Review|Skip|Deprioritize|Block|blocked)/i.test(text)
   )
 }
 
