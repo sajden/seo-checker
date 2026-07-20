@@ -2302,6 +2302,49 @@ async function recoverQueuedActionAlreadyCommitted(entry, workspace, targetChann
   return true
 }
 
+async function recoverActionAlreadyCommittedBeforeCard(action, workspace, targetChannelId) {
+  const repoFullName = String(action?.repoFullName || workspace?.repoFullName || '').trim()
+  const branch = String(action?.branch || workspace?.branch || 'main').trim() || 'main'
+  const actionId = String(action?.id || '').trim()
+  if (!actionId || !repoFullName) return false
+  const commit = await findSeoAgentCommitForAction(actionId, repoFullName, branch).catch((error) => {
+    log('action_card_action_id_commit_lookup_failed', { actionId, repoFullName, error: error?.message || String(error) })
+    return null
+  })
+  if (!commit?.commit) return false
+  const completedResult = {
+    commit: commit.commit,
+    fullCommit: commit.fullCommit || commit.commit,
+    diffStat: commit.diffStat || '',
+    repoFullName,
+    branch,
+    recovered: true
+  }
+  state.codeActionResults = state.codeActionResults || {}
+  state.codeActionResults[actionId] = {
+    status: 'completed',
+    completedAt: new Date().toISOString(),
+    result: completedResult,
+    recoveredFrom: 'action_card_existing_action_id_commit'
+  }
+  recordActionLedger(action, workspace, targetChannelId, 'completed', {
+    commit: completedResult.commit,
+    diffStat: completedResult.diffStat,
+    repoFullName,
+    recoveredFrom: 'action_card_existing_action_id_commit'
+  })
+  recordSeoExperiment(action, workspace, targetChannelId, completedResult, { source: 'action_card_existing_action_id_commit' })
+  clearActiveAction(actionId)
+  log('action_card_existing_action_id_commit_recovered', {
+    actionId,
+    repoFullName,
+    commit: completedResult.commit,
+    subject: commit.subject || ''
+  })
+  saveState()
+  return true
+}
+
 async function runQueuedApprovedCodeAction(entry, workspace, targetChannelId) {
   if (!entry) return false
   state.codeActionRunning = { actionId: entry.id, startedAt: new Date().toISOString(), source: 'approved_queue' }
@@ -2640,6 +2683,8 @@ async function postPendingActions({ workspace, targetChannelId }) {
   for (const action of orderedPending) {
     const id = String(action.id || '')
     if (!id || recentlyPostedAction(id)) continue
+    if (codeActionResultBlocks(action, workspace, targetChannelId)) continue
+    if (await recoverActionAlreadyCommittedBeforeCard(action, workspace, targetChannelId)) continue
     const systemKey = systemClusterKey(action)
     if (systemKey && recentlyPostedSystemKey(systemKey)) continue
     const enrichedAction = await enrichActionWithKeywordMetrics(action)
