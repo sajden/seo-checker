@@ -1357,6 +1357,16 @@ async function syntheticAutonomousActionForWorkspace({ workspace, targetChannelI
     logThrottled(`synthetic_autonomous_skipped:${workspace?.id || workspace?.label}:live`, 30 * 60 * 1000, 'synthetic_autonomous_skipped', { workspace: workspace?.label || workspace?.id || null, reason: 'good_live_candidate_available', pendingCount: pending.length })
     return null
   }
+  if (shouldSkipCodexOpportunityScoutForLiveRejections(pending, rejectionReasons)) {
+    logThrottled(`synthetic_autonomous_skipped:${workspace?.id || workspace?.label}:live-rejections`, 30 * 60 * 1000, 'synthetic_autonomous_skipped', {
+      workspace: workspace?.label || workspace?.id || null,
+      reason: 'live_rejections_waiting_recheck_or_guard',
+      pendingCount: pending.length,
+      rejectedCount: rejectionReasons.length,
+      sampleReasons: rejectionReasons.slice(0, 6).map((item) => item?.reason || 'unknown')
+    })
+    return null
+  }
   let rawAction = buildWorkspaceGoalGapAction(workspace, targetChannelId, sourcePayload)
   if (!rawAction && shouldSkipCodexOpportunityScoutForLiveRejections(pending, rejectionReasons)) {
     logThrottled(`codex_opportunity_skipped:${workspace?.id || workspace?.label}:live-rejections`, 60 * 60 * 1000, 'codex_opportunity_skipped', {
