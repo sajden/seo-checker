@@ -936,6 +936,13 @@ async function maybeQueueAutonomousCodeActions(workspaces) {
       log('autonomous_active_card_timeout_cleared', { actionId: active.actionId, workspace: workspace.label || workspace.id || null })
     }
     const payload = await fetchActionsForChat(workspace).catch((error) => ({ error: error?.message || String(error), actions: [] }))
+    if (isSeoActionsMissingBatchPayload(payload)) {
+      logThrottled(`autonomous_missing_seo_batch_block:${workspace.id || workspace.label || workspace.repoFullName}`, 30 * 60 * 1000, 'autonomous_missing_seo_batch_block', {
+        workspace: workspace.label || workspace.id || null,
+        error: payload.error || 'seo_batch_not_found'
+      })
+      continue
+    }
     const actions = Array.isArray(payload.actions) ? payload.actions : []
     const runtimeCurrent = await fetchCurrentSeoActionThroughRuntime(workspace, targetChannelId, 10)
     if (runtimeCurrentBlocksAutonomousCode(runtimeCurrent.payload)) {
@@ -1183,6 +1190,10 @@ async function repoAutomationReady(repoFullName, branch = 'main') {
 }
 
 async function chooseAutonomousCodeAction(actions, workspace, targetChannelId, workspacePolicy = '', sourcePayload = null) {
+  if (isSeoActionsMissingBatchPayload(sourcePayload)) {
+    rememberNoAutonomousCandidate(workspace, targetChannelId, [], [{ reason: 'seo_batch_not_found_waiting_for_fresh_run' }])
+    return null
+  }
   const pending = prioritizeActionQueue(actions.filter((item) => item?.status === 'pending'), workspace, targetChannelId)
   const rejectionReasons = []
   for (const action of pending) {
@@ -1349,6 +1360,14 @@ function isWaitOrGuardRejectionReason(reason) {
 }
 
 async function syntheticAutonomousActionForWorkspace({ workspace, targetChannelId, pending, rejectionReasons, workspacePolicy, sourcePayload = null }) {
+  if (isSeoActionsMissingBatchPayload(sourcePayload)) {
+    logThrottled(`synthetic_autonomous_skipped:${workspace?.id || workspace?.label}:missing-batch`, 30 * 60 * 1000, 'synthetic_autonomous_skipped', {
+      workspace: workspace?.label || workspace?.id || null,
+      reason: 'seo_batch_not_found_waiting_for_fresh_run',
+      pendingCount: Array.isArray(pending) ? pending.length : 0
+    })
+    return null
+  }
   const profile = ensureWorkspaceProfile(workspace, targetChannelId)
   const hasGoodLiveCandidate = pending.some((action) => {
     const check = autonomousCodeCandidateCheck(action, workspace, targetChannelId)
@@ -1481,6 +1500,13 @@ function buildWorkspaceGoalGapAction(workspace, targetChannelId = null, sourcePa
 
 async function buildCodexOpportunityAction(workspace, targetChannelId = null, context = {}) {
   if (!codexChatEnabled) return null
+  if (isSeoActionsMissingBatchPayload(context.sourcePayload)) {
+    logThrottled(`codex_opportunity_skipped:${workspaceProfileKey(workspace, targetChannelId)}:missing-batch`, 60 * 60 * 1000, 'codex_opportunity_skipped', {
+      workspace: workspace?.label || workspace?.id || null,
+      reason: 'seo_batch_not_found_waiting_for_fresh_run'
+    })
+    return null
+  }
   const repoFullName = String(workspace?.repoFullName || '').trim()
   const repoName = repoFullName.split('/')[1]
   if (!repoName) return null
@@ -5643,6 +5669,12 @@ async function findRecentSeoAgentCommit(repoFullName, branch, sinceMs) {
 
 function isSeoBatchNotFoundError(error) {
   return String(error?.message || error || '').toLowerCase().includes('seo_batch_not_found')
+}
+
+function isSeoActionsMissingBatchPayload(payload) {
+  if (!payload) return false
+  if (payload.missingBatch) return true
+  return isSeoBatchNotFoundError(payload.error || payload.batchError || '')
 }
 
 function emptySeoActionsForMissingBatch(workspace, error) {
