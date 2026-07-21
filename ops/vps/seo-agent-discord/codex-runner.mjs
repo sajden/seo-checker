@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFile } from 'node:child_process'
-import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 
@@ -12,20 +12,29 @@ const skipGithubActions = process.env.SEO_AGENT_SKIP_GITHUB_ACTIONS !== 'false'
 const action = JSON.parse(readFileSync(process.argv[2], 'utf8'))
 const repoName = String(action.repoFullName || '').split('/')[1]
 if (!repoName) throw new Error('Missing repoFullName in action payload')
+const repoLock = acquireRepoLock(repoName, action)
+process.on('exit', repoLock.release)
+for (const signal of ['SIGINT', 'SIGTERM']) {
+  process.once(signal, () => {
+    repoLock.release()
+    process.kill(process.pid, signal)
+  })
+}
+const baseBranch = action.branch || 'main'
+const requiresReview = isSebcastwallAction(action, repoName)
+const deliveryBranch = requiresReview
+  ? `seo-agent/${safeBranchPart(action.id || action.title || Date.now())}`
+  : baseBranch
 const repoDir = join(workspaceRoot, repoName)
+assertActionHasSeoEvidence(action)
 await ensureRepoCheckout(repoDir, action.repoFullName)
 
 await recoverInterruptedWorktree(repoDir, action)
 await assertClean(repoDir)
-await run('git', ['checkout', action.branch || 'main'], repoDir)
-await run("git", ["fetch", "origin", action.branch || "main"], repoDir)
+await run('git', ['checkout', baseBranch], repoDir)
+await run("git", ["fetch", "origin", baseBranch], repoDir)
 await run("git", ["merge", "--ff-only", "FETCH_HEAD"], repoDir)
-
-const existingCommit = await finalizeExistingSeoAgentCommit(repoDir, action)
-if (existingCommit) {
-  console.log(JSON.stringify(existingCommit, null, 2))
-  process.exit(0)
-}
+if (requiresReview) await run('git', ['checkout', '-B', deliveryBranch], repoDir)
 
 const prompt = buildPrompt(action)
 const promptPath = join('/home/deploy/seo-agent-discord/state/codex-prompts', `${action.id}.md`)
@@ -43,13 +52,11 @@ recordCodexUsage({
   actionId: action.id
 })
 
-const codexCommitted = await finalizeExistingSeoAgentCommit(repoDir, action, codexUsage)
-if (codexCommitted) {
-  console.log(JSON.stringify(codexCommitted, null, 2))
-  process.exit(0)
-}
+await exposeCodexCommitAsReviewableDiff(repoDir)
 
+await runWorkspaceSafetyGate(repoDir, action)
 const quality = await runQualityGate(repoDir, action)
+const safety = await runWorkspaceSafetyGate(repoDir, action)
 await runBestBuild(bestBuildDir(repoDir))
 await run('git', ['add', '-A'], repoDir)
 const diff = await run('git', ['diff', '--cached', '--stat'], repoDir)
@@ -58,9 +65,71 @@ await run('git', ['config', 'user.name', 'SEO Agent'], repoDir)
 await run('git', ['config', 'user.email', 'seo-agent@sebcastwall.se'], repoDir)
 await run('git', ['commit', '-m', seoAgentCommitMessage(action.title || 'SEO action', `SEO-action-id: ${action.id}`)], repoDir)
 const commit = await run('git', ['rev-parse', '--short', 'HEAD'], repoDir)
-await run('git', ['push', 'origin', `HEAD:${action.branch || 'main'}`], repoDir)
+await run('git', ['push', '--force-with-lease', 'origin', `HEAD:${deliveryBranch}`], repoDir)
 
-console.log(JSON.stringify({ ok: true, repoDir, actionId: action.id, commit: commit.stdout.trim(), diffStat: diff.stdout, codexUsage, quality }, null, 2))
+const reviewUrl = requiresReview
+  ? `https://github.com/${action.repoFullName}/compare/${baseBranch}...${deliveryBranch}?expand=1`
+  : null
+console.log(JSON.stringify({ ok: true, repoDir, actionId: action.id, commit: commit.stdout.trim(), diffStat: diff.stdout, codexUsage, quality: { ...quality, safety }, baseBranch, deliveryBranch, requiresReview, reviewUrl, mergedToMain: !requiresReview }, null, 2))
+
+function acquireRepoLock(name, input) {
+  const lockDir = join(workspaceRoot, '.locks')
+  const lockPath = join(lockDir, `${safeBranchPart(name)}.json`)
+  mkdirSync(lockDir, { recursive: true })
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      writeFileSync(lockPath, JSON.stringify({ pid: process.pid, actionId: input.id || null, startedAt: new Date().toISOString() }), { flag: 'wx', mode: 0o600 })
+      let released = false
+      return {
+        path: lockPath,
+        release() {
+          if (released) return
+          released = true
+          try {
+            const current = JSON.parse(readFileSync(lockPath, 'utf8'))
+            if (Number(current.pid) === process.pid) unlinkSync(lockPath)
+          } catch {}
+        }
+      }
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error
+      let owner = null
+      try { owner = JSON.parse(readFileSync(lockPath, 'utf8')) } catch {}
+      const ownerPid = Number(owner?.pid || 0)
+      if (ownerPid && processIsAlive(ownerPid)) {
+        throw new Error(`SEO repo already has an active runner: ${name} (pid ${ownerPid}, action ${owner?.actionId || 'unknown'})`)
+      }
+      rmSync(lockPath, { force: true })
+    }
+  }
+  throw new Error(`Could not acquire SEO repo lock: ${name}`)
+}
+
+function processIsAlive(pid) {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function assertActionHasSeoEvidence(input) {
+  if (!isSebcastwallAction(input, repoName)) return
+  const keyword = String(input?.keyword || '').trim()
+  const instruction = [input?.title, input?.recommendedAction].filter(Boolean).join(' ').toLowerCase()
+  if (!keyword || !/t[aä]ck keyword|serp-gap|l[aä]gg in keyword|title\/h1\/h2\/meta/.test(instruction)) return
+
+  const volume = Number(input?.keywordMetrics?.avgMonthlySearches)
+  const hasPlannerDemand = Number.isFinite(volume) && volume > 0
+  const evidence = [input?.why, ...(Array.isArray(input?.evidence) ? input.evidence : [])].filter(Boolean).join(' ').toLowerCase()
+  const hasPositiveGscEvidence = /gsc|search console/.test(evidence)
+    && /(?:\b[1-9]\d*\b)\s*(?:klick|click|impression)|query\s+matchade|sökfråga\s+matchade/.test(evidence)
+    && !/ingen gsc-query matchade|ingen sökfråga matchade|0\s*(?:klick|click|impression)/.test(evidence)
+  if (!hasPlannerDemand && !hasPositiveGscEvidence) {
+    throw new Error(`SEO evidence gate blocked exact-keyword coverage without verified demand: ${keyword}`)
+  }
+}
 
 async function ensureRepoCheckout(repoDir, repoFullName) {
   if (existsSync(join(repoDir, '.git'))) return
@@ -110,7 +179,7 @@ async function recoverInterruptedWorktree(cwd, input) {
   await run('git', ['config', 'user.name', 'SEO Agent'], cwd)
   await run('git', ['config', 'user.email', 'seo-agent@sebcastwall.se'], cwd)
   await run('git', ['commit', '-m', seoAgentCommitMessage('Recover interrupted SEO agent changes', `Previous action context: ${input.id || input.title || 'unknown'}`)], cwd)
-  await run('git', ['push', 'origin', `HEAD:${input.branch || 'main'}`], cwd)
+  await run('git', ['push', '--force-with-lease', 'origin', `HEAD:${deliveryBranch}`], cwd)
   recordCodexUsage({
     agent: 'seo-agent',
     purpose: 'worktree_recovery',
@@ -123,10 +192,9 @@ async function recoverInterruptedWorktree(cwd, input) {
 }
 
 async function finalizeExistingSeoAgentCommit(cwd, input, codexUsage = null) {
-  const branch = input.branch || 'main'
   const status = await run('git', ['status', '--porcelain'], cwd)
   if (status.stdout.trim()) return null
-  const ahead = await run('git', ['rev-list', '--count', `origin/${branch}..HEAD`], cwd).catch(() => ({ stdout: '0' }))
+  const ahead = await run('git', ['rev-list', '--count', `origin/${baseBranch}..HEAD`], cwd).catch(() => ({ stdout: '0' }))
   if (Number(ahead.stdout.trim() || '0') <= 0) return null
   const meta = await run('git', ['show', '-s', '--format=%an%x00%ae%x00%s%x00%b', 'HEAD'], cwd)
   const [authorName, authorEmail, subject, body] = meta.stdout.split('\u0000')
@@ -137,8 +205,8 @@ async function finalizeExistingSeoAgentCommit(cwd, input, codexUsage = null) {
   if (!bySeoAgent || !related) return null
   await ensureSeoAgentCommitSkipsGithubActions(cwd)
   await runBestBuild(bestBuildDir(cwd))
-  const diff = await run('git', ['diff', '--stat', `origin/${branch}..HEAD`], cwd)
-  await run('git', ['push', 'origin', `HEAD:${branch}`], cwd)
+  const diff = await run('git', ['diff', '--stat', `origin/${baseBranch}..HEAD`], cwd)
+  await run('git', ['push', '--force-with-lease', 'origin', `HEAD:${deliveryBranch}`], cwd)
   const commit = await run('git', ['rev-parse', '--short', 'HEAD'], cwd)
   return {
     ok: true,
@@ -156,6 +224,12 @@ async function finalizeExistingSeoAgentCommit(cwd, input, codexUsage = null) {
       }
     }
   }
+}
+
+async function exposeCodexCommitAsReviewableDiff(cwd) {
+  const ahead = await run('git', ['rev-list', '--count', `origin/${baseBranch}..HEAD`], cwd).catch(() => ({ stdout: '0' }))
+  if (Number(ahead.stdout.trim() || '0') <= 0) return
+  await run('git', ['reset', '--mixed', `origin/${baseBranch}`], cwd)
 }
 
 async function runBestBuild(cwd) {
@@ -257,6 +331,11 @@ async function reviewDiffWithCodex(repoDir, input, diffStat, diff, attempt) {
     '- inte lägger in generisk malltext,',
     '- inte upprepar samma experiment utan ny evidens,',
     '- inte lägger SMB/B2B/konsult/SaaS-språk på konsumenttjänster.',
+    ...(isSebcastwallAction(input, repoName) ? [
+      '- för Sebcastwall lämnar godkänd design, CSS, bilder, navigation, komponentstruktur, formulär, CTA-beteende, priser och routes helt orörda,',
+      '- för Sebcastwall använder aktuella canonical routes och skapar inte nya servicesidor utan operatörsbeslut.',
+      '- blockerar exact-match keyword stuffing i title, H1 och meta när positiv GSC-evidens eller verifierad Keyword Planner-volym saknas; frånvaro av keyword är inte i sig en SEO-hypotes.'
+    ] : []),
     '',
     'Revise om diffen kan räddas med en liten ändring.',
     'Block om den är fel workspace, för generisk, farlig, irrelevant eller saknar trovärdig SEO-hypotes.',
@@ -365,6 +444,78 @@ async function rejectDirtyWorktree(repoDir, input, review) {
   })
 }
 
+async function runWorkspaceSafetyGate(repoDir, input) {
+  if (!isSebcastwallAction(input, repoName)) return { ok: true, profile: 'default' }
+
+  const nameStatus = await run('git', ['diff', '--name-status', '--', '.'], repoDir)
+  const changed = String(nameStatus.stdout || '').trim().split(/\r?\n/).filter(Boolean).map((line) => {
+    const [status, ...parts] = line.split('\t')
+    return { status, path: parts[parts.length - 1] || '' }
+  })
+  const blockedPaths = changed.filter(({ path }) => (
+    /(^|\/)app\/_components\//.test(path)
+    || /(^|\/)app\/tjanster\/_components\//.test(path)
+    || /(^|\/)app\/(kontakt|api)\//.test(path)
+    || /(^|\/)public\//.test(path)
+    || /\.css$/.test(path)
+    || /(^|\/)(package\.json|next\.config\.[^/]+|wrangler\.jsonc|middleware\.[^/]+)$/.test(path)
+  ))
+  if (blockedPaths.length) {
+    await rejectDirtyWorktree(repoDir, input, { reason: `sebcastwall_design_freeze:${blockedPaths.map((item) => item.path).join(',')}` })
+    throw new Error(`Sebcastwall SEO safety gate blocked design/system files: ${blockedPaths.map((item) => item.path).join(', ')}`)
+  }
+
+  const unsafeLifecycle = changed.filter(({ status, path }) => /^[DR]/.test(status) || (status === 'A' && !/^content\/articles\/[^/]+\.mdx$/.test(path)))
+  if (unsafeLifecycle.length) {
+    await rejectDirtyWorktree(repoDir, input, { reason: `sebcastwall_route_or_file_lifecycle:${unsafeLifecycle.map((item) => `${item.status}:${item.path}`).join(',')}` })
+    throw new Error('Sebcastwall SEO safety gate blocks deletes, renames and new non-article files')
+  }
+
+  const meaningfulFiles = changed.filter(({ path }) => !/^lib\/content\/generated-/.test(path))
+  if (meaningfulFiles.length > 3) {
+    await rejectDirtyWorktree(repoDir, input, { reason: `sebcastwall_change_too_broad:${meaningfulFiles.length}_files` })
+    throw new Error(`Sebcastwall SEO safety gate allows at most 3 source files, got ${meaningfulFiles.length}`)
+  }
+
+  const numstat = await run('git', ['diff', '--numstat', '--', '.'], repoDir)
+  const changedLines = String(numstat.stdout || '').trim().split(/\r?\n/).filter(Boolean).reduce((sum, line) => {
+    const [added, removed] = line.split('\t')
+    return sum + (Number(added) || 0) + (Number(removed) || 0)
+  }, 0)
+  if (changedLines > 220) {
+    await rejectDirtyWorktree(repoDir, input, { reason: `sebcastwall_change_too_large:${changedLines}_lines` })
+    throw new Error(`Sebcastwall SEO safety gate allows at most 220 changed lines, got ${changedLines}`)
+  }
+
+  const diff = await run('git', ['diff', '-U0', '--', '.'], repoDir)
+  const changedContent = String(diff.stdout || '').split(/\r?\n/).filter((line) => /^[+-](?![+-])/.test(line)).join('\n')
+  if (/(priceValue|priceLabel|priceText|priceSubtext|priceNote)|\b\d[\d ]{2,}\s*(kr|sek)\b/i.test(changedContent)) {
+    await rejectDirtyWorktree(repoDir, input, { reason: 'sebcastwall_pricing_change_requires_operator' })
+    throw new Error('Sebcastwall SEO safety gate blocks pricing changes')
+  }
+
+  return { ok: true, profile: 'sebcastwall_seo_only', changedFiles: changed.map((item) => item.path), changedLines }
+}
+
+function isSebcastwallAction(input, name = '') {
+  return [
+    name,
+    input?.workspaceSlug,
+    input?.projectSlug,
+    input?.repoFullName,
+    input?.targetUrl,
+    input?.gscProperty
+  ].filter(Boolean).join(' ').toLowerCase().includes('sebcastwall')
+}
+
+function safeBranchPart(value) {
+  return String(value || 'seo-change')
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80) || `seo-change-${Date.now()}`
+}
+
 function extractCodexExecText(stdout) {
   const lines = String(stdout || '').trim().split(/\r?\n/).filter(Boolean)
   const texts = []
@@ -450,7 +601,7 @@ function buildPrompt(input) {
     agentSpecs,
     '',
     'Rules:',
-    '- Work directly on the current main checkout.',
+    '- Work only in the isolated action branch prepared by the runner. Never commit or push yourself; the runner reviews and delivers the result.',
     '- Do not touch unrelated files.',
     '- Do not change deploy config, auth, API integrations, pricing, redirects, or routing unless the action explicitly requires it.',
     '- Prefer metadata, copy, schema, internal links, FAQ, or small existing-page changes.',
@@ -459,6 +610,13 @@ function buildPrompt(input) {
     '- Do not repeat a previously completed page/keyword experiment unless the action provides new evidence or a clearly different hypothesis.',
     '- If the keyword is broad, one-word, or weakly evidenced, make only a conservative improvement tied to the actual user intent of the site.',
     '- Leave the repo buildable.',
+    ...(isSebcastwallAction(input, repoName) ? [
+      '- Sebcastwall design is approved and frozen. Do not redesign sections or change layout, CSS, images, navigation, shared components, forms, CTA behavior, prices, routes or public customer claims.',
+      '- For Sebcastwall, focus on evidence-backed SEO only: metadata, search-intent copy, headings without structural JSX changes, internal links, schema or article content.',
+      '- Use current canonical routes. Never target /tjanster or /tjanster/app-webbutveckling; use /foretag, /privatpersoner, /tjanster/webbutveckling and /tjanster/mobilappar as appropriate.',
+      '- Existing commercial pages should be strengthened, not expanded with generic sections. New service pages require operator approval.',
+      '- Never prepend or force an exact-match keyword into a title, H1 or meta description merely because a monitor says it is absent. Preserve page intent and natural Swedish; require positive GSC query evidence or verified Keyword Planner demand.'
+    ] : []),
   ].join('\n')
 }
 
@@ -514,9 +672,11 @@ function workspaceImplementationRules(input) {
   if (/sebcastwall/.test(haystack)) {
     return [
       'sebcastwall.se is an AI/coding/automation consultancy.',
-      'Prioritize AI agents, AI automation, app/web development, internal tools, AI education, workshops and practical implementation credibility.',
-      'Microsoft 365, Power Automate, Teams and SharePoint may be used only as supporting proof for AI/coding/internal-tool outcomes; do not let them become the primary positioning.',
-      'Deprioritize pure bookkeeping, invoice, Fortnox, Visma, generic integration, generic IT/helpdesk and M365-only angles unless tied to AI/coding/internal-tools/education strategy.',
+      'The approved structure has separate business and consumer tracks at /foretag and /privatpersoner.',
+      'Business priorities are AI reviews, AI education, AI agents, AI automation, web development, mobile apps, internal tools, digital marketing and Microsoft 365. Integrations are supporting work, not the primary position.',
+      'The consumer track is Hem-IT in Bromma/Stockholm for computers, Wi-Fi, TV, cameras, accounts/BankID and home-office equipment.',
+      'Canonical development routes are /tjanster/webbutveckling and /tjanster/mobilappar. /tjanster/app-webbutveckling and /tjanster are legacy redirects and must not be SEO targets.',
+      'The visual design, shared sections, navigation, forms and current public prices are approved and frozen. SEO work must preserve them.',
     ].join(' ')
   }
   return 'Infer the workspace from repo, URL and page content. Do not use generic SEO filler if it does not match the actual product/site.'

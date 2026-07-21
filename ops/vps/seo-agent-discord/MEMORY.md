@@ -13,7 +13,20 @@ This file is a human-readable layer. Runtime state remains in `state/state.json`
 
 ### sebcastwall.se
 
-Focus more on AI, coding, AI education, AI workshops/courses, app/web development and internal tools. Microsoft 365, Power Automate, Teams and SharePoint are allowed as supporting proof or implementation context only when they clearly strengthen AI/coding/internal-tool outcomes. Demote invoice/bookkeeping/Fortnox/Visma/integration-only, generic IT/helpdesk and M365-only actions unless strongly tied to AI/coding/internal-tools/education.
+The site redesign and its shared visual system are approved. SEO work must preserve design, layout, images, navigation, shared components, forms, CTA behavior, current public prices, routes and public customer claims.
+
+The site has two valid commercial tracks:
+
+- Business: AI reviews, AI education, AI agents, AI automation, web development, Flutter/mobile apps, internal tools, digital marketing and Microsoft 365.
+- Consumer: Hem-IT in Bromma/Stockholm for computers, Wi-Fi, TV, cameras/security, accounts/BankID and home-office equipment.
+
+Integrations are supporting work rather than the primary commercial position. Autonomous SEO work may improve metadata, search-intent copy, non-structural headings, internal links, schema and article content. New service pages and strategic repositioning require operator approval.
+
+Do not force an exact keyword into title, H1 or meta merely because it is missing. Sebcastwall content changes require observed demand from GSC or verified Keyword Planner data; agent-created goal-gap ideas may be researched and proposed but not autonomously coded without that evidence.
+
+Canonical entry routes are `/foretag` and `/privatpersoner`. Canonical development routes are `/tjanster/webbutveckling` and `/tjanster/mobilappar`. `/tjanster` and `/tjanster/app-webbutveckling` are legacy redirects and must never be SEO targets.
+
+Sebcastwall changes must be pushed to a `seo-agent/<action-id>` review branch. They are not completed experiments until reviewed, merged and deployed.
 
 ### natverkskollen.se
 
@@ -39,6 +52,9 @@ Treat Vagkollen as a road-weather and route-planning utility for ordinary driver
 - Reposting the same target/topic/action under a new title after it has already been completed, ignored or guarded.
 - Treating noisy imported queries such as Abicart/Klarna/account UI text as valid sebcastwall strategy.
 - Letting Sebcastwall drift into Microsoft 365/Power Automate/helpdesk as the primary SEO position instead of AI, coding, app/web, education and internal tools.
+- Changing Sebcastwall CSS, page composition, images, navigation, shared UI, forms, CTA behavior, public prices, routes or claims as part of an SEO action.
+- Pushing autonomous Sebcastwall SEO changes directly to `main` or treating an unmerged review branch as a completed experiment.
+- Targeting the legacy Sebcastwall routes `/tjanster` or `/tjanster/app-webbutveckling` instead of current canonical pages.
 - Adding Natverkskollen internal links to `/events` instead of canonical `/evenemang`.
 
 ## Runtime Learning

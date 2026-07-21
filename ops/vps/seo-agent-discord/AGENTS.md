@@ -20,7 +20,7 @@ Global goal for all workspaces: rank higher on relevant, valuable search demand.
 
 Workspace-specific direction overrides generic SEO ideas:
 
-- sebcastwall.se: AI, AI-agents, AI automation, coding, app/web development, internal tools, AI education/workshops/courses. Microsoft 365, Power Automate, Teams and SharePoint are allowed only as supporting proof or implementation context for AI/coding/internal-tool outcomes. Deprioritize generic bookkeeping, invoice, Fortnox, Visma, pure integration, generic IT/helpdesk and M365-only angles unless explicitly tied to AI/coding/internal-tools/education strategy.
+- sebcastwall.se has two approved commercial tracks. Business: AI reviews, AI education, AI agents, AI automation, web development, Flutter/mobile apps, internal tools, digital marketing and Microsoft 365. Consumer: Hem-IT in Bromma/Stockholm for computers, Wi-Fi, TV, cameras/security, accounts/BankID and home-office equipment. Integrations are supporting work rather than the primary position.
 - natverkskollen.se: events, startup events, entrepreneurs, networking, city/event category pages, evergreen event landing pages. Canonical event listing URLs use `/evenemang`, not the legacy `/events` alias; internal links must point to `/evenemang` or specific canonical event/category pages. Deprioritize agency/integration/software consultancy angles.
 - parkeringspolaren.se: parking, airport parking, long-term parking, local parking intent, technical indexability, conversion landing pages.
 - vagkollen.se: consumer/utility service for road weather, routes, traffic, road conditions and trip planning in Sweden. Do not frame it as SMB, B2B, consulting or generic SaaS. Recommendations should talk about driver scenarios, route checks, weather along the road, safety, timing and concrete travel use cases.
@@ -69,9 +69,24 @@ Default autonomy:
 - Ask the operator only for high-risk changes, new pages, strategic direction changes, unclear/conflicting evidence, broken integrations, or rollback choices.
 - Avoid wording like "väntar på beslut" unless the item is genuinely `needs_operator_input`.
 
-Preferred lifecycle for autonomous low-risk work:
+Sebcastwall safety profile:
+
+- The current design and commercial structure are approved and frozen. The SEO agent must not change CSS, layout, images, navigation, shared components, forms, CTA behavior, public prices, routes, redirects or customer claims.
+- Allowed autonomous edits are evidence-backed metadata, search-intent copy, headings that do not restructure JSX, internal links, schema and article content.
+- Exact-keyword coverage is not evidence by itself. Rewriting title/H1/meta around an absent phrase requires positive GSC query evidence or verified Keyword Planner demand; synthetic content ideas remain proposals until observed demand supports them.
+- Canonical entry routes are `/foretag` and `/privatpersoner`. Canonical development routes are `/tjanster/webbutveckling` and `/tjanster/mobilappar`. Never target the legacy redirects `/tjanster` or `/tjanster/app-webbutveckling`.
+- Do not create new service pages, delete pages or change service positioning without operator approval.
+- Sebcastwall code is delivered to `seo-agent/<action-id>` for review. Never push an autonomous Sebcastwall change directly to `main`, production or a production deployment.
+
+Preferred lifecycle for autonomous low-risk work outside Sebcastwall:
 
 `candidate -> agent_approved -> coding_started -> completed -> monitoring -> done`
+
+Preferred lifecycle for Sebcastwall:
+
+`candidate -> agent_approved -> coding_started -> review_ready -> operator_approved -> merged -> monitoring -> done`
+
+Do not create an SEO experiment or claim completion at `review_ready`; measurement starts only after the reviewed change is merged and deployed.
 
 For every completed SEO commit, create or update an SEO experiment:
 

@@ -936,12 +936,21 @@ async function maybeQueueAutonomousCodeActions(workspaces) {
       log('autonomous_active_card_timeout_cleared', { actionId: active.actionId, workspace: workspace.label || workspace.id || null })
     }
     const payload = await fetchActionsForChat(workspace).catch((error) => ({ error: error?.message || String(error), actions: [] }))
-    if (isSeoActionsMissingBatchPayload(payload)) {
+    const profile = ensureWorkspaceProfile(workspace, targetChannelId)
+    const sebcastwallReviewBranchFallback = isSebcastwallWorkspace(workspace, profile)
+    if (isSeoActionsMissingBatchPayload(payload) && !sebcastwallReviewBranchFallback) {
       logThrottled(`autonomous_missing_seo_batch_block:${workspace.id || workspace.label || workspace.repoFullName}`, 30 * 60 * 1000, 'autonomous_missing_seo_batch_block', {
         workspace: workspace.label || workspace.id || null,
         error: payload.error || 'seo_batch_not_found'
       })
       continue
+    }
+    if (isSeoActionsMissingBatchPayload(payload) && sebcastwallReviewBranchFallback) {
+      logThrottled(`autonomous_missing_seo_batch_fallback:${workspace.id || workspace.label || workspace.repoFullName}`, 30 * 60 * 1000, 'autonomous_missing_seo_batch_fallback', {
+        workspace: workspace.label || workspace.id || null,
+        error: payload.error || 'seo_batch_not_found',
+        safety: 'review_branch_and_deterministic_gate'
+      })
     }
     const actions = Array.isArray(payload.actions) ? payload.actions : []
     const runtimeCurrent = await fetchCurrentSeoActionThroughRuntime(workspace, targetChannelId, 10)
@@ -1003,7 +1012,9 @@ async function maybeQueueAutonomousCodeActions(workspaces) {
       `Kort: ${candidate.codexBrief?.title || candidate.action.title}`,
       candidate.action.targetUrl ? `URL: ${candidate.action.targetUrl}` : '',
       `Varför: ${candidate.reason}`,
-      'Jag kodar, bygger, committar och postar diff/commit här. Jag frågar bara vid hög risk, ny sida, oklar riktning eller konflikt.'
+      isSebcastwallWorkspace(workspace)
+        ? 'Jag kodar och bygger i en separat granskningsbranch. Main och production lämnas orörda tills ändringen har granskats.'
+        : 'Jag kodar, bygger, committar och postar diff/commit här. Jag frågar bara vid hög risk, ny sida, oklar riktning eller konflikt.'
     ].filter(Boolean).join('\n').slice(0, 1900), targetChannelId)
     saveState()
     return
@@ -1190,7 +1201,8 @@ async function repoAutomationReady(repoFullName, branch = 'main') {
 }
 
 async function chooseAutonomousCodeAction(actions, workspace, targetChannelId, workspacePolicy = '', sourcePayload = null) {
-  if (isSeoActionsMissingBatchPayload(sourcePayload)) {
+  const profile = ensureWorkspaceProfile(workspace, targetChannelId)
+  if (isSeoActionsMissingBatchPayload(sourcePayload) && !isSebcastwallWorkspace(workspace, profile)) {
     rememberNoAutonomousCandidate(workspace, targetChannelId, [], [{ reason: 'seo_batch_not_found_waiting_for_fresh_run' }])
     return null
   }
@@ -1271,10 +1283,19 @@ function isAutonomousCodeCandidate(action, workspace, targetChannelId) {
 function autonomousCodeCandidateCheck(action, workspace, targetChannelId) {
   if (!isCodeAction(action)) return { ok: false, reason: 'not_code_action' }
   if (isIndexingCheckAction(action)) return { ok: false, reason: 'indexing_or_gsc_check' }
+  if (isWeakExactKeywordCoverageAction(action)) {
+    return { ok: false, reason: 'keyword_coverage_lacks_search_evidence' }
+  }
   const kind = actionKindForLearning(action)
   if (!['content', 'internal-links'].includes(kind)) return { ok: false, reason: `unsupported_kind:${kind}` }
+  if (isSebcastwallWorkspace(workspace) && String(action?.id || '').startsWith('seo_synthetic_')) {
+    return { ok: false, reason: 'sebcastwall_synthetic_content_needs_observed_demand' }
+  }
   const targetUrl = String(action.targetUrl || action.url || '').trim()
   if (!targetUrl) return { ok: false, reason: 'missing_target_url' }
+  if (isSebcastwallWorkspace(workspace) && ['/tjanster', '/tjanster/app-webbutveckling'].includes(normalizeActionPath(targetUrl))) {
+    return { ok: false, reason: 'legacy_route_not_seo_target' }
+  }
   if (isLegalOrPolicyRoute(targetUrl)) return { ok: false, reason: 'legal_or_policy_route_needs_explicit_request' }
   const sameTargetCheck = sameTargetRecentExperimentCheck(action, workspace, targetChannelId)
   if (!sameTargetCheck.ok) return sameTargetCheck
@@ -1285,6 +1306,23 @@ function autonomousCodeCandidateCheck(action, workspace, targetChannelId) {
   if (ledger?.status === 'deprioritized' && !isLedgerRecheckDue(ledger)) return { ok: false, reason: 'recently_deprioritized_waiting_recheck' }
   if (ledger?.status === 'ignored' && !isLedgerRecheckDue(ledger)) return { ok: false, reason: 'recently_ignored_waiting_recheck' }
   return { ok: true, reason: 'candidate' }
+}
+
+function isWeakExactKeywordCoverageAction(action) {
+  const keyword = String(action?.keyword || '').trim()
+  if (!keyword) return false
+  const instruction = [action?.title, action?.recommendedAction].filter(Boolean).join(' ').toLowerCase()
+  const asksForExactCoverage = /t[aä]ck keyword|serp-gap|l[aä]gg in keyword|title\/h1\/h2\/meta/.test(instruction)
+  if (!asksForExactCoverage) return false
+
+  const metrics = action?.keywordMetrics && typeof action.keywordMetrics === 'object' ? action.keywordMetrics : null
+  const volume = Number(metrics?.avgMonthlySearches)
+  const hasPlannerDemand = Number.isFinite(volume) && volume > 0
+  const evidence = [action?.why, ...(Array.isArray(action?.evidence) ? action.evidence : [])].filter(Boolean).join(' ').toLowerCase()
+  const hasPositiveGscEvidence = /gsc|search console/.test(evidence)
+    && /(?:\b[1-9]\d*\b)\s*(?:klick|click|impression)|query\s+matchade|sökfråga\s+matchade/.test(evidence)
+    && !/ingen gsc-query matchade|ingen sökfråga matchade|0\s*(?:klick|click|impression)/.test(evidence)
+  return !hasPlannerDemand && !hasPositiveGscEvidence
 }
 
 function sameTargetRecentExperimentCheck(action, workspace, targetChannelId) {
@@ -1348,6 +1386,9 @@ function isWaitOrGuardRejectionReason(reason) {
     || text === 'recently_ignored_waiting_recheck'
     || text === 'missing_target_url'
     || text === 'new_page_needs_human_approval'
+    || text === 'legacy_route_not_seo_target'
+    || text === 'keyword_coverage_lacks_search_evidence'
+    || text === 'sebcastwall_synthetic_content_needs_observed_demand'
     || text === 'indexing_or_gsc_check'
     || text === 'integration_check_not_content_work'
     || text === 'not_code_action'
@@ -1360,7 +1401,9 @@ function isWaitOrGuardRejectionReason(reason) {
 }
 
 async function syntheticAutonomousActionForWorkspace({ workspace, targetChannelId, pending, rejectionReasons, workspacePolicy, sourcePayload = null }) {
-  if (isSeoActionsMissingBatchPayload(sourcePayload)) {
+  const profile = ensureWorkspaceProfile(workspace, targetChannelId)
+  const sebcastwallReviewBranchFallback = isSebcastwallWorkspace(workspace, profile)
+  if (isSeoActionsMissingBatchPayload(sourcePayload) && !sebcastwallReviewBranchFallback) {
     logThrottled(`synthetic_autonomous_skipped:${workspace?.id || workspace?.label}:missing-batch`, 30 * 60 * 1000, 'synthetic_autonomous_skipped', {
       workspace: workspace?.label || workspace?.id || null,
       reason: 'seo_batch_not_found_waiting_for_fresh_run',
@@ -1368,7 +1411,13 @@ async function syntheticAutonomousActionForWorkspace({ workspace, targetChannelI
     })
     return null
   }
-  const profile = ensureWorkspaceProfile(workspace, targetChannelId)
+  if (isSeoActionsMissingBatchPayload(sourcePayload) && sebcastwallReviewBranchFallback) {
+    logThrottled(`synthetic_autonomous_fallback:${workspace?.id || workspace?.label}:missing-batch`, 30 * 60 * 1000, 'synthetic_autonomous_fallback', {
+      workspace: workspace?.label || workspace?.id || null,
+      reason: 'seo_batch_not_found_using_review_branch_keyword_map',
+      safety: 'sebcastwall_review_branch_and_deterministic_gate'
+    })
+  }
   const hasGoodLiveCandidate = pending.some((action) => {
     const check = autonomousCodeCandidateCheck(action, workspace, targetChannelId)
     if (!check.ok) return false
@@ -1775,8 +1824,8 @@ function syntheticRecommendedAction(profile, keywordTarget) {
   if (profile?.siteType === 'event_directory') {
     return `I repo: uppdatera befintlig sida ${targetUrl} runt "${keyword}" med tydlig eventintention: vilka event sidan hjälper med, målgrupp, stad/kategori-exempel, hur användaren hittar rätt event och interna länkar till relevanta kluster.`
   }
-  if (profile?.siteType === 'ai_consultancy') {
-    return `I repo: uppdatera befintlig sida ${targetUrl} runt "${keyword}" med tydligare köparproblem, konkreta case, leveransform, risker, proof, internlänkar och CTA. Håll fokus på AI, kod, automation och praktiska resultat.`
+  if (String(profile?.siteType || '').includes('consultancy')) {
+    return `I repo: gör en liten SEO-förbättring på befintlig sida ${targetUrl} runt "${keyword}". Bevara design, struktur, CTA-beteende och priser; ändra endast metadata, sökintentscopy, icke-strukturella rubriker, internlänkar eller schema.`
   }
   return `I repo: uppdatera befintlig sida ${targetUrl} runt "${keyword}" med mer konkret hjälpsamt innehåll, internlänkar, FAQ och tydligare nästa steg.`
 }
@@ -1816,12 +1865,20 @@ function buildSebcastwallGoalGapAction(workspace, targetChannelId = null) {
       recommendedAction: 'I repo: uppdatera /tjanster/ai-automatisering med tydligare erbjudande för AI-automatisering för företag, workshops/utbildning, konkreta kodnära exempel, interna länkar till AI-agenter, app-webbutveckling och interna verktyg, samt CTA för AI-konsultation. Skapa ingen ny sida utan tydligt behov.'
     },
     {
-      slug: 'autonomous-apputveckling-company-intent',
-      title: 'Workspace goal gap: stärk app/webbutveckling mot köpintention',
-      targetUrl: 'https://sebcastwall.se/tjanster/app-webbutveckling',
-      keyword: 'apputveckling företag',
-      why: 'Sebcastwall ska vinna leads inom AI, kodning och app/web. När live-kön är svag är en låg-risk förbättring att göra befintlig app/webbutvecklingssida tydligare för företag som söker en utvecklingspartner.',
-      recommendedAction: 'I repo: uppdatera /tjanster/app-webbutveckling med tydligare positionering för apputveckling för företag, exempel på AI-funktioner, interna verktyg, automation, leveransprocess, riskreducering, proof och interna länkar till AI-agenter och AI-automatisering. Skapa ingen ny sida.'
+      slug: 'autonomous-webbutveckling-company-intent',
+      title: 'Workspace goal gap: stärk webbutveckling mot köpintention',
+      targetUrl: 'https://sebcastwall.se/tjanster/webbutveckling',
+      keyword: 'webbutveckling företag',
+      why: 'Webbutveckling är ett aktivt kommersiellt spår och har en egen canonical sida.',
+      recommendedAction: 'I repo: gör en liten evidensbaserad SEO-förbättring på /tjanster/webbutveckling. Bevara design, sektioner, CTA och priser. Ändra endast metadata, sökintentscopy, icke-strukturella rubriker, schema eller internlänkar.'
+    },
+    {
+      slug: 'autonomous-mobile-app-company-intent',
+      title: 'Workspace goal gap: stärk mobilapputveckling mot köpintention',
+      targetUrl: 'https://sebcastwall.se/tjanster/mobilappar',
+      keyword: 'mobilapputveckling företag',
+      why: 'Flutter och mobilappar är ett aktivt kommersiellt spår med en egen canonical sida.',
+      recommendedAction: 'I repo: gör en liten evidensbaserad SEO-förbättring på /tjanster/mobilappar. Bevara design, sektioner, CTA och priser. Ändra endast metadata, sökintentscopy, icke-strukturella rubriker, schema eller internlänkar.'
     },
     {
       slug: 'autonomous-ai-agents-internal-tools',
@@ -1848,12 +1905,20 @@ function buildSebcastwallGoalGapAction(workspace, targetChannelId = null) {
       recommendedAction: 'I repo: uppdatera /tjanster/interna-verktyg med konkreta AI-drivna interna verktyg: researchpaneler, ärendehantering, rapportflöden, datakopplingar, behörigheter och loggar. Lägg till internlänkar till AI-agenter och AI-automatisering samt tydlig CTA för AI-konsultation.'
     },
     {
-      slug: 'growth-ai-services-hub',
-      title: 'Growth gap: gör tjänstehubben tydligare för AI-tjänster',
-      targetUrl: 'https://sebcastwall.se/tjanster',
-      keyword: 'AI tjänster företag',
-      why: 'När SEO:n är svag behöver tjänstehubben fördela intern auktoritet till de kommersiella AI-sidorna och göra erbjudandet lättare att förstå.',
-      recommendedAction: 'I repo: uppdatera /tjanster med tydligare hubb för AI-tjänster: AI-konsult, AI-agenter, AI-automatisering, AI-utbildning, app/web och interna verktyg. Lägg korta köpscenarion, jämförelse mellan tjänsterna och starka interna länkar.'
+      slug: 'growth-business-services-hub',
+      title: 'Growth gap: stärk företagshubben för kommersiell intent',
+      targetUrl: 'https://sebcastwall.se/foretag',
+      keyword: 'AI konsult företag',
+      why: '/foretag är den canonical ingången för företag och ska fördela relevans till de kommersiella tjänsterna.',
+      recommendedAction: 'I repo: gör en liten SEO-förbättring på /foretag som stärker sidans företagsintent och internlänkar till befintliga canonical tjänster. Bevara design, struktur, CTA och priser.'
+    },
+    {
+      slug: 'growth-home-it-bromma',
+      title: 'Growth gap: stärk Hem-IT för lokal intent i Bromma',
+      targetUrl: 'https://sebcastwall.se/tjanster/hem-it',
+      keyword: 'IT hjälp hemma Bromma',
+      why: 'Hem-IT är ett aktivt B2C-spår med lokal köpintention i Bromma och Stockholm.',
+      recommendedAction: 'I repo: gör en liten lokal SEO-förbättring på /tjanster/hem-it. Bevara design, bilder, sektioner, RUT-text, CTA och priser. Ändra endast metadata, lokal sökintentscopy, schema eller internlänkar.'
     },
     {
       slug: 'growth-ai-internal-linking',
@@ -1862,7 +1927,7 @@ function buildSebcastwallGoalGapAction(workspace, targetChannelId = null) {
       keyword: 'AI konsult företag',
       category: 'internal-links',
       why: 'Sebcastwall behöver snabbare bygga topical authority runt AI-konsult, AI-utbildning och AI-agenter. Internlänkar från startsida och relevanta artiklar är låg risk och kan stödja de kommersiella sidorna.',
-      recommendedAction: 'I repo: lägg in eller förbättra interna länkar från startsidan och relevanta artiklar till /tjanster/ai-agenter, /tjanster/ai-automatisering, /tjanster/ai-utbildning och /tjanster/interna-verktyg. Använd naturliga ankartexter som AI-konsult för företag, AI-agenter för företag, AI-utbildning för team och interna AI-verktyg. Ändra inte integration-only-sidor om det inte direkt stödjer AI-spåret.'
+      recommendedAction: 'I repo: förbättra endast befintliga textlänkar mellan relevanta sidor. Bevara startsidans design och komponentstruktur. Länka till /foretag och aktuella canonical tjänstesidor, aldrig /tjanster eller /tjanster/app-webbutveckling.'
     },
     {
       slug: 'growth-chatgpt-for-business',
@@ -1899,6 +1964,8 @@ function isSebcastwallWorkspace(workspace, profile = null) {
 
 function sebcastwallPrimaryFocusPolicy(action) {
   const text = actionText(action)
+  const hasConsumerHemItTrack = /\b(hem-it|hem it|it-hjalp hemma|it-hjälp hemma|bromma|wifi|wi-fi|tv-hjalp|tv-hjälp|bankid|skrivare|hemmakontor|privatperson)\b/.test(text)
+  if (hasConsumerHemItTrack) return { ok: true, reason: 'sebcastwall_consumer_hem_it_track' }
   const hasSupportToolTrack = /\b(microsoft 365|m365|office 365|teams|sharepoint|onedrive|outlook|power automate|power platform|copilot|helpdesk|it-hjalp|it-hjälp|supportarende|supportärende|behorighet|behörighet|konto|konton|hardvara|hårdvara|licens|licenser)\b/.test(text)
   if (!hasSupportToolTrack) return { ok: true, reason: 'sebcastwall_focus_passed' }
 
@@ -2222,10 +2289,10 @@ async function processApprovedCodeActions(workspaces) {
     saveState()
     try {
       const result = await runCodexAction({ ...approved, repoFullName: workspace.repoFullName, branch: workspace.branch || 'main' })
-      const completedResult = { ...result, repoFullName: workspace.repoFullName, branch: workspace.branch || 'main' }
+      const completedResult = { ...result, repoFullName: workspace.repoFullName, branch: result.deliveryBranch || workspace.branch || 'main' }
       state.codeActionResults[approved.id] = { status: 'completed', completedAt: new Date().toISOString(), result: completedResult }
-      recordActionLedger(approved, workspace, targetChannelId, 'completed', { commit: result.commit || null, diffStat: result.diffStat || null, repoFullName: workspace.repoFullName })
-      recordSeoExperiment(approved, workspace, targetChannelId, completedResult, { source: 'platform_approved' })
+      recordActionLedger(approved, workspace, targetChannelId, result.requiresReview ? 'review_ready' : 'completed', { commit: result.commit || null, diffStat: result.diffStat || null, repoFullName: workspace.repoFullName, deliveryBranch: result.deliveryBranch || null })
+      if (!result.requiresReview) recordSeoExperiment(approved, workspace, targetChannelId, completedResult, { source: 'platform_approved' })
       clearActiveAction(approved.id)
       const commitUrl = result.commit ? githubCommitUrl(workspace.repoFullName, result.commit) : ''
       const posted = await sendDiscordMessage([
@@ -2233,9 +2300,10 @@ async function processApprovedCodeActions(workspaces) {
         `Action ID: \`${approved.id}\``,
         result.commit ? `Commit: ${result.commit}` : '',
         commitUrl ? `GitHub: ${commitUrl}` : '',
+        ...codeDeliveryLines(result),
         result.diffStat ? `Diff:\n\`\`\`\n${String(result.diffStat).slice(0, 1200)}\n\`\`\`` : '',
         '',
-        'Om detta blev fel kan du trycka Backa så skapar jag en revert-commit.'
+        result.requiresReview ? 'Inget har ändrats på main eller production.' : 'Om detta blev fel kan du trycka Backa så skapar jag en revert-commit.'
       ].filter(Boolean).join('\n'), targetChannelId, rollbackComponents(), { kind: 'code_result' })
       state.messageToAction = state.messageToAction || {}
       state.messageToAction[posted.id] = approved.id
@@ -2386,14 +2454,15 @@ async function runQueuedApprovedCodeAction(entry, workspace, targetChannelId) {
   saveState()
   try {
     const result = await runCodexAction({ ...entry, repoFullName: entry.repoFullName || workspace.repoFullName, branch: entry.branch || workspace.branch || 'main' })
-    const completedResult = { ...result, repoFullName: entry.repoFullName || workspace.repoFullName || null, branch: entry.branch || workspace.branch || 'main' }
+    const completedResult = { ...result, repoFullName: entry.repoFullName || workspace.repoFullName || null, branch: result.deliveryBranch || entry.branch || workspace.branch || 'main' }
     state.codeActionResults[entry.id] = { status: 'completed', completedAt: new Date().toISOString(), result: completedResult }
-    recordActionLedger(entry, workspace, targetChannelId, 'completed', {
+    recordActionLedger(entry, workspace, targetChannelId, result.requiresReview ? 'review_ready' : 'completed', {
       commit: result.commit || null,
       diffStat: result.diffStat || null,
-      repoFullName: entry.repoFullName || workspace.repoFullName || null
+      repoFullName: entry.repoFullName || workspace.repoFullName || null,
+      deliveryBranch: result.deliveryBranch || null
     })
-    recordSeoExperiment(entry, workspace, targetChannelId, completedResult, { source: 'approved_queue' })
+    if (!result.requiresReview) recordSeoExperiment(entry, workspace, targetChannelId, completedResult, { source: 'approved_queue' })
     delete state.approvedCodeActionQueue[entry.id]
     await markPostedActionHandled(entry.id, targetChannelId, 'code_action_completed')
     clearActiveAction(entry.id)
@@ -2403,9 +2472,10 @@ async function runQueuedApprovedCodeAction(entry, workspace, targetChannelId) {
       `Action ID: \`${entry.id}\``,
       result.commit ? `Commit: ${result.commit}` : '',
       commitUrl ? `GitHub: ${commitUrl}` : '',
+      ...codeDeliveryLines(result),
       result.diffStat ? `Diff:\n\`\`\`\n${String(result.diffStat).slice(0, 1200)}\n\`\`\`` : '',
       '',
-      'Om detta blev fel kan du trycka Backa så skapar jag en revert-commit.'
+      result.requiresReview ? 'Inget har ändrats på main eller production.' : 'Om detta blev fel kan du trycka Backa så skapar jag en revert-commit.'
     ].filter(Boolean).join('\n'), targetChannelId, rollbackComponents(), { kind: 'code_result' })
     state.messageToAction = state.messageToAction || {}
     state.messageToAction[posted.id] = entry.id
@@ -2447,6 +2517,14 @@ async function runCodexAction(action) {
     try { return JSON.parse(text.slice(jsonStart)) } catch {}
   }
   return { ok: true, stdout: text.slice(-4000) }
+}
+
+function codeDeliveryLines(result = {}) {
+  if (!result.requiresReview) return []
+  return [
+    `Status: redo för granskning på branch \`${result.deliveryBranch || 'seo-agent/review'}\`.`,
+    result.reviewUrl ? `Granska diff: ${result.reviewUrl}` : ''
+  ].filter(Boolean)
 }
 
 async function revertCompletedCodeAction(actionId, targetChannelId) {
@@ -5391,9 +5469,10 @@ async function postRuntimeCodeActionResult(runtimeRun) {
       `Action ID: \`${action.id}\``,
       result.commit ? `Commit: ${result.commit}` : '',
       commitUrl ? `GitHub: ${commitUrl}` : '',
+      ...codeDeliveryLines(result),
       result.diffStat ? `Diff:\n\`\`\`\n${String(result.diffStat).slice(0, 1200)}\n\`\`\`` : '',
       '',
-      'Om detta blev fel kan du trycka Backa så skapar jag en revert-commit.'
+      result.requiresReview ? 'Inget har ändrats på main eller production.' : 'Om detta blev fel kan du trycka Backa så skapar jag en revert-commit.'
     ].filter(Boolean).join('\n'), targetChannelId, rollbackComponents(), { kind: 'code_result' })
     state.messageToAction = state.messageToAction || {}
     state.messageToAction[posted.id] = action.id
@@ -6002,6 +6081,8 @@ async function buildRankingReview(workspace, targetChannelId) {
 function selectRankingReviewNextStep({ workspace, profile, keywordMap, actions, experiments, staleKeywordTargets, weakLiveQueue, targetChannelId }) {
   const actionable = actions
     .filter((action) => isCodeAction(action) && !isIndexingCheckAction(action))
+    .filter((action) => !codeActionResultBlocks(action, workspace, targetChannelId))
+    .filter((action) => autonomousCodeCandidateCheck(action, workspace, targetChannelId).ok)
     .map((action) => ({ action, review: reviewActionForPosting(action, workspace, targetChannelId, '') }))
     .filter((item) => item.review.score >= 60)
     .sort((a, b) => b.review.score - a.review.score)[0]
@@ -6229,10 +6310,14 @@ function cleanupStaleRuntimeState() {
   let changed = false
   if (state.codeActionRunning?.startedAt && Date.parse(state.codeActionRunning.startedAt) < processStartedAtMs) {
     const actionId = state.codeActionRunning.actionId || 'unknown'
-    rememberAgentLesson(`Cleared interrupted codeActionRunning lock after worker restart for ${actionId}`)
-    log('interrupted_code_action_lock_cleared_after_restart', { actionId, startedAt: state.codeActionRunning.startedAt })
-    state.codeActionRunning = null
-    changed = true
+    if (activeRepoRunnerLock(actionId)) {
+      logThrottled(`active_code_action_preserved_after_restart:${actionId}`, 30 * 60 * 1000, 'active_code_action_preserved_after_restart', { actionId, startedAt: state.codeActionRunning.startedAt })
+    } else {
+      rememberAgentLesson(`Cleared interrupted codeActionRunning lock after worker restart for ${actionId}`)
+      log('interrupted_code_action_lock_cleared_after_restart', { actionId, startedAt: state.codeActionRunning.startedAt })
+      state.codeActionRunning = null
+      changed = true
+    }
   } else if (state.codeActionRunning?.startedAt && now - Date.parse(state.codeActionRunning.startedAt) > staleRunningMs) {
     const actionId = state.codeActionRunning.actionId || 'unknown'
     rememberAgentLesson(`Cleared stale codeActionRunning lock for ${actionId}`)
@@ -6301,6 +6386,25 @@ function cleanupStaleRuntimeState() {
     changed = true
   }
   if (changed) saveState()
+}
+
+function activeRepoRunnerLock(actionId) {
+  const queued = state.approvedCodeActionQueue?.[actionId]
+  const result = state.codeActionResults?.[actionId]?.result
+  const repoFullName = queued?.repoFullName || result?.repoFullName || ''
+  const repoName = String(repoFullName).split('/')[1]
+  if (!repoName) return false
+  const lockPath = join('/home/deploy/seo-agent-workspaces/.locks', `${slugify(repoName)}.json`)
+  if (!existsSync(lockPath)) return false
+  try {
+    const lock = JSON.parse(readFileSync(lockPath, 'utf8'))
+    const pid = Number(lock?.pid || 0)
+    if (!pid) return false
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
 }
 
 function migrateExistingStateToActionLedger() {
@@ -6470,26 +6574,30 @@ function defaultWorkspaceProfile(workspace) {
   if (label.includes('sebcastwall')) {
     return {
       label: workspace?.label || 'sebcastwall.se',
-      siteType: 'ai_consultancy',
-      audience: 'företag som vill köpa AI/kod/automation',
-      goals: ['rank higher for AI consulting, AI agents, automation, app/web and AI education leads'],
-      prefer: ['AI konsult', 'AI-agenter', 'AI-automation', 'kodning', 'app/web', 'interna verktyg', 'AI-utbildningar', 'workshops'],
-      avoid: ['Fortnox-only', 'Visma-only', 'Business Central-only', 'Abicart/Klarna', 'generic integration-only', 'invoice/bookkeeping-only', 'Microsoft 365-only', 'Power Automate-only', 'generic IT/helpdesk-only'],
-      positioningPolicy: 'Microsoft 365, Power Automate, Teams, SharePoint and similar tools are allowed only as supporting proof for AI, coding, app/web, automation, education or internal-tool outcomes. They must not become the primary Sebcastwall positioning.',
+      siteType: 'ai_technology_consultancy_and_local_home_it',
+      audience: 'företag som köper AI, utveckling, digital marknadsföring eller Microsoft 365 samt privatpersoner som behöver Hem-IT i Bromma/Stockholm',
+      goals: ['rank higher for valuable business searches', 'rank higher for local Hem-IT searches', 'increase qualified organic enquiries without changing the approved design'],
+      prefer: ['AI konsult', 'AI-genomgång', 'AI-agenter', 'AI-automation', 'AI-utbildning', 'webbutveckling', 'Flutter och mobilappar', 'interna verktyg', 'digital marknadsföring', 'Microsoft 365', 'Hem-IT Bromma', 'datorhjälp hemma', 'wifi hjälp'],
+      avoid: ['bookkeeping-only', 'generic integration-only', 'irrelevant imported queries', 'legacy route /tjanster', 'legacy route /tjanster/app-webbutveckling'],
+      positioningPolicy: 'Preserve the approved B2B and B2C structure. Integrations are supporting work, not the primary position.',
+      designPolicy: 'Frozen: no CSS, layout, images, navigation, shared components, forms, CTA behavior, public prices, routes, redirects or public claims.',
+      deliveryPolicy: 'Sebcastwall changes go to seo-agent/<action-id> review branches. Never autonomous push to main or production.',
       keywordMap: [
-        { keyword: 'AI konsult företag', targetUrl: 'https://sebcastwall.se/', intent: 'commercial', priority: 'high' },
+        { keyword: 'AI konsult företag', targetUrl: 'https://sebcastwall.se/foretag', intent: 'commercial', priority: 'high' },
         { keyword: 'AI agenter företag', targetUrl: 'https://sebcastwall.se/tjanster/ai-agenter', intent: 'commercial', priority: 'high' },
         { keyword: 'AI automatisering företag', targetUrl: 'https://sebcastwall.se/tjanster/ai-automatisering', intent: 'commercial', priority: 'high' },
-        { keyword: 'apputveckling företag', targetUrl: 'https://sebcastwall.se/tjanster/app-webbutveckling', intent: 'commercial', priority: 'high' },
-        { keyword: 'AI utbildning företag', targetUrl: 'https://sebcastwall.se/tjanster/ai-utbildning', intent: 'commercial', priority: 'medium' },
+        { keyword: 'AI utbildning företag', targetUrl: 'https://sebcastwall.se/tjanster/ai-utbildning', intent: 'commercial', priority: 'high' },
         { keyword: 'AI workshop företag', targetUrl: 'https://sebcastwall.se/tjanster/ai-utbildning', intent: 'commercial', priority: 'high' },
-        { keyword: 'AI tjänster företag', targetUrl: 'https://sebcastwall.se/tjanster', intent: 'commercial', priority: 'high' },
-        { keyword: 'interna AI verktyg', targetUrl: 'https://sebcastwall.se/tjanster/interna-verktyg', intent: 'commercial', priority: 'high' },
-        { keyword: 'AI interna verktyg', targetUrl: 'https://sebcastwall.se/tjanster/interna-verktyg', intent: 'commercial', priority: 'medium' },
-        { keyword: 'ChatGPT för företag', targetUrl: 'https://sebcastwall.se/artiklar/chatgpt-for-foretag-kanslig-data', intent: 'informational_to_commercial', priority: 'medium' },
-        { keyword: 'Google AI Studio företag', targetUrl: 'https://sebcastwall.se/artiklar/google-ai-studio', intent: 'informational_to_commercial', priority: 'medium' }
+        { keyword: 'webbutveckling företag', targetUrl: 'https://sebcastwall.se/tjanster/webbutveckling', intent: 'commercial', priority: 'high' },
+        { keyword: 'mobilapputveckling företag', targetUrl: 'https://sebcastwall.se/tjanster/mobilappar', intent: 'commercial', priority: 'high' },
+        { keyword: 'interna verktyg företag', targetUrl: 'https://sebcastwall.se/tjanster/interna-verktyg', intent: 'commercial', priority: 'high' },
+        { keyword: 'Microsoft 365 konsult', targetUrl: 'https://sebcastwall.se/tjanster/microsoft-365', intent: 'commercial', priority: 'medium' },
+        { keyword: 'SEO konsult småföretag', targetUrl: 'https://sebcastwall.se/tjanster/digital-marknadsforing/seo', intent: 'commercial', priority: 'medium' },
+        { keyword: 'IT hjälp hemma Bromma', targetUrl: 'https://sebcastwall.se/tjanster/hem-it', intent: 'local_commercial', priority: 'high' },
+        { keyword: 'datorhjälp Bromma', targetUrl: 'https://sebcastwall.se/tjanster/hem-it/dator-mac', intent: 'local_commercial', priority: 'high' },
+        { keyword: 'wifi hjälp Bromma', targetUrl: 'https://sebcastwall.se/tjanster/hem-it/wifi-natverk', intent: 'local_commercial', priority: 'high' }
       ],
-      autonomy: 'autonomous_low_risk'
+      autonomy: 'autonomous_seo_review_branch'
     }
   }
   if (label.includes('natverkskollen')) {
