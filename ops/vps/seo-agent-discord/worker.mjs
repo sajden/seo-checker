@@ -1214,6 +1214,10 @@ async function chooseAutonomousCodeAction(actions, workspace, targetChannelId, w
       rejectionReasons.push({ id: enrichedAction.id, title: enrichedAction.title || enrichedAction.id, reason: `review:${review?.recommendation || 'unknown'}:${Math.round(Number(review?.score || 0))}:${review?.risk || ''}` })
       continue
     }
+    if (await recoverActionAlreadyCommittedBeforeCard(enrichedAction, workspace, targetChannelId)) {
+      rejectionReasons.push({ id: enrichedAction.id, title: enrichedAction.title || enrichedAction.id, reason: 'already_committed_recovered_before_codex_brief' })
+      continue
+    }
     const codexBrief = await runCodexActionCardBrief({
       action: enrichedAction,
       workspace,
@@ -1413,6 +1417,10 @@ async function syntheticAutonomousActionForWorkspace({ workspace, targetChannelI
   const review = reviewActionForPosting(action, workspace, targetChannelId, workspacePolicy)
   if (!isAutonomousReviewSafe(review)) {
     logThrottled(`synthetic_autonomous_skipped:${workspace?.id || workspace?.label}:${action.id}:review`, 30 * 60 * 1000, 'synthetic_autonomous_skipped', { workspace: workspace?.label || workspace?.id || null, actionId: action.id, reason: `review:${review?.recommendation || 'unknown'}:${Math.round(Number(review?.score || 0))}:${review?.risk || ''}` })
+    return null
+  }
+  if (await recoverActionAlreadyCommittedBeforeCard(action, workspace, targetChannelId)) {
+    logThrottled(`synthetic_autonomous_skipped:${workspace?.id || workspace?.label}:${action.id}:already-committed`, 30 * 60 * 1000, 'synthetic_autonomous_skipped', { workspace: workspace?.label || workspace?.id || null, actionId: action.id, reason: 'already_committed_recovered_before_codex_brief' })
     return null
   }
   const codexBrief = await runCodexActionCardBrief({
@@ -7071,6 +7079,8 @@ function ensureTrailingSlash(value) {
 }
 
 async function buildActionCardMessage(action, workspacePolicy, workspace, review = null, targetChannelId = null) {
+  if (codeActionResultBlocks(action, workspace, targetChannelId)) return null
+  if (await recoverActionAlreadyCommittedBeforeCard(action, workspace, targetChannelId)) return null
   const codexBrief = await runCodexActionCardBrief({ action, workspace, workspacePolicy, review, targetChannelId }).catch((error) => {
     log('codex_action_card_brief_failed', { actionId: action?.id || null, workspace: workspace?.label || workspace?.id || null, error: error?.message || String(error) })
     return null
