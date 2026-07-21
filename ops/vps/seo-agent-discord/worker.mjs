@@ -936,21 +936,12 @@ async function maybeQueueAutonomousCodeActions(workspaces) {
       log('autonomous_active_card_timeout_cleared', { actionId: active.actionId, workspace: workspace.label || workspace.id || null })
     }
     const payload = await fetchActionsForChat(workspace).catch((error) => ({ error: error?.message || String(error), actions: [] }))
-    const profile = ensureWorkspaceProfile(workspace, targetChannelId)
-    const sebcastwallReviewBranchFallback = isSebcastwallWorkspace(workspace, profile)
-    if (isSeoActionsMissingBatchPayload(payload) && !sebcastwallReviewBranchFallback) {
+    if (isSeoActionsMissingBatchPayload(payload)) {
       logThrottled(`autonomous_missing_seo_batch_block:${workspace.id || workspace.label || workspace.repoFullName}`, 30 * 60 * 1000, 'autonomous_missing_seo_batch_block', {
         workspace: workspace.label || workspace.id || null,
         error: payload.error || 'seo_batch_not_found'
       })
       continue
-    }
-    if (isSeoActionsMissingBatchPayload(payload) && sebcastwallReviewBranchFallback) {
-      logThrottled(`autonomous_missing_seo_batch_fallback:${workspace.id || workspace.label || workspace.repoFullName}`, 30 * 60 * 1000, 'autonomous_missing_seo_batch_fallback', {
-        workspace: workspace.label || workspace.id || null,
-        error: payload.error || 'seo_batch_not_found',
-        safety: 'review_branch_and_deterministic_gate'
-      })
     }
     const actions = Array.isArray(payload.actions) ? payload.actions : []
     const runtimeCurrent = await fetchCurrentSeoActionThroughRuntime(workspace, targetChannelId, 10)
@@ -1201,8 +1192,7 @@ async function repoAutomationReady(repoFullName, branch = 'main') {
 }
 
 async function chooseAutonomousCodeAction(actions, workspace, targetChannelId, workspacePolicy = '', sourcePayload = null) {
-  const profile = ensureWorkspaceProfile(workspace, targetChannelId)
-  if (isSeoActionsMissingBatchPayload(sourcePayload) && !isSebcastwallWorkspace(workspace, profile)) {
+  if (isSeoActionsMissingBatchPayload(sourcePayload)) {
     rememberNoAutonomousCandidate(workspace, targetChannelId, [], [{ reason: 'seo_batch_not_found_waiting_for_fresh_run' }])
     return null
   }
@@ -1401,22 +1391,13 @@ function isWaitOrGuardRejectionReason(reason) {
 }
 
 async function syntheticAutonomousActionForWorkspace({ workspace, targetChannelId, pending, rejectionReasons, workspacePolicy, sourcePayload = null }) {
-  const profile = ensureWorkspaceProfile(workspace, targetChannelId)
-  const sebcastwallReviewBranchFallback = isSebcastwallWorkspace(workspace, profile)
-  if (isSeoActionsMissingBatchPayload(sourcePayload) && !sebcastwallReviewBranchFallback) {
+  if (isSeoActionsMissingBatchPayload(sourcePayload)) {
     logThrottled(`synthetic_autonomous_skipped:${workspace?.id || workspace?.label}:missing-batch`, 30 * 60 * 1000, 'synthetic_autonomous_skipped', {
       workspace: workspace?.label || workspace?.id || null,
       reason: 'seo_batch_not_found_waiting_for_fresh_run',
       pendingCount: Array.isArray(pending) ? pending.length : 0
     })
     return null
-  }
-  if (isSeoActionsMissingBatchPayload(sourcePayload) && sebcastwallReviewBranchFallback) {
-    logThrottled(`synthetic_autonomous_fallback:${workspace?.id || workspace?.label}:missing-batch`, 30 * 60 * 1000, 'synthetic_autonomous_fallback', {
-      workspace: workspace?.label || workspace?.id || null,
-      reason: 'seo_batch_not_found_using_review_branch_keyword_map',
-      safety: 'sebcastwall_review_branch_and_deterministic_gate'
-    })
   }
   const hasGoodLiveCandidate = pending.some((action) => {
     const check = autonomousCodeCandidateCheck(action, workspace, targetChannelId)
@@ -5687,10 +5668,10 @@ async function findSeoAgentCommitForAction(actionId, repoFullName, branch) {
   await exec('git', ['fetch', 'origin', branch], { cwd: repoDir, env: envWithPath, timeout: 2 * 60 * 1000, maxBuffer: 2 * 1024 * 1024 }).catch(() => null)
   const logResult = await exec('git', [
     'log',
-    '--all',
     '--author=SEO Agent',
     '--max-count=60',
-    '--format=%H%x00%ct%x00%s%x00%B%x1e'
+    '--format=%H%x00%ct%x00%s%x00%B%x1e',
+    branch
   ], { cwd: repoDir, env: envWithPath, timeout: 2 * 60 * 1000, maxBuffer: 8 * 1024 * 1024 })
   const records = String(logResult.stdout || '').split('\u001e').map((item) => item.trim()).filter(Boolean)
   const needle = `SEO-action-id: ${id}`
