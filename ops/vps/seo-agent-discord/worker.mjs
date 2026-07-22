@@ -2,7 +2,7 @@
 import { Client, GatewayIntentBits, Partials } from 'discord.js'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { createHash } from 'node:crypto'
+import { createHash, createHmac } from 'node:crypto'
 import { agentRuntimeSnapshot } from './agent-brain.mjs'
 
 const env = loadEnv([
@@ -3138,12 +3138,29 @@ async function syncContentReviewQueue() {
 
 async function postContentReviewCard(type, item) {
   const id = String(item.id || '')
-  if (!id || state.contentReviewCards[id]) return
+  if (!id) return
   const content = type === 'article' ? formatArticleReviewCard(item) : formatNewsletterReviewCard(item)
-  const posted = await sendDiscordMessage(content, channelId, contentReviewComponents(), { kind: 'action_card' })
-  state.contentReviewCards[id] = { type, messageId: posted.id, postedAt: new Date().toISOString(), status: 'posted' }
+  const contentHash = createHash('sha256').update(content).digest('hex')
+  const existing = state.contentReviewCards[id]
   state.contentActionRefs[id] = { type, id }
   state.messageToAction = state.messageToAction || {}
+  if (existing?.messageId) {
+    state.messageToAction[existing.messageId] = id
+    if (existing.contentHash === contentHash) return
+    await discordJson(`/channels/${channelId}/messages/${existing.messageId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ content, components: contentReviewComponents() })
+    })
+    state.contentReviewCards[id] = {
+      ...existing,
+      contentHash,
+      refreshedAt: new Date().toISOString(),
+      status: 'posted'
+    }
+    return
+  }
+  const posted = await sendDiscordMessage(content, channelId, contentReviewComponents(), { kind: 'action_card' })
+  state.contentReviewCards[id] = { type, messageId: posted.id, postedAt: new Date().toISOString(), contentHash, status: 'posted' }
   state.messageToAction[posted.id] = id
 }
 
@@ -3173,9 +3190,15 @@ function formatNewsletterReviewCard(issue) {
     `Kvalitet: ${quality}/100`,
     issue.editorialGate?.rationale ? `Varför: ${issue.editorialGate.rationale}` : '',
     stories ? `\nValda nyheter:\n${stories}` : '',
+    `[Öppna hela utkastet](${newsletterPreviewUrl(issue.id)})`,
     '',
     'Godkänn sparar utkastet för nästa steg. Inget publiceras eller skickas automatiskt.'
   ].filter(Boolean).join('\n').slice(0, 1900)
+}
+
+function newsletterPreviewUrl(issueId) {
+  const signature = createHmac('sha256', newsletterAgentToken).update(`newsletter-preview:${issueId}`).digest('hex')
+  return `https://article-api.sebcastwall.se/newsletter-agent/ui/issues/${encodeURIComponent(issueId)}?preview=${signature}`
 }
 
 function contentReviewComponents() {
