@@ -56,6 +56,8 @@ const sameTargetAutonomousCooldownMs = Number(env.SEO_AGENT_SAME_TARGET_AUTONOMO
 const sameTargetAutonomousMaxRecent = Number(env.SEO_AGENT_SAME_TARGET_AUTONOMOUS_MAX_RECENT || '1')
 const codexChatEnabled = env.SEO_AGENT_CODEX_CHAT_ENABLED !== 'false'
 const smartOutboundGuardEnabled = env.SEO_AGENT_SMART_OUTBOUND_GUARD !== 'false'
+const notifyRoutineStatus = env.SEO_AGENT_NOTIFY_ROUTINE_STATUS === 'true'
+const notifyInternalFailures = env.SEO_AGENT_NOTIFY_INTERNAL_FAILURES === 'true'
 const articleAgentUrl = (env.ARTICLE_AGENT_URL || 'http://127.0.0.1:3522').replace(/\/$/, '')
 const articleAgentToken = env.ARTICLE_AGENT_API_TOKEN || ''
 const newsletterAgentUrl = (env.NEWSLETTER_AGENT_URL || 'http://127.0.0.1:3461').replace(/\/$/, '')
@@ -74,7 +76,7 @@ const runtimeLiveActionsCache = new Map()
 
 log('starting', { channelId, allowedUserId, platformApiUrl, seoRuntimeUrl, pollMs, dailyHourUtc, runCheckEveryMs, workspaceChannelCount: Object.keys(workspaceChannels).length, automationEnabled, codeAutomationEnabled })
 startDiscordInteractionClient()
-await postStartupOnce()
+recordStartup()
 
 while (true) {
   await tickGuarded().catch((error) => log('tick_failed', { error: error?.message || String(error) }))
@@ -145,10 +147,9 @@ function recordTickStepFailure(name, error) {
   })
 }
 
-async function postStartupOnce() {
-  if (state.startedAt) return
+function recordStartup() {
   state.startedAt = new Date().toISOString()
-  await sendDiscordMessage('SEO Agent är online. Jag postar SEO-actions här med knappar och svarar som vanlig chat. Om något är oklart ställer jag följdfrågor innan jag gör ändringar.')
+  log('discord_worker_online', { notifyRoutineStatus, notifyInternalFailures })
   saveState()
 }
 
@@ -168,10 +169,13 @@ async function maybeStartDailySeoRuns() {
       body: JSON.stringify({ source: 'seo-agent-discord', triggeredAt: now.toISOString() })
     })
     state.dailyRunDates = { ...(state.dailyRunDates || {}), [today]: { status: 'started', at: now.toISOString(), startedCount: result.startedCount ?? null } }
-    await sendDiscordMessage(`Daglig SEO-run startad för ${result.startedCount ?? 'okänt antal'} workspace(s). Jag varnar här om något fallerar.`, channelId)
+    log('daily_seo_run_started', { startedCount: result.startedCount ?? null })
   } catch (error) {
     state.dailyRunDates = { ...(state.dailyRunDates || {}), [today]: { status: 'failed', at: now.toISOString(), error: error?.message || String(error) } }
-    await sendDiscordMessage(`Daglig SEO-run misslyckades: ${error?.message || String(error)}\nNästa felsökningssteg: kontrollera Platform API runner-token och SEO Monitor workspaces.`, channelId)
+    log('daily_seo_run_failed', { error: error?.message || String(error) })
+    if (notifyInternalFailures) {
+      await sendOncePerDay(`daily-run-failed:${today}`, channelId, `Daglig SEO-run misslyckades: ${error?.message || String(error)}\nNästa felsökningssteg: kontrollera Platform API runner-token och SEO Monitor workspaces.`)
+    }
   }
 }
 
@@ -342,7 +346,8 @@ async function ensureDailyRunsForWorkspaces(workspaces) {
     state.workspaceReadiness[workspace.id] = readiness
     if (!targetChannelId) continue
     if (!readiness.gscConfigured || !readiness.repoConfigured) {
-      await sendOncePerDay(`readiness-missing:${workspace.id}:${today}`, targetChannelId, formatReadinessMessage(workspace, readiness))
+      const setupSignature = `${readiness.gscConfigured}:${readiness.repoConfigured}`
+      await sendOncePerDay(`readiness-setup:${workspace.id}:${setupSignature}`, targetChannelId, formatReadinessMessage(workspace, readiness))
       continue
     }
     if (readiness.lastRunDate === today) continue
@@ -361,16 +366,18 @@ async function ensureDailyRunsForWorkspaces(workspaces) {
         })
       })
       state.workspaceRunDates = { ...(state.workspaceRunDates || {}), [`${workspace.id}:${today}`]: { status: 'started', runId: run.runId || run.id || null, at: now.toISOString() } }
-      await sendDiscordMessage(`Startade dagens SEO-run för ${workspace.label}. Jag postar actions när resultat finns.`, targetChannelId)
+      log('workspace_seo_run_started', { workspace: workspace.label, runId: run.runId || run.id || null })
     } catch (error) {
       state.workspaceRunDates = { ...(state.workspaceRunDates || {}), [`${workspace.id}:${today}`]: { status: 'failed', error: error?.message || String(error), at: now.toISOString() } }
-      await sendDiscordMessage(`Kunde inte starta dagens SEO-run för ${workspace.label}: ${error?.message || String(error)}\nFelsökningsloop: kontrollera Platform API, SEO Monitor batch och GSC/repo-mappning.`, targetChannelId)
+      log('workspace_seo_run_failed', { workspace: workspace.label, error: error?.message || String(error) })
+      if (notifyInternalFailures) {
+        await sendOncePerDay(`workspace-run-failed:${workspace.id}:${today}`, targetChannelId, `Kunde inte starta dagens SEO-run för ${workspace.label}: ${error?.message || String(error)}\nFelsökningsloop: kontrollera Platform API, SEO Monitor batch och GSC/repo-mappning.`)
+      }
     }
   }
 }
 
 async function postReadinessForWorkspaces(workspaces) {
-  const today = new Date().toISOString().slice(0, 10)
   for (const workspace of workspaces) {
     const targetChannelId = await channelForWorkspace(workspace)
     if (!targetChannelId) continue
@@ -378,12 +385,14 @@ async function postReadinessForWorkspaces(workspaces) {
     state.workspaceReadiness = state.workspaceReadiness || {}
     await maybeNotifyReadinessRecovery(workspace, targetChannelId, readiness)
     state.workspaceReadiness[workspace.id] = readiness
-    if (readiness.ready) continue
-    await sendOncePerDay(`readiness:${workspace.id}:${today}`, targetChannelId, formatReadinessMessage(workspace, readiness))
+    if (readiness.ready || (readiness.gscConfigured && readiness.repoConfigured)) continue
+    const setupSignature = `${readiness.gscConfigured}:${readiness.repoConfigured}`
+    await sendOncePerDay(`readiness-setup:${workspace.id}:${setupSignature}`, targetChannelId, formatReadinessMessage(workspace, readiness))
   }
 }
 
 async function maybeNotifyReadinessRecovery(workspace, targetChannelId, readiness) {
+  if (!notifyRoutineStatus) return
   if (!targetChannelId) return
   const previous = state.workspaceReadiness?.[workspace.id]
   if (!previous || previous.ready || !readiness.ready) return
@@ -496,13 +505,15 @@ async function postPendingActionsForWorkspaces(workspaces) {
         log('workspace_actions_fetch_self_healed', { workspace: workspace.label || workspace.id, error: error?.message || String(error), resolution: healed.resolution })
         continue
       }
-      const today = new Date().toISOString().slice(0, 10)
-      await sendOncePerDay(`actions-fetch:${workspace.id}:${today}`, targetChannelId, [
-        `Kunde inte hämta SEO-actions för ${workspace.label}.`,
-        `Fel: ${error?.message || String(error)}`,
-        `Självläkning: ${healed.summary}`,
-        'Agenten fortsätter med övriga workspaces och försöker igen automatiskt.'
-      ].join('\n'))
+      if (notifyInternalFailures) {
+        const today = new Date().toISOString().slice(0, 10)
+        await sendOncePerDay(`actions-fetch:${workspace.id}:${today}`, targetChannelId, [
+          `Kunde inte hämta SEO-actions för ${workspace.label}.`,
+          `Fel: ${error?.message || String(error)}`,
+          `Självläkning: ${healed.summary}`,
+          'Agenten fortsätter med övriga workspaces och försöker igen automatiskt.'
+        ].join('\n'))
+      }
       log('workspace_actions_fetch_failed', { workspace: workspace.label || workspace.id, error: error?.message || String(error), selfHeal: healed })
     }
   }
@@ -2062,7 +2073,8 @@ async function maybeRunIntegrationDoctor(workspaces) {
   if (state.lastIntegrationDoctorAlert?.date === today && state.lastIntegrationDoctorAlert?.signature === signature) return
   state.lastIntegrationDoctorAlert = { date: today, signature, at: now.toISOString() }
   rememberPendingIntegrationRepair(report, channelId)
-  await sendDiscordMessage(formatIntegrationDoctorMessage(report, true), channelId)
+  log('integration_doctor_problem', { signature, problems: problems.map((item) => ({ key: item.key, status: item.status })) })
+  if (notifyInternalFailures) await sendDiscordMessage(formatIntegrationDoctorMessage(report, true), channelId)
 }
 
 async function maybeAskForGscApiOAuth() {
@@ -6387,8 +6399,9 @@ async function runDailyRankingReviews(workspaces) {
       at: new Date().toISOString(),
       ...review
     }
+    saveState()
     if (review.ok && shouldNotifyRankingReview(review)) {
-      await sendDiscordMessage(formatRankingReviewMessage(workspace, review), targetChannelId)
+      await sendOncePerDay(`ranking-review:${key}:${today}`, targetChannelId, formatRankingReviewMessage(workspace, review))
     }
   }
 }

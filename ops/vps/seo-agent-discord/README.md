@@ -97,6 +97,14 @@ The agent should:
 - treat each completed SEO commit as an experiment and review it after 14 days before repeating similar work.
 - block additional autonomous edits to the same target URL during the 14-day review window by default. This prevents the agent from stacking many small FAQ/keyword tweaks on one page before there is a recheck signal.
 
+## Discord signal policy
+
+Workspace channels are decision and result feeds, not runtime logs. Automatic messages should be limited to actionable cards, content previews, publish outcomes, completed code changes, and setup that requires a human. Run starts, readiness recovery, transient fetch failures, integration-doctor output, retries, and no-candidate states stay in the journal and state file by default.
+
+- `SEO_AGENT_NOTIFY_ROUTINE_STATUS=true` restores routine recovery/status messages for debugging.
+- `SEO_AGENT_NOTIFY_INTERNAL_FAILURES=true` posts internal run, action-fetch, and integration failures to Discord. Keep it disabled in normal operation.
+- Daily ranking reviews are persisted before posting and deduplicated once per workspace and date.
+
 Rejected autonomous diffs are saved on the VPS under:
 
 `/opt/ai-dashboard/apps/seo-agent-discord/state/rejected-diffs/`
