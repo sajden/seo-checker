@@ -1,0 +1,7 @@
+[Unit]
+Description=SEO Agent repo checkout health check
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/ai-dashboard/apps/seo-agent-discord
+ExecStart=/usr/bin/node /opt/ai-dashboard/apps/seo-agent-discord/repo-health-check.mjs

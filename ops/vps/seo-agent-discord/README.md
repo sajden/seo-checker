@@ -19,6 +19,7 @@ worker.mjs       Main Discord worker, scheduler, action queue, code automation, 
 codex-runner.mjs Executes approved code actions in repo checkouts and pushes commits.
 review-promoter.mjs Promotes an operator-approved review branch to main, rebuilds, pushes, and verifies the live target.
 repo-health-check.mjs Fast-forwards repo checkouts and verifies push access for the agent.
+chain-health-watchdog.mjs Checks the complete runtime chain and sends deduplicated Discord alerts and recovery notices.
 gsc-url-inspection-api.mjs Google Search Console URL Inspection API helper.
 gsc-firefox-ui-tool.mjs Fallback noVNC/Firefox helper for GSC flows that require a logged-in browser.
 agent-brain.mjs  Runtime snapshot helper for agent status/debugging.
@@ -110,6 +111,18 @@ Workspace channels are decision and result feeds, not runtime logs. Automatic me
 - An operator approval promotes the exact reviewed commit to `main` only when it is a clean fast-forward, reruns the production build, verifies the remote commit, and waits for the changed content on the live target. A failure keeps the review buttons available and does not mark the experiment complete.
 - A successful promotion records the change as an SEO experiment. The experiment follow-up starts after 14 days, but autonomous edits to the same URL stay blocked for at least 30 days; other URLs can continue.
 - A decision card remains active for 24 hours by default. When it expires, the worker removes its Discord buttons before deprioritizing it so stale controls cannot remain actionable.
+
+## Chain health alerts
+
+`seo-agent-chain-health.timer` runs every five minutes outside the main worker. This is intentional: a crashed worker cannot alert about itself. The watchdog checks:
+
+- `seo-agent-discord.service` and `seo-runtime.service`,
+- SEO Runtime `/healthz`,
+- that the worker state is updated within five minutes,
+- the latest repo checkout/push health result,
+- code jobs older than two hours and promotions locked longer than 30 minutes.
+
+It sends one aggregate warning to `SEO_AGENT_ALERT_CHANNEL_ID` or the normal `DISCORD_CHANNEL_ID`. Identical incidents are suppressed for six hours. When all checks recover, Discord receives one recovery message. Daily run and workspace failures continue to use the worker's once-per-day deduplication when `SEO_AGENT_NOTIFY_INTERNAL_FAILURES=true`.
 
 Rejected autonomous diffs are saved on the VPS under:
 

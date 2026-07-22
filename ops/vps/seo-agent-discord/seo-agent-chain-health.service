@@ -1,0 +1,8 @@
+[Unit]
+Description=SEO Agent chain health watchdog
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/ai-dashboard/apps/seo-agent-discord
+ExecStart=/usr/bin/node /opt/ai-dashboard/apps/seo-agent-discord/chain-health-watchdog.mjs
