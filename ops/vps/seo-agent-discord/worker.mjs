@@ -3275,6 +3275,9 @@ async function decideContentReview(actionId, decision, operatorId) {
       method: 'POST',
       body: JSON.stringify({ publish: true, source: 'seo-agent-discord', operatorId: String(operatorId || '') })
     })
+    if (response?.issue?.status !== 'published' || response?.issue?.publish?.status !== 'published') {
+      throw new Error(response?.issue?.publish?.message || 'newsletter_publish_did_not_complete')
+    }
   } else if (ref.type !== 'newsletter_publish') {
     response = await contentAgentJson(newsletterAgentUrl, newsletterAgentToken, `/issues/${encodeURIComponent(ref.id)}/decision`, { method: 'POST', body })
   }
