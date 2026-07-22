@@ -95,8 +95,10 @@ The agent should:
 - fast-forward clean repo checkouts before readiness checks so a normal remote update does not look like a push failure,
 - record commits and diffstats so Discord can explain what was created.
 - run a Codex pre-commit SEO quality gate before every autonomous commit. The gate can `allow`, request one small `revise` pass, or `block` the commit if the diff is generic, wrong-workspace, repetitive, or mismatched with the workspace profile.
-- treat each completed SEO commit as an experiment and review it after 14 days before repeating similar work.
-- block additional autonomous edits to the same target URL during the 14-day review window by default. This prevents the agent from stacking many small FAQ/keyword tweaks on one page before there is a recheck signal.
+- treat each completed SEO commit as an experiment and review it after 14 days, while blocking a new autonomous edit to the same URL for at least 30 days.
+- block the same URL plus the same search intent for 90 days unless a newer run contains positive GSC evidence. Keyword Planner volume alone does not justify repeating an already completed edit.
+- require at least 50 page views before read-time, scroll-depth, CTA or contact-click rates may trigger a content change. Smaller samples are monitored instead of becoming action cards.
+- use a hash suffix on review branches so long action IDs cannot collapse into the same Git branch.
 
 ## Discord signal policy
 
@@ -106,7 +108,7 @@ Workspace channels are decision and result feeds, not runtime logs. Automatic me
 - `SEO_AGENT_NOTIFY_INTERNAL_FAILURES=true` posts internal run, action-fetch, and integration failures to Discord. Keep it disabled in normal operation.
 - Daily ranking reviews are persisted before posting and deduplicated once per workspace and date.
 - An operator approval promotes the exact reviewed commit to `main` only when it is a clean fast-forward, reruns the production build, verifies the remote commit, and waits for the changed content on the live target. A failure keeps the review buttons available and does not mark the experiment complete.
-- A successful promotion records the change as an SEO experiment and blocks new autonomous edits to the same target URL for 14 days; other URLs in the workspace can continue.
+- A successful promotion records the change as an SEO experiment. The experiment follow-up starts after 14 days, but autonomous edits to the same URL stay blocked for at least 30 days; other URLs can continue.
 - A decision card remains active for 24 hours by default. When it expires, the worker removes its Discord buttons before deprioritizing it so stale controls cannot remain actionable.
 
 Rejected autonomous diffs are saved on the VPS under:

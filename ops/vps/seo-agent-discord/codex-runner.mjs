@@ -2,6 +2,7 @@
 import { execFile } from 'node:child_process'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { createHash } from 'node:crypto'
 import { promisify } from 'node:util'
 
 const exec = promisify(execFile)
@@ -24,7 +25,7 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
 const baseBranch = action.branch || 'main'
 const requiresReview = isManagedWebsiteAction(action, repoName)
 const deliveryBranch = requiresReview
-  ? `seo-agent/${safeBranchPart(action.id || action.title || Date.now())}`
+  ? reviewBranchName(action.id || action.title || Date.now())
   : baseBranch
 const repoDir = join(workspaceRoot, repoName)
 assertActionHasSeoEvidence(action)
@@ -130,6 +131,12 @@ function acquireRepoLock(name, input) {
     }
   }
   throw new Error(`Could not acquire SEO repo lock: ${name}`)
+}
+
+function reviewBranchName(value) {
+  const raw = String(value || '')
+  const hash = createHash('sha256').update(raw).digest('hex').slice(0, 10)
+  return `seo-agent/${safeBranchPart(raw).slice(0, 88)}-${hash}`
 }
 
 function processIsAlive(pid) {

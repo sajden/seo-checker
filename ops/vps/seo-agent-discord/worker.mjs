@@ -54,6 +54,9 @@ const opportunityScoutGrowthMinIntervalMs = Number(env.SEO_AGENT_OPPORTUNITY_SCO
 const opportunityScoutInvalidCooldownMs = Number(env.SEO_AGENT_OPPORTUNITY_SCOUT_INVALID_COOLDOWN_MS || String(3 * 60 * 60 * 1000))
 const sameTargetAutonomousCooldownMs = Number(env.SEO_AGENT_SAME_TARGET_AUTONOMOUS_COOLDOWN_MS || String(14 * 24 * 60 * 60 * 1000))
 const sameTargetAutonomousMaxRecent = Number(env.SEO_AGENT_SAME_TARGET_AUTONOMOUS_MAX_RECENT || '1')
+const engagementMinViews = Number(env.SEO_AGENT_ENGAGEMENT_MIN_VIEWS || '50')
+const completedTargetCooldownMs = Number(env.SEO_AGENT_COMPLETED_TARGET_COOLDOWN_MS || String(30 * 24 * 60 * 60 * 1000))
+const repeatedIntentCooldownMs = Number(env.SEO_AGENT_REPEATED_INTENT_COOLDOWN_MS || String(90 * 24 * 60 * 60 * 1000))
 const codexChatEnabled = env.SEO_AGENT_CODEX_CHAT_ENABLED !== 'false'
 const smartOutboundGuardEnabled = env.SEO_AGENT_SMART_OUTBOUND_GUARD !== 'false'
 const notifyRoutineStatus = env.SEO_AGENT_NOTIFY_ROUTINE_STATUS === 'true'
@@ -1323,6 +1326,8 @@ function autonomousCodeCandidateCheck(action, workspace, targetChannelId) {
   if (isWeakExactKeywordCoverageAction(action)) {
     return { ok: false, reason: 'keyword_coverage_lacks_search_evidence' }
   }
+  const engagementCheck = engagementEvidenceCheck(action)
+  if (!engagementCheck.ok) return engagementCheck
   const kind = actionKindForLearning(action)
   if (!['content', 'internal-links'].includes(kind)) return { ok: false, reason: `unsupported_kind:${kind}` }
   if (isSebcastwallWorkspace(workspace) && String(action?.id || '').startsWith('seo_synthetic_')) {
@@ -1336,6 +1341,8 @@ function autonomousCodeCandidateCheck(action, workspace, targetChannelId) {
   if (isLegalOrPolicyRoute(targetUrl)) return { ok: false, reason: 'legal_or_policy_route_needs_explicit_request' }
   const sameTargetCheck = sameTargetRecentExperimentCheck(action, workspace, targetChannelId)
   if (!sameTargetCheck.ok) return sameTargetCheck
+  const completedTargetCheck = completedTargetHistoryCheck(action, workspace, targetChannelId)
+  if (!completedTargetCheck.ok) return completedTargetCheck
   if (kind === 'new-page') return { ok: false, reason: 'new_page_needs_human_approval' }
   const cluster = actionLearningKey(action, workspace, targetChannelId)
   const ledger = state.actionLedger?.[cluster]
@@ -1343,6 +1350,65 @@ function autonomousCodeCandidateCheck(action, workspace, targetChannelId) {
   if (ledger?.status === 'deprioritized' && !isLedgerRecheckDue(ledger)) return { ok: false, reason: 'recently_deprioritized_waiting_recheck' }
   if (ledger?.status === 'ignored' && !isLedgerRecheckDue(ledger)) return { ok: false, reason: 'recently_ignored_waiting_recheck' }
   return { ok: true, reason: 'candidate' }
+}
+
+function engagementEvidenceCheck(action) {
+  const raw = [action?.title, action?.why, action?.recommendedAction, ...(Array.isArray(action?.evidence) ? action.evidence : [])]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase()
+  const usesEngagement = /30s|30 s|scroll|cta|kontaktklick|kontakt-klick|engagement|l[aä]sning|l[aä]stid|time on page/.test(raw)
+  if (!usesEngagement) return { ok: true, reason: 'not_engagement_driven' }
+  const matches = [...raw.matchAll(/(?:^|\D)(\d[\d\s.,]*)\s*(?:sid)?visningar\b/g)]
+  const views = matches
+    .map((match) => Number(String(match[1]).replace(/[\s.,]/g, '')))
+    .filter(Number.isFinite)
+    .sort((a, b) => b - a)[0]
+  if (!Number.isFinite(views)) return { ok: false, reason: 'engagement_sample_missing' }
+  if (views < engagementMinViews) return { ok: false, reason: `engagement_sample_too_small:${views}<${engagementMinViews}`, views }
+  return { ok: true, reason: 'engagement_sample_sufficient', views }
+}
+
+function completedTargetHistoryCheck(action, workspace, targetChannelId) {
+  const targetUrl = String(action?.targetUrl || action?.url || '').trim()
+  if (!targetUrl) return { ok: true, reason: 'no_target_history' }
+  const workspaceKey = workspaceProfileKey(workspace, targetChannelId)
+  const keyword = normalizeKeywordCluster(action?.keyword || '')
+  const now = Date.now()
+  const completed = Object.values(state.actionLedger || {})
+    .filter((record) => String(record?.workspaceKey || '') === String(workspaceKey))
+    .filter((record) => record?.targetUrl && sameSeoUrl(record.targetUrl, targetUrl))
+    .flatMap((record) => {
+      const events = Array.isArray(record?.events) ? record.events : []
+      const completedEvents = events.filter((event) => event?.event === 'completed')
+      if (!completedEvents.length && record?.status === 'completed') completedEvents.push({ at: record.lastEventAt || record.firstSeenAt })
+      return completedEvents.map((event) => ({
+        at: Date.parse(event?.at || ''),
+        keyword: normalizeKeywordCluster(record?.keyword || ''),
+        actionId: record?.actionId || null
+      }))
+    })
+    .filter((item) => Number.isFinite(item.at))
+    .sort((a, b) => b.at - a.at)
+  const latest = completed[0]
+  if (!latest) return { ok: true, reason: 'no_completed_target_history' }
+  const ageMs = now - latest.at
+  if (ageMs < completedTargetCooldownMs) {
+    return { ok: false, reason: 'target_recently_completed_waiting_measurement', previousActionId: latest.actionId }
+  }
+  if (keyword && latest.keyword && keyword === latest.keyword && ageMs < repeatedIntentCooldownMs && !hasFreshPositiveSearchEvidence(action, latest.at)) {
+    return { ok: false, reason: 'same_target_intent_needs_new_search_evidence', previousActionId: latest.actionId }
+  }
+  return { ok: true, reason: 'completed_target_history_ok' }
+}
+
+function hasFreshPositiveSearchEvidence(action, completedAtMs) {
+  const evidenceAt = Date.parse(action?.evidenceRunAt || '')
+  if (!Number.isFinite(evidenceAt) || evidenceAt <= completedAtMs) return false
+  const raw = [action?.why, ...(Array.isArray(action?.evidence) ? action.evidence : [])].filter(Boolean).join(' ').toLowerCase()
+  if (!/gsc|search console/.test(raw)) return false
+  if (/ingen gsc-query matchade|ingen s[oö]kfr[aå]ga matchade|0\s*(?:klick|click|impression)/.test(raw)) return false
+  return /(?:\b[1-9]\d*\b)\s*(?:klick|click|impression)|(?:gsc|search console).*?(?:matchade|matched)\s*(?:\b[1-9]\d*\b)/.test(raw)
 }
 
 function requiresOperatorProposal(action) {
@@ -2563,7 +2629,9 @@ async function runQueuedApprovedCodeAction(entry, workspace, targetChannelId) {
     delete state.approvedCodeActionQueue[entry.id]
     await markPostedActionHandled(entry.id, targetChannelId, 'code_action_failed')
     clearActiveAction(entry.id)
-    await sendDiscordMessage(formatCodeActionFailureMessage(workspace.label || entry.workspaceSlug, entry.title, error, failure), targetChannelId)
+    if (!failure.suppressDiscord) {
+      await sendDiscordMessage(formatCodeActionFailureMessage(workspace.label || entry.workspaceSlug, entry.title, error, failure), targetChannelId)
+    }
   } finally {
     state.codeActionRunning = null
     saveState()
@@ -2838,6 +2906,16 @@ async function runPackageScriptForRepo(cwd, script, run) {
 function classifyCodeActionFailure(error) {
   const message = error?.message || String(error)
   const text = message.toLowerCase()
+  if (text.includes('seo repo already has an active runner')) {
+    return {
+      status: 'already_running',
+      ledgerEvent: 'guarded',
+      category: 'repo_lock_active',
+      retryable: true,
+      suppressDiscord: true,
+      operatorSummary: 'Samma repo har redan en aktiv runner. Den nya körningen stoppas utan felmeddelande.'
+    }
+  }
   if (text.includes('repo checkout missing') || text.includes('clone failed') || text.includes('permission denied (publickey)')) {
     return {
       status: 'infra_failed',
@@ -7242,6 +7320,22 @@ function reviewActionForPosting(action, workspace, targetChannelId, workspacePol
   let score = 45
   const positives = []
   const negatives = []
+
+  const engagementCheck = engagementEvidenceCheck(action)
+  if (!engagementCheck.ok) {
+    score -= 100
+    negatives.push(engagementCheck.reason.startsWith('engagement_sample_too_small')
+      ? `för få sidvisningar för engagementbeslut (${engagementCheck.views}/${engagementMinViews})`
+      : 'saknar sidvisningar för engagementbeslut')
+  }
+
+  const completedTargetCheck = completedTargetHistoryCheck(action, workspace, targetChannelId)
+  if (!completedTargetCheck.ok) {
+    score -= 100
+    negatives.push(completedTargetCheck.reason === 'target_recently_completed_waiting_measurement'
+      ? 'samma URL är nyligen ändrad och ska mätas innan nästa ingrepp'
+      : 'samma URL och sökintention saknar ny positiv sökdata')
+  }
 
   if (targetUrl) {
     score += 15
