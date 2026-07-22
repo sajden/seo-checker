@@ -39,7 +39,7 @@ const activeActionReminderMs = Number(env.SEO_AGENT_ACTIVE_ACTION_REMINDER_MS ||
 const staleRunningMs = Number(env.SEO_AGENT_STALE_RUNNING_MS || String(2 * 60 * 60 * 1000))
 const staleQueuedApprovedMs = Number(env.SEO_AGENT_STALE_APPROVED_QUEUE_MS || String(36 * 60 * 60 * 1000))
 const staleActiveActionMs = Number(env.SEO_AGENT_STALE_ACTIVE_ACTION_MS || String(2 * 60 * 60 * 1000))
-const autonomousActiveBlockMs = Number(env.SEO_AGENT_AUTONOMOUS_ACTIVE_BLOCK_MS || String(15 * 60 * 1000))
+const autonomousActiveBlockMs = Number(env.SEO_AGENT_AUTONOMOUS_ACTIVE_BLOCK_MS || String(24 * 60 * 60 * 1000))
 const stalePlatformIncidentMs = Number(env.SEO_AGENT_STALE_PLATFORM_INCIDENT_MS || String(48 * 60 * 60 * 1000))
 const workspaceChannels = parseWorkspaceChannels(env.SEO_AGENT_WORKSPACE_CHANNELS || '{}')
 const defaultWorkspaceId = env.SEO_AGENT_DEFAULT_WORKSPACE_ID || ''
@@ -968,6 +968,7 @@ async function maybeQueueAutonomousCodeActions(workspaces) {
     }
     if (active?.actionId) {
       delete state.activeActionByWorkspace[activeWorkspaceActionKey(workspace, targetChannelId)]
+      await markPostedActionHandled(active.actionId, targetChannelId, 'action_card_expired')
       recordActionLedger({ id: active.actionId }, workspace, targetChannelId, 'deprioritized', {
         reason: 'autonomous_active_card_timeout',
         recheckAfter: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10)

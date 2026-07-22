@@ -107,6 +107,7 @@ Workspace channels are decision and result feeds, not runtime logs. Automatic me
 - Daily ranking reviews are persisted before posting and deduplicated once per workspace and date.
 - An operator approval promotes the exact reviewed commit to `main` only when it is a clean fast-forward, reruns the production build, verifies the remote commit, and waits for the changed content on the live target. A failure keeps the review buttons available and does not mark the experiment complete.
 - A successful promotion records the change as an SEO experiment and blocks new autonomous edits to the same target URL for 14 days; other URLs in the workspace can continue.
+- A decision card remains active for 24 hours by default. When it expires, the worker removes its Discord buttons before deprioritizing it so stale controls cannot remain actionable.
 
 Rejected autonomous diffs are saved on the VPS under:
 
