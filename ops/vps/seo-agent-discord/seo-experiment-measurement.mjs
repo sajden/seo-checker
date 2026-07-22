@@ -124,7 +124,9 @@ function metricForRows(rows, coverage) {
 }
 
 function selectScope(baseline, followup) {
-  if (baseline.query?.available && followup.query?.available && (baseline.query.observed || followup.query.observed)) return 'query'
+  const queryImpressions = Number(baseline.query?.impressions || 0) + Number(followup.query?.impressions || 0)
+  const queryClicks = Number(baseline.query?.clicks || 0) + Number(followup.query?.clicks || 0)
+  if (baseline.query?.available && followup.query?.available && (queryImpressions >= 10 || queryClicks > 0)) return 'query'
   if (baseline.page?.available && followup.page?.available) return 'page'
   return null
 }

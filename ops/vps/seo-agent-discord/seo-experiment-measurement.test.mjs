@@ -60,6 +60,26 @@ test('keeps sparse data inconclusive instead of inventing a positive result', ()
   assert.equal(result.confidence, 'low')
 })
 
+test('falls back to page metrics when the exact query is too sparse', () => {
+  const baseline = buildGscExperimentSnapshot({
+    batch: batch('2026-07-01T10:00:00Z', [
+      { keys: ['https://example.com/service', 'ai konsult'], clicks: 0, impressions: 2, ctr: 0, position: 30 },
+      { keys: ['https://example.com/service', 'annan fråga'], clicks: 1, impressions: 48, ctr: 0.02, position: 15 }
+    ]),
+    targetUrl: 'https://example.com/service', keyword: 'ai konsult'
+  })
+  const followup = buildGscExperimentSnapshot({
+    batch: batch('2026-07-15T10:00:00Z', [
+      { keys: ['https://example.com/service', 'ai konsult'], clicks: 0, impressions: 3, ctr: 0, position: 28 },
+      { keys: ['https://example.com/service', 'annan fråga'], clicks: 4, impressions: 77, ctr: 0.05, position: 9 }
+    ]),
+    targetUrl: 'https://example.com/service', keyword: 'ai konsult'
+  })
+  const result = evaluateExperimentMeasurement({ baseline, followup })
+  assert.equal(result.scope, 'page')
+  assert.equal(result.outcome, 'improved')
+})
+
 test('schedules both day 14 and day 30 measurements', () => {
   const now = new Date('2026-07-31T00:00:00Z')
   const experiment = { completedAt: '2026-07-01T00:00:00Z', measurements: { followups: {} } }
