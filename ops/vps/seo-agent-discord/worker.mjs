@@ -67,6 +67,8 @@ const articleAgentToken = env.ARTICLE_AGENT_API_TOKEN || ''
 const newsletterAgentUrl = (env.NEWSLETTER_AGENT_URL || 'http://127.0.0.1:3461').replace(/\/$/, '')
 const newsletterAgentToken = env.NEWSLETTER_AGENT_TOKEN || env.DASHBOARD_AGENT_TOKEN || ''
 const contentReviewEveryMs = Number(env.SEO_AGENT_CONTENT_REVIEW_MS || String(15 * 60 * 1000))
+const technicalCheckEveryMs = Number(env.SEO_AGENT_TECHNICAL_CHECK_MS || String(60 * 60 * 1000))
+const technicalCheckPageLimit = Number(env.SEO_AGENT_TECHNICAL_CHECK_PAGE_LIMIT || '12')
 const codexCli = env.CODEX_CLI || `${env.HOME || '/home/deploy'}/.npm-global/bin/codex`
 const stateDir = '/home/deploy/seo-agent-discord/state'
 const statePath = join(stateDir, 'state.json')
@@ -120,9 +122,13 @@ async function sendPlatformHeartbeat() {
         platform: true
       },
       reviewQueue,
+      activity: currentAgentActivity(reviewQueue),
       schedule: {
         dailyHourUtc,
-        pollMs
+        pollMs,
+        contentReviewEveryMs,
+        technicalCheckEveryMs,
+        weeklyStrategy: 'once-per-ISO-week'
       }
     }
   }
@@ -154,6 +160,21 @@ function currentReviewQueueSnapshot() {
     if (String(result?.status || '') !== 'review_ready') continue
     byActionId.set(actionId, reviewQueueItem(actionId, result, ledgerByActionId.get(actionId)))
   }
+  for (const [cardId, card] of Object.entries(state.contentReviewCards || {})) {
+    if (String(card?.status || '') !== 'posted') continue
+    byActionId.set(`content:${cardId}`, {
+      id: cardId,
+      title: contentReviewQueueTitle(card?.type),
+      targetUrl: '',
+      why: 'Ett innehållsutkast har klarat kvalitetsgrinden och väntar på ditt beslut.',
+      recommendedAction: 'Öppna granskningskortet i SEO-kanalen och godkänn, begär omskrivning eller avvisa.',
+      workspaceLabel: 'sebcastwall.se content',
+      status: 'pending_review',
+      messageId: card?.messageId || '',
+      channelId,
+      since: card?.refreshedAt || card?.postedAt || ''
+    })
+  }
   const items = [...byActionId.values()]
     .sort((a, b) => Date.parse(b.since || '') - Date.parse(a.since || ''))
   return {
@@ -161,6 +182,68 @@ function currentReviewQueueSnapshot() {
     current: items[0] || null,
     items: items.slice(0, 10)
   }
+}
+
+function contentReviewQueueTitle(type) {
+  if (type === 'article_publish') return 'Artikel redo att publiceras'
+  if (type === 'newsletter_publish') return 'Nyhetsbrev redo att publiceras'
+  if (type === 'newsletter') return 'Nyhetsbrev redo för granskning'
+  return 'Artikel redo för granskning'
+}
+
+function currentAgentActivity(reviewQueue) {
+  if (reviewQueue.count > 0) {
+    return {
+      mode: 'awaiting_review',
+      label: `Väntar på ${reviewQueue.count} granskningskort`,
+      reason: reviewQueue.current?.why || 'Ett granskningsbart förslag finns i Discord.',
+      nextAction: reviewQueue.current?.recommendedAction || 'Inväntar ditt beslut.',
+      since: reviewQueue.current?.since || null
+    }
+  }
+  if (state.codeActionRunning?.actionId) {
+    return {
+      mode: 'working',
+      label: 'Bygger en dev-safe SEO-ändring',
+      reason: state.codeActionRunning.title || state.codeActionRunning.actionId,
+      nextAction: 'Kör build och kvalitetsgrind innan ett granskningskort skapas.',
+      since: state.codeActionRunning.startedAt || null
+    }
+  }
+  const weekly = state.weeklyStrategyReviews?.[state.lastWeeklyStrategyKey] || null
+  return {
+    mode: 'monitoring',
+    label: 'Bevakar och inväntar bättre evidens',
+    reason: weekly?.summary || 'Ingen tillräckligt stark, ny SEO-åtgärd finns efter kvalitetsgrindarna.',
+    nextAction: `Lätt teknikkontroll varje timme och full SEO-analys ${formatNextDailyRun()}.`,
+    lastTechnicalCheckAt: state.lastTechnicalCheckAt || null,
+    nextTechnicalCheckAt: nextIntervalAt(state.lastTechnicalCheckAt, technicalCheckEveryMs),
+    lastContentReviewAt: state.lastContentReviewSyncAt || null,
+    nextContentReviewAt: nextIntervalAt(state.lastContentReviewSyncAt, contentReviewEveryMs),
+    nextFullAnalysisAt: nextDailyRunIso()
+  }
+}
+
+function nextIntervalAt(lastAt, intervalMs) {
+  const last = Date.parse(lastAt || '')
+  return new Date((Number.isFinite(last) ? last : Date.now()) + intervalMs).toISOString()
+}
+
+function nextDailyRunIso() {
+  const next = new Date()
+  next.setUTCMinutes(0, 0, 0)
+  next.setUTCHours(dailyHourUtc)
+  if (next.getTime() <= Date.now()) next.setUTCDate(next.getUTCDate() + 1)
+  return next.toISOString()
+}
+
+function formatNextDailyRun() {
+  return new Intl.DateTimeFormat('sv-SE', {
+    timeZone: 'Europe/Stockholm',
+    weekday: 'short',
+    hour: '2-digit',
+    minute: '2-digit'
+  }).format(new Date(nextDailyRunIso()))
 }
 
 function reviewQueueItem(actionId, runtimeRecord = {}, ledger = {}) {
@@ -208,8 +291,10 @@ async function tick() {
   }
   await runTickStep('reconcile_interrupted_promotions', () => reconcileInterruptedPromotions(workspaces))
   if (steps.syncWorkspaceRepoCommits !== false) await runTickStep('sync_workspace_repo_commits', () => syncWorkspaceRepoCommits(workspaces))
+  await runTickStep('hourly_technical_checks', () => maybeRunHourlyTechnicalChecks(workspaces))
   if (steps.ensureDailyRunsForWorkspaces !== false) await runTickStep('ensure_daily_runs_for_workspaces', () => ensureDailyRunsForWorkspaces(workspaces))
   if (steps.runDailyRankingReviews !== false) await runTickStep('run_daily_ranking_reviews', () => runDailyRankingReviews(workspaces))
+  await runTickStep('weekly_strategy_review', () => maybeRunWeeklyStrategyReview(workspaces))
   if (steps.postReadinessForWorkspaces !== false) await runTickStep('post_readiness_for_workspaces', () => postReadinessForWorkspaces(workspaces))
   if (steps.checkGscIssuesForWorkspaces !== false) await runTickStep('check_gsc_issues_for_workspaces', () => checkGscIssuesForWorkspaces(workspaces))
   if (steps.postPendingActionsForWorkspaces !== false) await runTickStep('post_pending_actions_for_workspaces', () => postPendingActionsForWorkspaces(workspaces))
@@ -497,6 +582,176 @@ function recordObservedRepoCommit(workspace, repoDir, commit) {
   profile.updatedAt = now
   state.workspaceProfiles[workspaceKey] = profile
   rememberAgentLesson(`Observed ${workspace?.label || workspaceKey} repo commit ${commit.shortSha}: ${commit.subject || 'no subject'}`)
+}
+
+async function maybeRunHourlyTechnicalChecks(workspaces) {
+  const now = Date.now()
+  if (state.lastTechnicalCheckAt && now - Date.parse(state.lastTechnicalCheckAt) < technicalCheckEveryMs) return
+  state.lastTechnicalCheckAt = new Date(now).toISOString()
+  state.technicalChecks = state.technicalChecks || {}
+  for (const workspace of workspaces) {
+    const key = workspaceProfileKey(workspace, null)
+    const previous = state.technicalChecks[key] || null
+    const result = await runWorkspaceTechnicalCheck(workspace)
+    state.technicalChecks[key] = result
+    const targetChannelId = await channelForWorkspace(workspace)
+    if (!targetChannelId) continue
+    if (!result.ok && notifyInternalFailures) {
+      const signature = result.failures.join('|').slice(0, 300)
+      const day = new Date().toISOString().slice(0, 10)
+      await sendOncePerDay(`technical-check:${key}:${day}:${signature}`, targetChannelId, [
+        `Teknisk SEO-varning för ${workspace.label}.`,
+        ...result.failures.slice(0, 5).map((failure) => `- ${failure}`),
+        'Agenten fortsätter kontrollera automatiskt. Ingen webbplatsändring görs utan den vanliga kvalitetsgrinden.'
+      ].join('\n'))
+    } else if (result.ok && previous && previous.ok === false && notifyRoutineStatus) {
+      await sendDiscordMessage(`Teknikkontrollen är grön igen för ${workspace.label}.`, targetChannelId)
+    }
+  }
+  log('hourly_technical_checks_completed', {
+    workspaceCount: workspaces.length,
+    failedCount: Object.values(state.technicalChecks).filter((item) => item?.ok === false).length
+  })
+}
+
+async function runWorkspaceTechnicalCheck(workspace) {
+  const host = workspaceHost(workspace)
+  const checkedAt = new Date().toISOString()
+  if (!host) return { ok: false, checkedAt, failures: ['Kunde inte bestämma webbplatsens host.'], pagesChecked: 0 }
+  const origin = `https://${host}`
+  const failures = []
+  const homepage = await fetchSeoCheck(origin)
+  if (!homepage.ok) failures.push(`Startsidan svarar ${homepage.status || homepage.error || 'inte'}.`)
+  else if (!String(homepage.contentType || '').includes('text/html')) failures.push(`Startsidan returnerar oväntad content-type: ${homepage.contentType || 'saknas'}.`)
+
+  const robots = await fetchSeoCheck(`${origin}/robots.txt`)
+  if (!robots.ok) failures.push(`robots.txt svarar ${robots.status || robots.error || 'inte'}.`)
+  else if (robotsBlocksEntireSite(robots.body)) failures.push('robots.txt blockerar hela webbplatsen för minst en generell crawler-policy.')
+
+  const sitemap = await fetchSeoCheck(`${origin}/sitemap.xml`)
+  if (!sitemap.ok) failures.push(`sitemap.xml svarar ${sitemap.status || sitemap.error || 'inte'}.`)
+  const sitemapUrls = sitemap.ok ? extractSitemapUrls(sitemap.body, technicalCheckPageLimit) : []
+  const pageResults = await Promise.all(sitemapUrls.map(async (url) => ({ url, result: await fetchSeoCheck(url, { bodyLimit: 0 }) })))
+  for (const item of pageResults) {
+    if (!item.result.ok) failures.push(`${compactTechnicalUrl(item.url)} svarar ${item.result.status || item.result.error || 'inte'}.`)
+  }
+  return {
+    ok: failures.length === 0,
+    checkedAt,
+    origin,
+    pagesChecked: pageResults.length,
+    failures: failures.slice(0, 20),
+    checks: {
+      homepage: homepage.status || 0,
+      robots: robots.status || 0,
+      sitemap: sitemap.status || 0
+    }
+  }
+}
+
+async function fetchSeoCheck(url, options = {}) {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 12_000)
+  try {
+    const response = await fetch(url, {
+      redirect: 'follow',
+      headers: { 'user-agent': 'SebCastwall-SEO-Agent/1.0' },
+      signal: controller.signal
+    })
+    const bodyLimit = options.bodyLimit ?? 1_000_000
+    const body = bodyLimit > 0 ? (await response.text()).slice(0, bodyLimit) : ''
+    return {
+      ok: response.ok,
+      status: response.status,
+      contentType: response.headers.get('content-type') || '',
+      body
+    }
+  } catch (error) {
+    return { ok: false, status: 0, contentType: '', body: '', error: error?.name === 'AbortError' ? 'timeout' : error?.message || String(error) }
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+function robotsBlocksEntireSite(body) {
+  const lines = String(body || '').split(/\r?\n/).map((line) => line.replace(/#.*/, '').trim()).filter(Boolean)
+  let appliesToAll = false
+  for (const line of lines) {
+    const [rawKey, ...rawValue] = line.split(':')
+    const key = String(rawKey || '').trim().toLowerCase()
+    const value = rawValue.join(':').trim()
+    if (key === 'user-agent') appliesToAll = value === '*'
+    if (appliesToAll && key === 'disallow' && value === '/') return true
+  }
+  return false
+}
+
+function extractSitemapUrls(xml, limit) {
+  const urls = []
+  for (const match of String(xml || '').matchAll(/<loc>\s*([^<]+?)\s*<\/loc>/gi)) {
+    const value = match[1].replaceAll('&amp;', '&').trim()
+    if (!/^https:\/\//i.test(value)) continue
+    urls.push(value)
+    if (urls.length >= limit) break
+  }
+  return urls
+}
+
+function compactTechnicalUrl(value) {
+  try {
+    const url = new URL(value)
+    return `${url.hostname}${url.pathname}`
+  } catch {
+    return String(value || '').slice(0, 120)
+  }
+}
+
+async function maybeRunWeeklyStrategyReview(workspaces) {
+  const key = isoWeekKey(new Date())
+  state.weeklyStrategyReviews = state.weeklyStrategyReviews || {}
+  if (state.weeklyStrategyReviews[key]?.version === 2) return
+  const workspaceReviews = workspaces.map((workspace) => {
+    const workspaceKey = workspaceProfileKey(workspace, null)
+    const ranking = state.rankingReviews?.[workspaceKey] || null
+    const technical = state.technicalChecks?.[workspaceKey] || null
+    const learning = ranking?.learningSummary || {}
+    return {
+      workspaceKey,
+      label: workspace.label,
+      technicalOk: technical?.ok ?? null,
+      technicalFailures: technical?.failures || [],
+      positiveSignals: learning.positiveSignals?.length || 0,
+      needsMoreWork: learning.needsMoreWork?.length || 0,
+      inconclusive: learning.inconclusive?.length || 0,
+      next: ranking?.next || { type: 'monitor', title: 'Invänta nästa dagliga analys', reason: 'veckounderlag saknas ännu' }
+    }
+  })
+  const technicalFailures = workspaceReviews.filter((item) => item.technicalOk === false).length
+  const technicalFailureLabels = workspaceReviews.filter((item) => item.technicalOk === false).map((item) => item.label)
+  const needsMoreWork = workspaceReviews.reduce((total, item) => total + item.needsMoreWork, 0)
+  const summary = technicalFailures
+    ? `${technicalFailureLabels.join(', ')} har tekniska varningar som prioriteras före nytt contentarbete.`
+    : needsMoreWork
+      ? `${needsMoreWork} tidigare SEO-experiment behöver mer data eller en ny vinkel; inga upprepade ändringar görs utan ny evidens.`
+      : 'Inget starkt nytt experiment just nu; agenten väntar på bättre live-data eller uppföljningsdatum.'
+  state.weeklyStrategyReviews[key] = {
+    version: 2,
+    key,
+    createdAt: new Date().toISOString(),
+    summary,
+    workspaces: workspaceReviews
+  }
+  state.lastWeeklyStrategyKey = key
+  log('weekly_strategy_review_completed', { key, workspaceCount: workspaceReviews.length, technicalFailures, needsMoreWork })
+}
+
+function isoWeekKey(date) {
+  const value = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()))
+  const day = value.getUTCDay() || 7
+  value.setUTCDate(value.getUTCDate() + 4 - day)
+  const yearStart = new Date(Date.UTC(value.getUTCFullYear(), 0, 1))
+  const week = Math.ceil((((value - yearStart) / 86400000) + 1) / 7)
+  return `${value.getUTCFullYear()}-W${String(week).padStart(2, '0')}`
 }
 
 async function ensureDailyRunsForWorkspaces(workspaces) {
