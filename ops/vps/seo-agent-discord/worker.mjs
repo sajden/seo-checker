@@ -957,6 +957,14 @@ async function checkGscIssuesForWorkspaces(workspaces) {
   for (const workspace of workspaces) {
     const targetChannelId = await channelForWorkspace(workspace)
     if (!targetChannelId || !workspace?.gscProperty) continue
+    const activeKey = activeWorkspaceActionKey(workspace, targetChannelId)
+    if (workspaceReviewCardIsOpen(activeKey)) {
+      logThrottled(`gsc_issue_waiting_for_review:${activeKey}`, 30 * 60 * 1000, 'gsc_issue_waiting_for_review', {
+        workspace: workspace.label || workspace.id,
+        actionId: state.activeActionByWorkspace?.[activeKey]?.actionId || null
+      })
+      continue
+    }
     const result = await fetchGscIssuesForWorkspace(workspace).catch((error) => ({ ok: false, issues: [], error: error?.message || String(error), source: null }))
     state.gscIssueFetchStatus[workspace.id || workspace.label || workspace.gscProperty] = {
       ok: result.ok,
@@ -978,7 +986,8 @@ async function checkGscIssuesForWorkspaces(workspaces) {
       if (!issue) continue
       const action = createGscIssueAction(issue, workspace, targetChannelId, { source: result.source || 'gsc_issue_poll' })
       if (hasSeenGscIssueAction(action, workspace, issue)) continue
-      await postGscIssueAction({ action, issue, workspace, targetChannelId, sourceLabel: `GSC issue hittad automatiskt (${result.source || 'platform'})` })
+      const posted = await postGscIssueAction({ action, issue, workspace, targetChannelId, sourceLabel: `GSC issue hittad automatiskt (${result.source || 'platform'})` })
+      if (posted) break
     }
   }
   pruneSeenGscIssues()
@@ -1114,6 +1123,18 @@ async function postGscIssueAction({ action, issue, workspace, targetChannelId, s
   }
   rememberGscIssueAction(action, workspace, issue)
   rememberAgentLesson(`GSC issue action posted for ${workspace.label || workspace.id}: ${issue.type}`)
+  return posted
+}
+
+function workspaceReviewCardIsOpen(activeKey) {
+  const active = state.activeActionByWorkspace?.[activeKey]
+  const actionId = String(active?.actionId || '')
+  if (!actionId) return false
+  const posted = state.postedActionIds?.[actionId]
+  if (posted?.handledAt) return false
+  const resultStatus = String(state.codeActionResults?.[actionId]?.status || '')
+  if (['completed', 'failed', 'rejected', 'archived_failed'].includes(resultStatus)) return false
+  return Boolean(active?.messageId || posted?.messageId)
 }
 
 function hasSeenGscIssueAction(action, workspace, issue) {
