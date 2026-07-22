@@ -20,6 +20,7 @@ export type AsyncSeoRun = {
 
 const storageDir = getDataDir();
 const storageFile = path.join(storageDir, "seo-runs.json");
+let writeQueue: Promise<void> = Promise.resolve();
 
 export async function startAsyncSeoRun(batchId: string, profile: SeoRunProfile = "full") {
   const now = new Date().toISOString();
@@ -54,10 +55,14 @@ async function listRuns(): Promise<AsyncSeoRun[]> {
 }
 
 async function upsertRun(run: AsyncSeoRun) {
-  const runs = await listRuns();
-  const next = [run, ...runs.filter((item) => item.id !== run.id)].slice(0, 100);
-  await mkdir(storageDir, { recursive: true });
-  await writeFile(storageFile, JSON.stringify({ runs: next }, null, 2), "utf8");
+  const write = writeQueue.then(async () => {
+    const runs = await listRuns();
+    const next = [run, ...runs.filter((item) => item.id !== run.id)].slice(0, 100);
+    await mkdir(storageDir, { recursive: true });
+    await writeFile(storageFile, JSON.stringify({ runs: next }, null, 2), "utf8");
+  });
+  writeQueue = write.catch(() => undefined);
+  await write;
 }
 
 async function runAsyncSeoWorker(run: AsyncSeoRun) {
