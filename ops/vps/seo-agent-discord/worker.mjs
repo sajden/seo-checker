@@ -114,6 +114,7 @@ async function tick() {
     saveState()
     return
   }
+  await runTickStep('reconcile_interrupted_promotions', () => reconcileInterruptedPromotions(workspaces))
   if (steps.syncWorkspaceRepoCommits !== false) await runTickStep('sync_workspace_repo_commits', () => syncWorkspaceRepoCommits(workspaces))
   if (steps.ensureDailyRunsForWorkspaces !== false) await runTickStep('ensure_daily_runs_for_workspaces', () => ensureDailyRunsForWorkspaces(workspaces))
   if (steps.runDailyRankingReviews !== false) await runTickStep('run_daily_ranking_reviews', () => runDailyRankingReviews(workspaces))
@@ -124,6 +125,78 @@ async function tick() {
   if (steps.prepareAutonomousCodeWork !== false) await runTickStep('prepare_autonomous_code_work', () => maybePrepareAutonomousCodeWork(workspaces))
   if (steps.runIntegrationDoctor !== false) await runTickStep('run_integration_doctor', () => maybeRunIntegrationDoctor(workspaces))
   if (steps.askForGscApiOauth !== false) await runTickStep('ask_for_gsc_api_oauth', () => maybeAskForGscApiOAuth())
+  saveState()
+}
+
+async function reconcileInterruptedPromotions(workspaces) {
+  const interrupted = Object.entries(state.codeActionResults || {})
+    .filter(([, record]) => record?.status === 'promotion_running')
+  if (!interrupted.length) return
+  const { execFile } = await import('node:child_process')
+  const { promisify } = await import('node:util')
+  const exec = promisify(execFile)
+  for (const [actionId, record] of interrupted) {
+    const approvedAt = Date.parse(record?.operatorApprovedAt || record?.reviewReadyAt || '')
+    if (approvedAt && Date.now() - approvedAt < 2 * 60 * 1000) continue
+    const result = record?.result || {}
+    const repoFullName = String(result.repoFullName || '').trim()
+    const repoName = repoFullName.split('/')[1]
+    const commit = String(result.commit || '').trim()
+    const baseBranch = String(result.baseBranch || 'main').trim() || 'main'
+    const workspace = workspaces.find((item) => String(item?.repoFullName || '') === repoFullName)
+    if (!repoName || !commit || !workspace) continue
+    const repoDir = `/home/deploy/seo-agent-workspaces/${repoName}`
+    let mergedToMain = false
+    try {
+      await exec('git', ['fetch', 'origin', baseBranch], { cwd: repoDir, timeout: 2 * 60 * 1000, maxBuffer: 2 * 1024 * 1024 })
+      await exec('git', ['merge-base', '--is-ancestor', commit, `origin/${baseBranch}`], { cwd: repoDir, timeout: 60 * 1000, maxBuffer: 2 * 1024 * 1024 })
+      mergedToMain = true
+    } catch {}
+    if (!mergedToMain) {
+      state.codeActionResults[actionId] = {
+        ...record,
+        status: 'review_ready',
+        promotionInterruptedAt: new Date().toISOString(),
+        promotionError: 'Worker restarted before promotion completion; reviewed commit is not on main.'
+      }
+      log('interrupted_promotion_restored_to_review', { actionId, repoFullName, commit })
+      continue
+    }
+    const completedAt = new Date().toISOString()
+    const context = result.reviewContext || {}
+    const action = {
+      id: actionId,
+      title: context.intendedChange || actionId,
+      targetUrl: context.targetUrl || '',
+      keyword: context.keyword || ''
+    }
+    const completedResult = { ...result, branch: baseBranch, mergedToMain: true, requiresReview: false, recoveredPromotion: true }
+    state.codeActionResults[actionId] = { ...record, status: 'completed', completedAt, result: completedResult }
+    recordActionLedger(action, workspace, await channelForWorkspace(workspace), 'completed', {
+      commit,
+      repoFullName,
+      source: 'interrupted_promotion_recovery'
+    })
+    recordSeoExperiment(action, workspace, await channelForWorkspace(workspace), completedResult, { source: 'interrupted_promotion_recovery' })
+    clearActiveAction(actionId)
+    const targetChannelId = await channelForWorkspace(workspace)
+    const reviewMessageId = Object.entries(state.messageToAction || {}).find(([, mapped]) => String(mapped) === actionId)?.[0]
+    if (reviewMessageId && targetChannelId) {
+      await discordJson(`/channels/${targetChannelId}/messages/${reviewMessageId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ components: [] })
+      }).catch(() => null)
+    }
+    if (!record.promotionRecoveryNotifiedAt && targetChannelId) {
+      await sendDiscordMessage([
+        `Promotionen återställdes efter omstart för ${workspace.label || repoFullName}.`,
+        `Commit på main: ${commit}`,
+        context.targetUrl ? `Mål-URL: ${context.targetUrl}` : '',
+        'Statusen är återställd till klar och blockerar inte längre nästa SEO-jobb.'
+      ].filter(Boolean).join('\n'), targetChannelId, [], { kind: 'code_result' })
+    }
+    log('interrupted_promotion_recovered_completed', { actionId, repoFullName, commit })
+  }
   saveState()
 }
 
