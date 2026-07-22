@@ -20,6 +20,8 @@ const platformToken = env.PLATFORM_API_TOKEN || ''
 const seoRuntimeUrl = (env.SEO_RUNTIME_URL || 'http://127.0.0.1:1460').replace(/\/$/, '')
 const googleAdsOauthRedirectUri = env.GOOGLE_ADS_OAUTH_REDIRECT_URI || 'http://localhost:1455/oauth/google-ads/callback'
 const googleAdsOauthState = env.GOOGLE_ADS_OAUTH_STATE || 'seo-agent-google-ads-oauth'
+const googleServiceAccountEmail = env.GOOGLE_SERVICE_ACCOUNT_EMAIL || ''
+const googleServiceAccountConfigured = Boolean(env.GOOGLE_SERVICE_ACCOUNT_FILE || env.GOOGLE_SERVICE_ACCOUNT_JSON)
 const gscOauthRedirectUri = env.GSC_REDIRECT_URI || env.GOOGLE_SEARCH_CONSOLE_REDIRECT_URI || 'https://seo-api.sebcastwall.se/api/gsc/callback'
 const gscOauthState = env.GSC_OAUTH_STATE || 'seo-agent-gsc-oauth'
 const noVncUrl = env.SEO_AGENT_NOVNC_URL || 'https://gsc-browser-direct.sebcastwall.se/?resize=scale'
@@ -1584,6 +1586,16 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
     })
     return null
   }
+  if (shouldSkipCodexOpportunityScoutForLiveRejections(context.pending || [], context.rejectionReasons || [])) {
+    logThrottled(`codex_opportunity_skipped:${workspaceProfileKey(workspace, targetChannelId)}:live-rejections`, 60 * 60 * 1000, 'codex_opportunity_skipped', {
+      workspace: workspace?.label || workspace?.id || null,
+      reason: 'live_rejections_waiting_recheck_or_guard',
+      pendingCount: Array.isArray(context.pending) ? context.pending.length : 0,
+      rejectedCount: Array.isArray(context.rejectionReasons) ? context.rejectionReasons.length : 0,
+      sampleReasons: (Array.isArray(context.rejectionReasons) ? context.rejectionReasons : []).slice(0, 6).map((item) => item?.reason || 'unknown')
+    })
+    return null
+  }
   const repoFullName = String(workspace?.repoFullName || '').trim()
   const repoName = repoFullName.split('/')[1]
   if (!repoName) return null
@@ -2193,7 +2205,11 @@ async function buildIntegrationDoctorReport(workspaces) {
 function formatIntegrationDoctorMessage(report, onlyProblems = false) {
   const checks = onlyProblems ? report.checks.filter((check) => !check.ok) : report.checks
   const firstRepair = checks.find((check) => !check.ok && ['gsc', 'google_ads'].includes(check.key))
-  const repairHint = firstRepair?.key === 'gsc'
+  const repairHint = googleServiceAccountConfigured && firstRepair?.key === 'gsc'
+    ? `Servicekontot är skapat. Lägg till ${googleServiceAccountEmail || 'servicekontots e-post'} i Search Console; ingen ny OAuth behövs.`
+    : googleServiceAccountConfigured && firstRepair?.key === 'google_ads'
+      ? `Servicekontot är skapat. Lägg till ${googleServiceAccountEmail || 'servicekontots e-post'} i Google Ads; ingen ny OAuth behövs.`
+      : firstRepair?.key === 'gsc'
     ? 'Jag har lagt OAuth-länken ovan. Du behöver bara öppna den och godkänna Google-access om tokenen faktiskt är trasig.'
     : firstRepair?.key === 'google_ads'
       ? 'Jag har lagt OAuth-länken ovan. Du behöver bara öppna den och godkänna Google Ads-access om tokenen faktiskt är trasig.'
@@ -2216,6 +2232,9 @@ function formatGscCapabilityStatus({ platform, api, browser, gscPlatformConnecte
 }
 
 async function buildGscReconnectFix() {
+  if (googleServiceAccountConfigured) {
+    return `Lägg till ${googleServiceAccountEmail || 'servicekontots e-postadress'} under Search Console -> Inställningar -> Användare och behörigheter för varje property. Välj fullständig behörighet. Ingen OAuth-länk behövs.`
+  }
   const runtimeStart = await startGscOauthThroughRuntime().catch((error) => ({ ok: false, error: error?.message || String(error) }))
   if (runtimeStart.ok) {
     return [
@@ -2240,6 +2259,9 @@ async function buildGscReconnectFix() {
 }
 
 async function googleAdsReconnectFix() {
+  if (googleServiceAccountConfigured) {
+    return `Lägg till ${googleServiceAccountEmail || 'servicekontots e-postadress'} under Google Ads -> Admin -> Access and security med Standard access. Ingen OAuth-länk behövs.`
+  }
   const runtimeStart = await startGoogleAdsOauthThroughRuntime().catch((error) => ({ ok: false, error: error?.message || String(error) }))
   if (runtimeStart.ok) {
     return [
@@ -5566,6 +5588,7 @@ function loadGoogleAdsRefreshToken() {
 }
 
 async function selfHealGoogleAdsKeywordPlanner() {
+  if (googleServiceAccountConfigured) return { attempted: false, ok: false, error: 'service_account_permission_required' }
   const refreshToken = loadGoogleAdsRefreshToken()
   if (!refreshToken) return { attempted: false, ok: false, error: 'local_refresh_token_missing' }
   const sync = await syncGoogleAdsRefreshTokenToPlatform(refreshToken)
