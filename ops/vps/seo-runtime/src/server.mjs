@@ -807,21 +807,32 @@ async function runNextApprovedCodeAction(payload = {}) {
     const completedResult = {
       ...result,
       repoFullName: entry.repoFullName || result.repoFullName || null,
-      branch: entry.branch || result.branch || 'main'
+      branch: result.deliveryBranch || result.branch || entry.branch || 'main'
     }
+    const resultStatus = result.requiresReview ? 'review_ready' : 'completed'
+    const resultAt = new Date().toISOString()
     const fresh = readState()
     fresh.codeActionResults = fresh.codeActionResults || {}
     fresh.approvedCodeActionQueue = fresh.approvedCodeActionQueue || {}
-    fresh.codeActionResults[entry.id] = { status: 'completed', completedAt: new Date().toISOString(), result: completedResult }
+    fresh.codeActionResults[entry.id] = {
+      status: resultStatus,
+      ...(result.requiresReview ? { reviewReadyAt: resultAt } : { completedAt: resultAt }),
+      result: completedResult
+    }
     delete fresh.approvedCodeActionQueue[entry.id]
-    clearActiveForAction(fresh, entry.id)
-    recordRuntimeLedgerEvent(fresh, entry, workspace, 'completed', {
+    recordRuntimeLedgerEvent(fresh, entry, workspace, resultStatus, {
       commit: result.commit || null,
       diffStat: result.diffStat || null,
       repoFullName: entry.repoFullName || null,
+      deliveryBranch: result.deliveryBranch || null,
+      reviewUrl: result.reviewUrl || null,
+      devUrl: result.devUrl || null,
       source: 'seo-runtime'
     })
-    recordRuntimeSeoExperiment(fresh, entry, workspace, completedResult, { source: 'seo-runtime' })
+    if (!result.requiresReview) {
+      clearActiveForAction(fresh, entry.id)
+      recordRuntimeSeoExperiment(fresh, entry, workspace, completedResult, { source: 'seo-runtime' })
+    }
     fresh.codeActionRunning = null
     writeState(fresh)
     return {
@@ -829,7 +840,7 @@ async function runNextApprovedCodeAction(payload = {}) {
       body: {
         ok: true,
         ran: true,
-        status: 'completed',
+        status: resultStatus,
         action: publicAction(entry),
         workspace,
         result: completedResult
@@ -1142,6 +1153,10 @@ function scoreActionCandidate(state, action, context) {
   let score = Number(action.priorityScore ?? action.score ?? NaN)
   if (!Number.isFinite(score)) score = 45
 
+  if (workspaceReviewPending(state, context.workspace)) {
+    return rejected(action, -100, 'workspace_review_pending', ['en dev-ändring väntar redan på granskning'])
+  }
+
   const terminal = terminalResultForAction(state, action)
   if (terminal) return rejected(action, -100, `already_result:${terminal}`, [`kodresultat finns redan: ${terminal}`])
   const ledger = ledgerForAction(state, action, context)
@@ -1218,6 +1233,15 @@ function scoreActionCandidate(state, action, context) {
     positives,
     negatives
   }
+}
+
+function workspaceReviewPending(state, workspace) {
+  const repoFullName = String(workspace?.repoFullName || '').trim()
+  if (!repoFullName || !repoFullName.toLowerCase().includes('sebcastwall')) return false
+  return Object.values(state.codeActionResults || {}).some((record) => {
+    if (!['review_ready', 'operator_approved'].includes(String(record?.status || ''))) return false
+    return String(record?.result?.repoFullName || '').trim() === repoFullName
+  })
 }
 
 function publicCandidateReview(candidate) {
@@ -1297,7 +1321,7 @@ function terminalResultForAction(state, action) {
   const result = state.codeActionResults?.[action?.id]
   if (!result) return ''
   const status = String(result.status || '')
-  return ['completed', 'done', 'no_changes', 'reverted'].includes(status) ? status : ''
+  return ['completed', 'done', 'no_changes', 'reverted', 'review_ready', 'operator_approved', 'rejected'].includes(status) ? status : ''
 }
 
 function ledgerForAction(state, action, context) {
@@ -1333,7 +1357,8 @@ function ledgerKindMatchesAction(ledger, kind) {
 }
 
 function isBlockingLedger(ledger) {
-  if (['completed', 'failed', 'deprioritized', 'ignored'].includes(String(ledger?.status || '')) && !ledgerRecheckDue(ledger)) return true
+  if (['review_ready', 'operator_approved'].includes(String(ledger?.status || ''))) return true
+  if (['completed', 'failed', 'deprioritized', 'ignored', 'rejected'].includes(String(ledger?.status || '')) && !ledgerRecheckDue(ledger)) return true
   const latestEvent = latestLedgerEvent(ledger)
   if (latestEvent?.event === 'guarded' && eventAgeDays(latestEvent) < 7) return true
   return Number(ledger?.guardedCount || 0) >= 2 && !ledgerRecheckDue(ledger)

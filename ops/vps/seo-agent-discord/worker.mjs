@@ -1058,6 +1058,7 @@ function codeActionResultBlocks(action, workspace, targetChannelId) {
   if (!result) return false
   const status = String(result.status || '')
   if (status === 'archived_failed') return false
+  if (['review_ready', 'operator_approved'].includes(status)) return true
 
   const terminalAt = result.completedAt || result.failedAt || result.archivedAt || ''
   const terminalMs = Date.parse(terminalAt)
@@ -1283,6 +1284,12 @@ function isAutonomousCodeCandidate(action, workspace, targetChannelId) {
 
 function autonomousCodeCandidateCheck(action, workspace, targetChannelId) {
   if (!isCodeAction(action)) return { ok: false, reason: 'not_code_action' }
+  if (isSebcastwallWorkspace(workspace) && hasPendingWorkspaceReview(workspace)) {
+    return { ok: false, reason: 'workspace_review_pending' }
+  }
+  if (isSebcastwallWorkspace(workspace) && requiresSebcastwallOperatorProposal(action)) {
+    return { ok: false, reason: 'operator_proposal_required' }
+  }
   if (isIndexingCheckAction(action)) return { ok: false, reason: 'indexing_or_gsc_check' }
   if (isWeakExactKeywordCoverageAction(action)) {
     return { ok: false, reason: 'keyword_coverage_lacks_search_evidence' }
@@ -1307,6 +1314,20 @@ function autonomousCodeCandidateCheck(action, workspace, targetChannelId) {
   if (ledger?.status === 'deprioritized' && !isLedgerRecheckDue(ledger)) return { ok: false, reason: 'recently_deprioritized_waiting_recheck' }
   if (ledger?.status === 'ignored' && !isLedgerRecheckDue(ledger)) return { ok: false, reason: 'recently_ignored_waiting_recheck' }
   return { ok: true, reason: 'candidate' }
+}
+
+function requiresSebcastwallOperatorProposal(action) {
+  const text = actionText(action)
+  return /design|layout|css|bild|image|navigation|navbar|formul[aä]r|cta|pris|pricing|route|redirect|positionering|kundcase|customer claim|ny sida|new page|landningssida/.test(text)
+}
+
+function hasPendingWorkspaceReview(workspace) {
+  const repoFullName = String(workspace?.repoFullName || '').trim()
+  if (!repoFullName) return false
+  return Object.values(state.codeActionResults || {}).some((record) => {
+    if (!['review_ready', 'operator_approved'].includes(String(record?.status || ''))) return false
+    return String(record?.result?.repoFullName || '').trim() === repoFullName
+  })
 }
 
 function isWeakExactKeywordCoverageAction(action) {
@@ -2282,10 +2303,12 @@ async function processApprovedCodeActions(workspaces) {
     try {
       const result = await runCodexAction({ ...approved, repoFullName: workspace.repoFullName, branch: workspace.branch || 'main' })
       const completedResult = { ...result, repoFullName: workspace.repoFullName, branch: result.deliveryBranch || workspace.branch || 'main' }
-      state.codeActionResults[approved.id] = { status: 'completed', completedAt: new Date().toISOString(), result: completedResult }
+      state.codeActionResults[approved.id] = result.requiresReview
+        ? { status: 'review_ready', reviewReadyAt: new Date().toISOString(), result: completedResult }
+        : { status: 'completed', completedAt: new Date().toISOString(), result: completedResult }
       recordActionLedger(approved, workspace, targetChannelId, result.requiresReview ? 'review_ready' : 'completed', { commit: result.commit || null, diffStat: result.diffStat || null, repoFullName: workspace.repoFullName, deliveryBranch: result.deliveryBranch || null })
       if (!result.requiresReview) recordSeoExperiment(approved, workspace, targetChannelId, completedResult, { source: 'platform_approved' })
-      clearActiveAction(approved.id)
+      if (!result.requiresReview) clearActiveAction(approved.id)
       const commitUrl = result.commit ? githubCommitUrl(workspace.repoFullName, result.commit) : ''
       const posted = await sendDiscordMessage([
         `Kodaction klar för ${workspace.label}: ${approved.title}`,
@@ -2296,7 +2319,7 @@ async function processApprovedCodeActions(workspaces) {
         result.diffStat ? `Diff:\n\`\`\`\n${String(result.diffStat).slice(0, 1200)}\n\`\`\`` : '',
         '',
         result.requiresReview ? 'Inget har ändrats på main eller production.' : 'Om detta blev fel kan du trycka Backa så skapar jag en revert-commit.'
-      ].filter(Boolean).join('\n'), targetChannelId, rollbackComponents(), { kind: 'code_result' })
+      ].filter(Boolean).join('\n'), targetChannelId, result.requiresReview ? reviewReadyComponents() : rollbackComponents(), { kind: 'code_result' })
       state.messageToAction = state.messageToAction || {}
       state.messageToAction[posted.id] = approved.id
     } catch (error) {
@@ -2447,7 +2470,9 @@ async function runQueuedApprovedCodeAction(entry, workspace, targetChannelId) {
   try {
     const result = await runCodexAction({ ...entry, repoFullName: entry.repoFullName || workspace.repoFullName, branch: entry.branch || workspace.branch || 'main' })
     const completedResult = { ...result, repoFullName: entry.repoFullName || workspace.repoFullName || null, branch: result.deliveryBranch || entry.branch || workspace.branch || 'main' }
-    state.codeActionResults[entry.id] = { status: 'completed', completedAt: new Date().toISOString(), result: completedResult }
+    state.codeActionResults[entry.id] = result.requiresReview
+      ? { status: 'review_ready', reviewReadyAt: new Date().toISOString(), result: completedResult }
+      : { status: 'completed', completedAt: new Date().toISOString(), result: completedResult }
     recordActionLedger(entry, workspace, targetChannelId, result.requiresReview ? 'review_ready' : 'completed', {
       commit: result.commit || null,
       diffStat: result.diffStat || null,
@@ -2456,8 +2481,8 @@ async function runQueuedApprovedCodeAction(entry, workspace, targetChannelId) {
     })
     if (!result.requiresReview) recordSeoExperiment(entry, workspace, targetChannelId, completedResult, { source: 'approved_queue' })
     delete state.approvedCodeActionQueue[entry.id]
-    await markPostedActionHandled(entry.id, targetChannelId, 'code_action_completed')
-    clearActiveAction(entry.id)
+    await markPostedActionHandled(entry.id, targetChannelId, result.requiresReview ? 'code_action_review_ready' : 'code_action_completed')
+    if (!result.requiresReview) clearActiveAction(entry.id)
     const commitUrl = result.commit ? githubCommitUrl(entry.repoFullName || workspace.repoFullName, result.commit) : ''
     const posted = await sendDiscordMessage([
       `Kodaction klar för ${workspace.label || entry.workspaceSlug}: ${entry.title}`,
@@ -2468,7 +2493,7 @@ async function runQueuedApprovedCodeAction(entry, workspace, targetChannelId) {
       result.diffStat ? `Diff:\n\`\`\`\n${String(result.diffStat).slice(0, 1200)}\n\`\`\`` : '',
       '',
       result.requiresReview ? 'Inget har ändrats på main eller production.' : 'Om detta blev fel kan du trycka Backa så skapar jag en revert-commit.'
-    ].filter(Boolean).join('\n'), targetChannelId, rollbackComponents(), { kind: 'code_result' })
+    ].filter(Boolean).join('\n'), targetChannelId, result.requiresReview ? reviewReadyComponents() : rollbackComponents(), { kind: 'code_result' })
     state.messageToAction = state.messageToAction || {}
     state.messageToAction[posted.id] = entry.id
   } catch (error) {
@@ -2513,10 +2538,75 @@ async function runCodexAction(action) {
 
 function codeDeliveryLines(result = {}) {
   if (!result.requiresReview) return []
+  const context = result.reviewContext || {}
+  const quality = result.quality || {}
   return [
     `Status: redo för granskning på branch \`${result.deliveryBranch || 'seo-agent/review'}\`.`,
-    result.reviewUrl ? `Granska diff: ${result.reviewUrl}` : ''
+    context.targetUrl ? `Mål-URL: ${context.targetUrl}` : '',
+    context.keyword ? `Sökintention/keyword: ${context.keyword}` : '',
+    context.intendedChange ? `Vad agenten försökte förbättra: ${String(context.intendedChange).slice(0, 360)}` : '',
+    context.why ? `Varför: ${String(context.why).slice(0, 320)}` : '',
+    quality.ok ? `Verifiering: build och kvalitetsgrind godkända${quality.review?.confidence ? ` · confidence ${quality.review.confidence}` : ''}.` : '',
+    result.devUrl ? `Granska sidan i dev: ${result.devUrl}` : '',
+    result.reviewUrl ? `Granska kodändringen: ${result.reviewUrl}` : '',
+    result.devDeployment?.attempted && !result.devDeployment?.ok
+      ? 'Dev-deploy misslyckades, men branchen och diffen finns kvar för granskning.'
+      : ''
   ].filter(Boolean)
+}
+
+function reviewReadyComponents() {
+  return [{
+    type: 1,
+    components: [
+      { type: 2, custom_id: 'seo-review:approved', label: 'Godkänn ändringen', style: 3 },
+      { type: 2, custom_id: 'seo-review:rejected', label: 'Avvisa ändringen', style: 4 }
+    ]
+  }]
+}
+
+function decideSeoReview(actionId, decision, targetChannelId, operatorId) {
+  const record = state.codeActionResults?.[actionId]
+  if (!record || !['review_ready', 'operator_approved'].includes(String(record.status || ''))) {
+    return { summary: 'Jag hittar ingen väntande dev-ändring för den här granskningen.' }
+  }
+  const now = new Date().toISOString()
+  const approved = decision === 'approved'
+  state.codeActionResults[actionId] = {
+    ...record,
+    status: approved ? 'operator_approved' : 'rejected',
+    ...(approved ? { operatorApprovedAt: now } : { rejectedAt: now }),
+    operatorId: operatorId || null
+  }
+  const posted = state.postedActionIds?.[actionId] || {}
+  const workspace = {
+    id: posted.workspaceId || record.result?.repoFullName || '',
+    label: posted.workspaceId || record.result?.repoFullName || '',
+    repoFullName: record.result?.repoFullName || ''
+  }
+  const action = {
+    id: actionId,
+    title: posted.title || actionId,
+    targetUrl: posted.targetUrl || '',
+    keyword: posted.keyword || ''
+  }
+  recordActionLedger(action, workspace, targetChannelId, approved ? 'operator_approved' : 'rejected', {
+    commit: record.result?.commit || null,
+    deliveryBranch: record.result?.deliveryBranch || record.result?.branch || null,
+    source: 'discord_review'
+  })
+  clearActiveAction(actionId)
+  saveState()
+  if (approved) {
+    return {
+      summary: 'Dev-ändringen är godkänd för produktion. Den är fortfarande inte mergad eller publicerad.',
+      publicMessage: `Godkänd för produktion: ${posted.title || actionId}. Inget har ännu mergats till main eller publicerats.`
+    }
+  }
+  return {
+    summary: 'Dev-ändringen är avvisad och kommer inte att gå till produktion.',
+    publicMessage: `Avvisad: ${posted.title || actionId}. Branchen sparas som historik men kommer inte att publiceras.`
+  }
 }
 
 async function revertCompletedCodeAction(actionId, targetChannelId) {
@@ -2928,6 +3018,7 @@ function shouldSuppressDecisionCard(action, review, workspace, targetChannelId) 
   if (isKeywordPlanAction(action)) return true
   const kind = review?.kind || actionKindForLearning(action)
   if (kind === 'new-page') return false
+  if (isSebcastwallWorkspace(workspace) && requiresSebcastwallOperatorProposal(action)) return false
   if (!isCodeAction(action)) return true
   if (!automationEnabled || !autonomousCodeEnabled || !codeAutomationEnabled) return false
   if (['Approve', 'Review'].includes(String(review?.recommendation || ''))) return true
@@ -2943,7 +3034,8 @@ function activeActionStillOpen(active, items) {
   const actionId = String(active?.actionId || '')
   if (!actionId) return false
   const codeResult = state.codeActionResults?.[actionId]
-  if (codeResult && ['completed', 'failed'].includes(String(codeResult.status))) return false
+  if (codeResult && ['completed', 'failed', 'rejected'].includes(String(codeResult.status))) return false
+  if (codeResult && ['review_ready', 'operator_approved'].includes(String(codeResult.status))) return true
   const item = items.find((candidate) => String(candidate?.id || '') === actionId)
   if (!item) return false
   const status = String(item.status || '')
@@ -3344,7 +3436,7 @@ function startDiscordInteractionClient() {
     try {
       if (!interaction.isButton()) return
       const customId = String(interaction.customId || '')
-      if (!customId.startsWith('seo-decision:') && !customId.startsWith('seo-gsc-ui:') && !customId.startsWith('seo-revert:') && !customId.startsWith('content-decision:')) return
+      if (!customId.startsWith('seo-decision:') && !customId.startsWith('seo-review:') && !customId.startsWith('seo-gsc-ui:') && !customId.startsWith('seo-revert:') && !customId.startsWith('content-decision:')) return
       if (String(interaction.user?.id || '') !== allowedUserId) {
         await interaction.reply({ content: 'Ignored: this Discord user is not allowed to control the SEO agent.', ephemeral: true })
         return
@@ -3374,6 +3466,15 @@ function startDiscordInteractionClient() {
       if (customId.startsWith('seo-revert:')) {
         await interaction.deferReply({ ephemeral: true })
         const result = await revertCompletedCodeAction(actionId, interaction.channelId)
+        await interaction.editReply({ content: result.summary })
+        if (result.publicMessage) await sendDiscordMessage(result.publicMessage, interaction.channelId)
+        await interaction.message.edit({ components: [] }).catch(() => null)
+        return
+      }
+      if (customId.startsWith('seo-review:')) {
+        await interaction.deferReply({ ephemeral: true })
+        const decision = customId.slice('seo-review:'.length)
+        const result = decideSeoReview(actionId, decision, interaction.channelId, interaction.user?.id)
         await interaction.editReply({ content: result.summary })
         if (result.publicMessage) await sendDiscordMessage(result.publicMessage, interaction.channelId)
         await interaction.message.edit({ components: [] }).catch(() => null)
@@ -5681,11 +5782,11 @@ async function postRuntimeCodeActionResult(runtimeRun) {
   const workspace = payload.workspace || {}
   const targetChannelId = action.channelId || await channelForWorkspace(workspace).catch(() => null)
   if (!targetChannelId) return
-  if (payload.status === 'completed') {
+  if (payload.status === 'completed' || payload.status === 'review_ready') {
     const result = payload.result || {}
     const repoFullName = result.repoFullName || action.repoFullName || workspace.repoFullName || ''
     const commitUrl = result.commit ? githubCommitUrl(repoFullName, result.commit) : ''
-    await markPostedActionHandled(action.id, targetChannelId, 'code_action_completed')
+    await markPostedActionHandled(action.id, targetChannelId, result.requiresReview ? 'code_action_review_ready' : 'code_action_completed')
     const posted = await sendDiscordMessage([
       `Kodaction klar för ${workspace.label || action.repoFullName || 'workspace'}: ${action.title || action.id}`,
       `Action ID: \`${action.id}\``,
@@ -5695,7 +5796,7 @@ async function postRuntimeCodeActionResult(runtimeRun) {
       result.diffStat ? `Diff:\n\`\`\`\n${String(result.diffStat).slice(0, 1200)}\n\`\`\`` : '',
       '',
       result.requiresReview ? 'Inget har ändrats på main eller production.' : 'Om detta blev fel kan du trycka Backa så skapar jag en revert-commit.'
-    ].filter(Boolean).join('\n'), targetChannelId, rollbackComponents(), { kind: 'code_result' })
+    ].filter(Boolean).join('\n'), targetChannelId, result.requiresReview ? reviewReadyComponents() : rollbackComponents(), { kind: 'code_result' })
     state.messageToAction = state.messageToAction || {}
     state.messageToAction[posted.id] = action.id
     saveState()

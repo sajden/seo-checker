@@ -97,6 +97,20 @@ Preferred lifecycle for Sebcastwall:
 
 `candidate -> agent_approved -> coding_started -> review_ready -> operator_approved -> merged -> monitoring -> done`
 
+Only one Sebcastwall change may wait at `review_ready` or `operator_approved` at a time. While it is waiting, do not create another dev deployment for that workspace.
+
+At `review_ready`, the Discord review must include:
+
+- the exact target URL and search intent,
+- the observed evidence behind the change,
+- what changed and why,
+- diffstat and GitHub compare URL,
+- `dev.sebcastwall.se` when the dev deployment succeeded,
+- build/quality-gate outcome,
+- explicit approve-for-production and reject controls.
+
+Approval of an initial proposal means permission to create the review branch. Approval of a `review_ready` result means only that the reviewed commit may be promoted later. These are separate decisions. Never describe either decision as a production deploy unless merge and deploy have actually succeeded.
+
 Do not create an SEO experiment or claim completion at `review_ready`; measurement starts only after the reviewed change is merged and deployed.
 
 For every completed SEO commit, create or update an SEO experiment:

@@ -9,6 +9,7 @@ const runnerEnv = { ...process.env, PATH: `/home/deploy/.npm-global/bin:/home/de
 const codexCli = process.env.CODEX_CLI || '/home/deploy/.npm-global/bin/codex'
 const workspaceRoot = '/home/deploy/seo-agent-workspaces'
 const skipGithubActions = process.env.SEO_AGENT_SKIP_GITHUB_ACTIONS !== 'false'
+const deploySebcastwallDev = process.env.SEO_AGENT_DEPLOY_SEBCASTWALL_DEV !== 'false'
 const action = JSON.parse(readFileSync(process.argv[2], 'utf8'))
 const repoName = String(action.repoFullName || '').split('/')[1]
 if (!repoName) throw new Error('Missing repoFullName in action payload')
@@ -67,10 +68,35 @@ await run('git', ['commit', '-m', seoAgentCommitMessage(action.title || 'SEO act
 const commit = await run('git', ['rev-parse', '--short', 'HEAD'], repoDir)
 await run('git', ['push', '--force-with-lease', 'origin', `HEAD:${deliveryBranch}`], repoDir)
 
+const devDeployment = requiresReview
+  ? await deployReviewBranchToDev(bestBuildDir(repoDir))
+  : { attempted: false, ok: false, url: null, error: null }
+
 const reviewUrl = requiresReview
   ? `https://github.com/${action.repoFullName}/compare/${baseBranch}...${deliveryBranch}?expand=1`
   : null
-console.log(JSON.stringify({ ok: true, repoDir, actionId: action.id, commit: commit.stdout.trim(), diffStat: diff.stdout, codexUsage, quality: { ...quality, safety }, baseBranch, deliveryBranch, requiresReview, reviewUrl, mergedToMain: !requiresReview }, null, 2))
+console.log(JSON.stringify({
+  ok: true,
+  repoDir,
+  actionId: action.id,
+  commit: commit.stdout.trim(),
+  diffStat: diff.stdout,
+  codexUsage,
+  quality: { ...quality, safety },
+  reviewContext: {
+    targetUrl: action.targetUrl || action.url || '',
+    keyword: action.keyword || '',
+    why: action.why || '',
+    intendedChange: action.recommendedAction || action.title || ''
+  },
+  baseBranch,
+  deliveryBranch,
+  requiresReview,
+  reviewUrl,
+  devDeployment,
+  devUrl: devDeployment.ok ? devDeployment.url : null,
+  mergedToMain: !requiresReview
+}, null, 2))
 
 function acquireRepoLock(name, input) {
   const lockDir = join(workspaceRoot, '.locks')
@@ -239,6 +265,21 @@ async function runBestBuild(cwd) {
   const scripts = pkg.scripts || {}
   if (scripts.typecheck) await runPackageScript(cwd, 'typecheck')
   if (scripts.build) await runBuildScriptWithRecovery(cwd)
+}
+
+async function deployReviewBranchToDev(cwd) {
+  const url = 'https://dev.sebcastwall.se'
+  if (!deploySebcastwallDev) return { attempted: false, ok: false, url, error: 'disabled' }
+  const pkgPath = join(cwd, 'package.json')
+  if (!existsSync(pkgPath)) return { attempted: false, ok: false, url, error: 'package_json_missing' }
+  const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'))
+  if (!pkg.scripts?.['deploy:dev']) return { attempted: false, ok: false, url, error: 'deploy_dev_script_missing' }
+  try {
+    await runPackageScript(cwd, 'deploy:dev')
+    return { attempted: true, ok: true, url, error: null }
+  } catch (error) {
+    return { attempted: true, ok: false, url, error: String(error?.stderr || error?.message || error).slice(0, 1200) }
+  }
 }
 
 async function runPackageScript(cwd, script) {
