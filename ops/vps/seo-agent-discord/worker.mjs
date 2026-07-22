@@ -17,6 +17,7 @@ const channelId = required('DISCORD_CHANNEL_ID')
 const allowedUserId = required('DISCORD_ALLOWED_USER_ID')
 const platformApiUrl = (env.PLATFORM_API_URL || 'https://dashboard2-platform-api.sebastian-castwall.workers.dev').replace(/\/$/, '')
 const platformToken = env.PLATFORM_API_TOKEN || ''
+const platformRunnerId = env.SEO_AGENT_PLATFORM_RUNNER_ID || 'seo-agent-vps'
 const seoRuntimeUrl = (env.SEO_RUNTIME_URL || 'http://127.0.0.1:1460').replace(/\/$/, '')
 const googleAdsOauthRedirectUri = env.GOOGLE_ADS_OAUTH_REDIRECT_URI || 'http://localhost:1455/oauth/google-ads/callback'
 const googleAdsOauthState = env.GOOGLE_ADS_OAUTH_STATE || 'seo-agent-google-ads-oauth'
@@ -95,8 +96,99 @@ async function tickGuarded() {
   try {
     await tick()
   } finally {
+    await sendPlatformHeartbeat().catch((error) => {
+      logThrottled('platform_heartbeat_failed', 10 * 60 * 1000, 'platform_heartbeat_failed', { error: error?.message || String(error) })
+    })
     tickRunning = false
   }
+}
+
+async function sendPlatformHeartbeat() {
+  if (!platformToken) return
+  const reviewQueue = currentReviewQueueSnapshot()
+  const payload = {
+    status: 'online',
+    capabilities: ['seo-data', 'seo-review', 'seo-code-branch', 'seo-content-review'],
+    metadata: {
+      kind: 'agent',
+      flowKey: 'seo-agent',
+      runtime: 'vps',
+      version: 'seo-agent.v3',
+      checks: {
+        discord: true,
+        seoRuntime: true,
+        platform: true
+      },
+      reviewQueue,
+      schedule: {
+        dailyHourUtc,
+        pollMs
+      }
+    }
+  }
+  let response = await platformHeartbeatRequest(`/api/platform/runners/${encodeURIComponent(platformRunnerId)}/heartbeat`, payload)
+  if (response.status === 404) {
+    response = await platformHeartbeatRequest('/api/platform/runners/register', {
+      runnerId: platformRunnerId,
+      name: 'SEO Agent',
+      capabilities: payload.capabilities,
+      metadata: payload.metadata
+    })
+  }
+  if (!response.ok) throw new Error(`platform_heartbeat_${response.status}`)
+}
+
+function currentReviewQueueSnapshot() {
+  const byActionId = new Map()
+  const ledgerByActionId = new Map(
+    Object.values(state.actionLedger || {})
+      .filter((record) => record?.actionId)
+      .map((record) => [String(record.actionId), record])
+  )
+  for (const active of Object.values(state.activeActionByWorkspace || {})) {
+    const actionId = String(active?.actionId || '')
+    if (!actionId) continue
+    byActionId.set(actionId, reviewQueueItem(actionId, active, ledgerByActionId.get(actionId)))
+  }
+  for (const [actionId, result] of Object.entries(state.codeActionResults || {})) {
+    if (String(result?.status || '') !== 'review_ready') continue
+    byActionId.set(actionId, reviewQueueItem(actionId, result, ledgerByActionId.get(actionId)))
+  }
+  const items = [...byActionId.values()]
+    .sort((a, b) => Date.parse(b.since || '') - Date.parse(a.since || ''))
+  return {
+    count: items.length,
+    current: items[0] || null,
+    items: items.slice(0, 10)
+  }
+}
+
+function reviewQueueItem(actionId, runtimeRecord = {}, ledger = {}) {
+  const posted = state.postedActionIds?.[actionId] || {}
+  const result = runtimeRecord?.result || {}
+  return {
+    id: actionId,
+    title: ledger?.title || posted?.title || result?.title || 'SEO-förslag',
+    targetUrl: ledger?.targetUrl || result?.targetUrl || '',
+    why: ledger?.why || 'Agenten har valt detta som nästa granskningsbara SEO-åtgärd.',
+    recommendedAction: ledger?.recommendedAction || result?.operatorSummary || 'Granska förslaget och diffen i Discord.',
+    workspaceLabel: ledger?.workspaceLabel || runtimeRecord?.workspaceId || posted?.workspaceId || '',
+    status: runtimeRecord?.status || ledger?.status || 'pending_review',
+    messageId: runtimeRecord?.messageId || posted?.messageId || '',
+    channelId: runtimeRecord?.channelId || posted?.channelId || '',
+    since: runtimeRecord?.reviewReadyAt || runtimeRecord?.firstPostedAt || runtimeRecord?.postedAt || posted?.postedAt || ledger?.lastEventAt || ledger?.firstSeenAt || ''
+  }
+}
+
+function platformHeartbeatRequest(pathname, body) {
+  return fetch(`${platformApiUrl}${pathname}`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${platformToken}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify(body)
+  })
 }
 
 async function tick() {
