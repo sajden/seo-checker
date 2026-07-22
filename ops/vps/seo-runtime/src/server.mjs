@@ -1332,10 +1332,16 @@ function ledgerForAction(state, action, context) {
   const kind = runtimeActionKindForLearning(action)
   if (targetPath && ['content', 'internal-links'].includes(kind)) {
     const exactCluster = `${workspaceKey}:${targetPath}:${kind}`
-    if (state.actionLedger?.[exactCluster]) return state.actionLedger[exactCluster]
+    const exactLedger = state.actionLedger?.[exactCluster]
+    if (exactLedger && isBlockingLedger(exactLedger)) return exactLedger
   }
-  for (const ledger of Object.values(state.actionLedger || {})) {
-    if (String(ledger?.actionId || '') === actionId) return ledger
+  const actionLedgers = Object.values(state.actionLedger || {})
+    .filter((ledger) => String(ledger?.actionId || '') === actionId)
+    .sort((a, b) => ledgerTimestamp(b) - ledgerTimestamp(a))
+  const blockingActionLedger = actionLedgers.find((ledger) => isBlockingLedger(ledger))
+  if (blockingActionLedger) return blockingActionLedger
+  if (actionLedgers.length) {
+    return actionLedgers[0]
   }
   const keyword = normalize(action?.keyword || '')
   let fallbackLedger = null
@@ -1347,6 +1353,10 @@ function ledgerForAction(state, action, context) {
     if (keyword && normalize(ledger?.keyword || '') === keyword && normalize(ledger?.workspaceKey || '').includes(normalize(context.workspaceKey))) return ledger
   }
   return fallbackLedger
+}
+
+function ledgerTimestamp(ledger) {
+  return Date.parse(ledger?.lastEventAt || ledger?.updatedAt || ledger?.firstSeenAt || '') || 0
 }
 
 function ledgerKindMatchesAction(ledger, kind) {
