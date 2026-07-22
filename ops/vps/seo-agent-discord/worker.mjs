@@ -401,18 +401,30 @@ async function workspaceReadiness(workspace) {
   const batch = batchPayload.batch || null
   const lastRunAt = batch?.lastRunAt || batch?.lastRunSummary?.ranAt || null
   const lastRunDate = lastRunAt ? new Date(lastRunAt).toISOString().slice(0, 10) : null
+  const lastRunMs = lastRunAt ? Date.parse(lastRunAt) : 0
+  const dataFresh = Boolean(lastRunMs && Date.now() - lastRunMs < 36 * 60 * 60 * 1000)
+  const lastRunSummary = batch?.lastRunSummary || {}
+  const monitoringNotes = batch?.lastRunDetails?.seoReview?.monitoringNotes || []
   const checks = {
     gscConfigured: Boolean(workspace.gscProperty),
     repoConfigured: Boolean(workspace.repoFullName),
     batchAvailable: Boolean(batch),
     lastRunAt,
     lastRunDate,
+    dataFresh,
     actionCount: Number(batch?.lastRunSummary?.seoActionItems || batch?.lastRunDetails?.seoActionItems?.length || 0),
+    crawlPagesChecked: Number(lastRunSummary.crawlPagesChecked || batch?.lastRunDetails?.crawlPagesChecked || 0),
+    gscRawRows: Number(lastRunSummary.gscRawRows || lastRunSummary.gscRows || batch?.lastRunDetails?.gscRawRows || 0),
+    gscUrlInspections: Number(lastRunSummary.gscUrlInspections || batch?.lastRunDetails?.gscUrlInspections?.length || 0),
+    serpComparisons: Number(lastRunSummary.serpComparisons || batch?.lastRunDetails?.serpComparisons?.length || 0),
+    demandMode: batch?.lastRunDetails?.demandOpportunityReview?.mode || null,
+    gscAuthError: monitoringNotes.some((note) => /oauth|invalid_refresh_token|tokenutbyte|refresh token/i.test(String(note))),
     batchError: batchPayload.error || null,
   }
   return {
     ...checks,
-    ready: checks.gscConfigured && checks.repoConfigured && checks.batchAvailable,
+    measurementReady: checks.gscRawRows > 0,
+    ready: checks.gscConfigured && checks.repoConfigured && checks.batchAvailable && checks.dataFresh,
   }
 }
 
@@ -445,7 +457,10 @@ function readinessMissingItems(workspace, readiness) {
 function humanReadinessIssue(readiness) {
   if (!readiness?.gscConfigured) return 'GSC property saknas.'
   if (!readiness?.repoConfigured) return 'GitHub repo saknas.'
-  if (readiness?.batchAvailable) return 'SEO-data finns.'
+  if (readiness?.batchAvailable && !readiness?.dataFresh) return 'SEO-batchen är äldre än 36 timmar och måste köras om.'
+  if (readiness?.batchAvailable && readiness?.gscRawRows > 0) return 'Färsk crawl-, SERP- och GSC-data finns.'
+  if (readiness?.batchAvailable && readiness?.serpComparisons > 0) return 'Färsk crawl/SERP-data finns, men GSC gav 0 rader.'
+  if (readiness?.batchAvailable) return 'SEO-batch finns, men underlaget är ofullständigt.'
   const error = String(readiness?.batchError || '')
   if (/seo_batch_not_found|platform_404/i.test(error)) return 'Ingen färsk SEO-batch hittades ännu.'
   if (/502|bad gateway|platform_502/i.test(error)) return 'Platform API svarade tillfälligt med 502.'
@@ -2093,7 +2108,13 @@ async function buildIntegrationDoctorReport(workspaces) {
   const gscPlatformConnected = Boolean(gscPayload?.connected ?? gscPayload?.hasStoredRefreshToken)
   const gscApiReady = Boolean(gscApiPayload?.ok)
   const gscBrowserReady = Boolean(gscBrowserPayload?.ok && gscBrowserPayload?.canObserve)
-  const gscOperational = gscPlatformConnected || gscApiReady || gscBrowserReady
+  const dataReadiness = await Promise.all(workspaces.map(async (workspace) => ({
+    workspace,
+    readiness: await workspaceReadiness(workspace).catch(() => null)
+  })))
+  const recentGscRows = dataReadiness.reduce((sum, item) => sum + Number(item.readiness?.gscRawRows || 0), 0)
+  const workspacesWithoutGscRows = dataReadiness.filter((item) => Number(item.readiness?.gscRawRows || 0) === 0)
+  const gscOperational = gscApiReady || (gscPlatformConnected && recentGscRows > 0)
   const gscStatus = formatGscCapabilityStatus({
     platform: gscPayload ? String(gscPayload.connected ?? gscPayload.hasStoredRefreshToken ? 'connected' : gscPayload.status ?? 'not_connected') : settledErrorMessage(gsc),
     api: gscApiPayload ? String(gscApiPayload.status || (gscApiPayload.ok ? 'ready' : 'unknown')) : settledErrorMessage(gscRuntimeDoctor),
@@ -2128,9 +2149,9 @@ async function buildIntegrationDoctorReport(workspaces) {
   const checks = [
     {
       key: 'gsc',
-      label: 'Google Search Console URL Inspection',
+      label: 'Google Search Console data och URL Inspection',
       ok: gscOperational,
-      status: gscStatus,
+      status: `${gscStatus}; rows=${recentGscRows}; empty_workspaces=${workspacesWithoutGscRows.length}/${workspaces.length}`,
       fix: gscReconnectFix
     },
     {
@@ -7746,6 +7767,7 @@ function formatActionMessage(action, workspacePolicy, workspace, review = null) 
     action.targetUrl ? `URL: ${action.targetUrl}` : '',
     action.keyword ? `${showKeywordAsSearchTerm ? 'Keyword' : 'Focus'}: ${action.keyword}` : '',
     showKeywordAsSearchTerm ? formatKeywordMetricsLine(action) : '',
+    workspaceEvidenceLine(workspace),
     '',
     `Gör detta: ${concreteAction}`,
     `Varför: ${String(why).slice(0, 360)}`,
@@ -7760,6 +7782,16 @@ function formatActionMessage(action, workspacePolicy, workspace, review = null) 
       : `Det här är en GSC/browser-check, inte en kodaction. Tryck Open in GSC för att öppna Search Console-fönstret, eller skriv i chatten om den är hanterad, kan vänta eller behöver förklaras.`
   ]
   return lines.filter(Boolean).join('\n').slice(0, 1900)
+}
+
+function workspaceEvidenceLine(workspace) {
+  const readiness = workspace?.id ? state.workspaceReadiness?.[workspace.id] : null
+  if (!readiness?.batchAvailable) return 'Dataunderlag: SEO-batch saknas eller kunde inte verifieras.'
+  const run = readiness.lastRunAt ? `Körning ${formatDateTime(readiness.lastRunAt)}` : 'Körningstid saknas'
+  if (Number(readiness.gscRawRows || 0) > 0) {
+    return `Dataunderlag: ${run} · GSC ${readiness.gscRawRows} rader · crawl ${readiness.crawlPagesChecked || 0} sidor · SERP ${readiness.serpComparisons || 0}.`
+  }
+  return `Dataunderlag: ${run} · GSC saknar rader · crawl ${readiness.crawlPagesChecked || 0} sidor · SERP ${readiness.serpComparisons || 0}. Förslaget får inte beskrivas som GSC-verifierat.`
 }
 
 function humanActionTitle(action) {
