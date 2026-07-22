@@ -66,8 +66,8 @@ Runtime state in `state/state.json` now has three learning layers:
 - `actionLedger`: action lifecycle memory keyed by workspace + target/topic + action type. This links posted cards, approvals, coding starts, commits, failures, skips and guarded cards.
 - `agentLessons`: short lessons learned from guarded, completed and failed actions.
 - `keywordMaps`: target keyword -> target URL ownership per workspace.
-- `seoExperiments`: every completed SEO commit as a measurable experiment with keyword, target URL, commit hash and review date.
-- `experimentOutcomes`: follow-up verdicts for experiments (`provisionally_improved`, `needs_more_work`, `inconclusive`) with confidence and reasoning.
+- `seoExperiments`: every completed SEO commit as a measurable experiment with keyword, target URL, commit hash, pre-change GSC baseline and 14/30-day measurements.
+- `experimentOutcomes`: quantitative follow-up verdicts (`improved`, `declined`, `mixed`, `inconclusive`, `insufficient_data`) with confidence, metric deltas and reasoning.
 - `rankingReviews`: daily workspace ranking review snapshots.
 
 The agent must consult these before posting a new card. Do not repost a completed, ignored or repeatedly guarded action before its `recheckAfter` date unless fresh evidence changes the decision.
@@ -113,17 +113,25 @@ Do not create an SEO experiment or claim completion at `review_ready`; measureme
 
 For every completed SEO commit, create or update an SEO experiment:
 
-`keyword + target URL + commit + diffstat + completedAt + reviewAfter`
+`keyword + target URL + commit + diffstat + completedAt + pre-change GSC baseline + day-14/day-30 follow-ups`
 
 Default review delay is 14 days. Do not repeat the same page/keyword experiment before its review date unless fresh data shows a materially different problem.
 
 The default target-URL guard is stricter than keyword-level memory: only one autonomous experiment may run for the same target URL during the 14-day review window. This is intentional. It stops the agent from adding many small keyword/FAQ variants to the same page before there is a recheck signal.
 
-At follow-up time, classify each due experiment conservatively:
+Capture the latest complete GSC batch that ran before deployment as the baseline. Never use a later batch as a retrospective baseline. Historical experiments without genuine pre-change data must be marked unavailable rather than assigned a synthetic outcome.
 
-- `provisionally_improved`: no matching live SEO Monitor action remains. Treat as a weak positive until GSC/query metrics confirm it.
-- `needs_more_work`: matching content/code actions remain for the same URL or keyword. Do not repeat the same tactic; propose a different hypothesis.
-- `inconclusive`: the remaining signal is GSC/integration/indexing-only, or evidence is too weak.
+At day 14 and day 30, compare the same 28-day GSC metrics for the exact page/query when sample size permits, otherwise use page-level metrics. Persist clicks, impressions, CTR, weighted position, deltas, scope and confidence.
+
+Classify each measured experiment conservatively:
+
+- `improved`: supported positive movement in clicks, impressions, CTR or position without a conflicting material decline.
+- `declined`: supported negative movement without a conflicting material improvement.
+- `mixed`: meaningful positive and negative signals conflict.
+- `inconclusive`: enough data exists but no meaningful change is visible.
+- `insufficient_data`: data or GSC coverage is too weak for a conclusion.
+
+Whether a live action disappeared is operational context only. It must never be used as proof that rankings or traffic improved.
 
 Future candidates must consult this learning summary. Prefer patterns with positive signals, avoid repeating unresolved tactics, and explain the hypothesis in terms of measurable keyword/URL improvement.
 

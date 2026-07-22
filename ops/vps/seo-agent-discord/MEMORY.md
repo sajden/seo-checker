@@ -62,6 +62,8 @@ Treat Vagkollen as a road-weather and route-planning utility for ordinary driver
 - `state.workspaceProfiles` is the machine-readable workspace preference source.
 - `state.actionLedger` is the machine-readable action lifecycle source.
 - `state.agentLessons` stores short lessons for future guard/reasoning.
+- `state.seoExperiments` stores the pre-change GSC baseline and day-14/day-30 snapshots for each deployed SEO change.
+- `state.experimentOutcomes` stores measured clicks, impressions, CTR and position deltas. A missing queue item is not evidence of improvement.
 - Discord commands:
   - `mål` shows the active workspace profile.
   - `lärdomar`, `minne` or `ledger` shows recent lifecycle memory and lessons.
