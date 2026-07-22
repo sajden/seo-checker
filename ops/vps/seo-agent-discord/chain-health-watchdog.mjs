@@ -12,7 +12,7 @@ const workerStatePath = env.SEO_AGENT_STATE_PATH || '/opt/ai-dashboard/apps/seo-
 const alertStatePath = env.SEO_AGENT_CHAIN_HEALTH_STATE_PATH || '/opt/ai-dashboard/apps/seo-agent-discord/state/chain-health-alerts.json'
 const repoHealthLog = env.SEO_AGENT_REPO_HEALTH_LOG || '/mnt/HC_Volume_105954589/deploy-storage/logs/seo-agent-repo-health.jsonl'
 const runtimeUrl = (env.SEO_RUNTIME_URL || 'http://127.0.0.1:1460').replace(/\/$/, '')
-const workerStaleMs = Number(env.SEO_AGENT_CHAIN_WORKER_STALE_MS || 5 * 60 * 1000)
+const workerStaleMs = Number(env.SEO_AGENT_CHAIN_WORKER_STALE_MS || 15 * 60 * 1000)
 const repoHealthStaleMs = Number(env.SEO_AGENT_CHAIN_REPO_HEALTH_STALE_MS || 45 * 60 * 1000)
 const repeatAlertMs = Number(env.SEO_AGENT_CHAIN_ALERT_REPEAT_MS || 6 * 60 * 60 * 1000)
 const dryRun = env.SEO_AGENT_CHAIN_HEALTH_DRY_RUN === 'true' || process.argv.includes('--dry-run')
@@ -89,7 +89,7 @@ function checkWorkerState() {
     return
   }
   const ageMs = Date.now() - statSync(workerStatePath).mtimeMs
-  if (ageMs > workerStaleMs) addIssue('worker-state-stale', 'SEO-worker', `state.json har inte uppdaterats på ${formatDuration(ageMs)}.`)
+  if (ageMs > workerStaleMs) addIssue('worker-state-stale', 'SEO-worker', `state.json har inte uppdaterats på ${formatDuration(ageMs)} trots att tjänsten är aktiv.`)
 }
 
 function checkRepoHealth() {

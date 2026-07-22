@@ -118,7 +118,7 @@ Workspace channels are decision and result feeds, not runtime logs. Automatic me
 
 - `seo-agent-discord.service` and `seo-runtime.service`,
 - SEO Runtime `/healthz`,
-- that the worker state is updated within five minutes,
+- that the worker state is updated within 15 minutes, allowing longer Codex/build work without false alarms,
 - the latest repo checkout/push health result,
 - code jobs older than two hours and promotions locked longer than 30 minutes.
 
