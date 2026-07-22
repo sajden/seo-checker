@@ -5,7 +5,12 @@ import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { agentRuntimeSnapshot } from './agent-brain.mjs'
 
-const env = loadEnv(['/home/deploy/.hermes/.env', '/home/deploy/seo-agent-discord/.env'])
+const env = loadEnv([
+  '/home/deploy/.hermes/.env',
+  '/home/deploy/seo-agent-discord/.env',
+  '/opt/ai-dashboard/apps/article-agent/.env',
+  '/opt/ai-dashboard/apps/newsletter-agent/.env.local'
+])
 const DISCORD_API = 'https://discord.com/api/v10'
 const token = required('DISCORD_BOT_TOKEN')
 const channelId = required('DISCORD_CHANNEL_ID')
@@ -49,6 +54,11 @@ const sameTargetAutonomousCooldownMs = Number(env.SEO_AGENT_SAME_TARGET_AUTONOMO
 const sameTargetAutonomousMaxRecent = Number(env.SEO_AGENT_SAME_TARGET_AUTONOMOUS_MAX_RECENT || '1')
 const codexChatEnabled = env.SEO_AGENT_CODEX_CHAT_ENABLED !== 'false'
 const smartOutboundGuardEnabled = env.SEO_AGENT_SMART_OUTBOUND_GUARD !== 'false'
+const articleAgentUrl = (env.ARTICLE_AGENT_URL || 'http://127.0.0.1:3522').replace(/\/$/, '')
+const articleAgentToken = env.ARTICLE_AGENT_API_TOKEN || ''
+const newsletterAgentUrl = (env.NEWSLETTER_AGENT_URL || 'http://127.0.0.1:3461').replace(/\/$/, '')
+const newsletterAgentToken = env.NEWSLETTER_AGENT_TOKEN || env.DASHBOARD_AGENT_TOKEN || ''
+const contentReviewEveryMs = Number(env.SEO_AGENT_CONTENT_REVIEW_MS || String(15 * 60 * 1000))
 const codexCli = env.CODEX_CLI || `${env.HOME || '/home/deploy'}/.npm-global/bin/codex`
 const stateDir = '/home/deploy/seo-agent-discord/state'
 const statePath = join(stateDir, 'state.json')
@@ -103,6 +113,7 @@ async function tick() {
   if (steps.postReadinessForWorkspaces !== false) await runTickStep('post_readiness_for_workspaces', () => postReadinessForWorkspaces(workspaces))
   if (steps.checkGscIssuesForWorkspaces !== false) await runTickStep('check_gsc_issues_for_workspaces', () => checkGscIssuesForWorkspaces(workspaces))
   if (steps.postPendingActionsForWorkspaces !== false) await runTickStep('post_pending_actions_for_workspaces', () => postPendingActionsForWorkspaces(workspaces))
+  await runTickStep('sync_content_review_queue', () => syncContentReviewQueue())
   if (steps.prepareAutonomousCodeWork !== false) await runTickStep('prepare_autonomous_code_work', () => maybePrepareAutonomousCodeWork(workspaces))
   if (steps.runIntegrationDoctor !== false) await runTickStep('run_integration_doctor', () => maybeRunIntegrationDoctor(workspaces))
   if (steps.askForGscApiOauth !== false) await runTickStep('ask_for_gsc_api_oauth', () => maybeAskForGscApiOAuth())
@@ -3089,6 +3100,140 @@ async function rememberApprovedCodeAction(actionId, targetChannelId) {
   saveState()
 }
 
+async function syncContentReviewQueue() {
+  const now = Date.now()
+  if (state.lastContentReviewSyncAt && now - Date.parse(state.lastContentReviewSyncAt) < contentReviewEveryMs) return
+  state.lastContentReviewSyncAt = new Date(now).toISOString()
+  state.contentReviewCards = state.contentReviewCards || {}
+  state.contentActionRefs = state.contentActionRefs || {}
+
+  if (!articleAgentToken || !newsletterAgentToken) {
+    logThrottled('content_review_missing_token', 6 * 60 * 60 * 1000, 'content_review_missing_token', {
+      articleToken: Boolean(articleAgentToken),
+      newsletterToken: Boolean(newsletterAgentToken)
+    })
+    return
+  }
+
+  await contentAgentJson(newsletterAgentUrl, newsletterAgentToken, '/maintenance/archive-stale', {
+    method: 'POST',
+    body: JSON.stringify({ maxAgeDays: 14 })
+  }).catch((error) => log('newsletter_archive_stale_failed', { error: error?.message || String(error) }))
+
+  const [articlePayload, newsletterPayload] = await Promise.all([
+    contentAgentJson(articleAgentUrl, articleAgentToken, '/actions'),
+    contentAgentJson(newsletterAgentUrl, newsletterAgentToken, '/issues')
+  ])
+
+  const article = (articlePayload.actions || [])
+    .filter((item) => item.actionType === 'review_article_draft' && item.status === 'pending')
+    .sort((left, right) => Number(right.quality?.score || 0) - Number(left.quality?.score || 0))[0]
+  const newsletter = (newsletterPayload.issues || [])
+    .filter((item) => item.status === 'reviewing' && Number(item.editorialGate?.quality?.total || 0) >= 80)
+    .sort((left, right) => Number(right.editorialGate?.quality?.total || 0) - Number(left.editorialGate?.quality?.total || 0))[0]
+
+  if (article) await postContentReviewCard('article', article)
+  if (newsletter) await postContentReviewCard('newsletter', newsletter)
+}
+
+async function postContentReviewCard(type, item) {
+  const id = String(item.id || '')
+  if (!id || state.contentReviewCards[id]) return
+  const content = type === 'article' ? formatArticleReviewCard(item) : formatNewsletterReviewCard(item)
+  const posted = await sendDiscordMessage(content, channelId, contentReviewComponents(), { kind: 'action_card' })
+  state.contentReviewCards[id] = { type, messageId: posted.id, postedAt: new Date().toISOString(), status: 'posted' }
+  state.contentActionRefs[id] = { type, id }
+  state.messageToAction = state.messageToAction || {}
+  state.messageToAction[posted.id] = id
+}
+
+function formatArticleReviewCard(action) {
+  const quality = Number(action.quality?.score || 0)
+  return [
+    '**Artikel redo för granskning**',
+    `ID: \`${action.id}\``,
+    `**${action.title}**`,
+    action.preferredKeyword ? `Sökfras: ${action.preferredKeyword}` : '',
+    `Kvalitet: ${quality}/100`,
+    action.summary ? `Varför: ${action.summary}` : '',
+    action.quality?.summary ? `Granskning: ${action.quality.summary}` : '',
+    action.sourceUrl ? `[Öppna hela utkastet](${action.sourceUrl})` : '',
+    '',
+    'Godkänn sparar utkastet för nästa steg. Inget publiceras automatiskt.'
+  ].filter(Boolean).join('\n').slice(0, 1900)
+}
+
+function formatNewsletterReviewCard(issue) {
+  const quality = Number(issue.editorialGate?.quality?.total || 0)
+  const stories = (issue.curatedItems || []).slice(0, 7).map((item) => `- ${item.friendlyTitle || item.sourceTitle}`).join('\n')
+  return [
+    '**Nyhetsbrev redo för granskning**',
+    `ID: \`${issue.id}\``,
+    `**${issue.shareTitle || issue.title}**`,
+    `Kvalitet: ${quality}/100`,
+    issue.editorialGate?.rationale ? `Varför: ${issue.editorialGate.rationale}` : '',
+    stories ? `\nValda nyheter:\n${stories}` : '',
+    '',
+    'Godkänn sparar utkastet för nästa steg. Inget publiceras eller skickas automatiskt.'
+  ].filter(Boolean).join('\n').slice(0, 1900)
+}
+
+function contentReviewComponents() {
+  return [{
+    type: 1,
+    components: [
+      { type: 2, custom_id: 'content-decision:approved', label: 'Godkänn', style: 3 },
+      { type: 2, custom_id: 'content-decision:rewrite_requested', label: 'Skriv om', style: 1 },
+      { type: 2, custom_id: 'content-decision:skipped', label: 'Avvisa', style: 4 }
+    ]
+  }]
+}
+
+async function decideContentReview(actionId, decision, operatorId) {
+  const ref = state.contentActionRefs?.[actionId]
+  if (!ref) throw new Error('content_review_reference_missing')
+  const body = JSON.stringify({
+    decision,
+    source: 'seo-agent-discord',
+    operatorId: String(operatorId || ''),
+    reason: decision === 'rewrite_requested' ? 'Gor utkastet tydligare, mer konkret och mer anvandbart innan ny granskning.' : ''
+  })
+  if (ref.type === 'article') {
+    await contentAgentJson(articleAgentUrl, articleAgentToken, `/actions/${encodeURIComponent(ref.id)}/decision`, { method: 'POST', body })
+  } else {
+    await contentAgentJson(newsletterAgentUrl, newsletterAgentToken, `/issues/${encodeURIComponent(ref.id)}/decision`, { method: 'POST', body })
+  }
+  if (decision === 'rewrite_requested') {
+    delete state.contentReviewCards[actionId]
+  } else {
+    state.contentReviewCards[actionId] = {
+      ...(state.contentReviewCards[actionId] || {}),
+      status: decision,
+      decidedAt: new Date().toISOString()
+    }
+  }
+  saveState()
+  const label = ref.type === 'article' ? 'artikeln' : 'nyhetsbrevet'
+  if (decision === 'approved') return { summary: `Godkänt: ${label} går vidare, men är inte publicerat eller skickat.` }
+  if (decision === 'rewrite_requested') return { summary: `Omskrivning startad för ${label}. Ett nytt granskningskort kommer när kvalitetskontrollen är klar.` }
+  return { summary: `Avvisat: ${label} tas bort från den aktiva granskningskön.` }
+}
+
+async function contentAgentJson(baseUrl, agentToken, pathname, init = {}) {
+  const response = await fetch(`${baseUrl}${pathname}`, {
+    ...init,
+    headers: {
+      accept: 'application/json',
+      'content-type': 'application/json',
+      authorization: `Bearer ${agentToken}`,
+      ...(init.headers || {})
+    }
+  })
+  const payload = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(payload.error || payload.message || `content_agent_${response.status}`)
+  return payload
+}
+
 function startDiscordInteractionClient() {
   const client = new Client({
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
@@ -3111,7 +3256,7 @@ function startDiscordInteractionClient() {
     try {
       if (!interaction.isButton()) return
       const customId = String(interaction.customId || '')
-      if (!customId.startsWith('seo-decision:') && !customId.startsWith('seo-gsc-ui:') && !customId.startsWith('seo-revert:')) return
+      if (!customId.startsWith('seo-decision:') && !customId.startsWith('seo-gsc-ui:') && !customId.startsWith('seo-revert:') && !customId.startsWith('content-decision:')) return
       if (String(interaction.user?.id || '') !== allowedUserId) {
         await interaction.reply({ content: 'Ignored: this Discord user is not allowed to control the SEO agent.', ephemeral: true })
         return
@@ -3124,6 +3269,14 @@ function startDiscordInteractionClient() {
       }
       state.messageToAction = state.messageToAction || {}
       state.messageToAction[interaction.message.id] = actionId
+      if (customId.startsWith('content-decision:')) {
+        await interaction.deferReply({ ephemeral: true })
+        const decision = customId.slice('content-decision:'.length)
+        const result = await decideContentReview(actionId, decision, interaction.user?.id)
+        await interaction.editReply({ content: result.summary })
+        await interaction.message.edit({ components: [] }).catch(() => null)
+        return
+      }
       if (customId.startsWith('seo-gsc-ui:')) {
         await interaction.deferReply({ ephemeral: true })
         const result = await handleGscUiButton(actionId, interaction.channelId)

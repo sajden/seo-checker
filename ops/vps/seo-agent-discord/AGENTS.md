@@ -47,6 +47,17 @@ The agent should self-heal before asking the operator for help:
 5. Post a recovery notice when a previously broken workspace becomes ready again.
 6. Poll workspace GSC issue sources periodically. If a platform issue endpoint returns indexing/canonical/noindex/404 issues, convert them into the same reviewable action cards as pasted Search Console warnings. If no issue endpoint exists, record that as an integration gap instead of inventing issues.
 
+## Editorial Queue
+
+- SEO Agent is the operator-facing editor for both evergreen SEO articles and weekly newsletters.
+- Article Agent owns search-demand briefs, duplicate checks, drafting and article revision state.
+- Newsletter Agent owns current-source collection, weekly synthesis and newsletter revision state.
+- Show at most one strongest pending article and one strongest pending newsletter in Discord at a time.
+- Every content card must explain why the item is recommended and expose its quality score.
+- Approve means ready for the next editorial step. It must never publish an article, send a newsletter or post externally.
+- Rewrite may run autonomously through VPS Codex and return a new review card.
+- Archive stale and superseded review items; never delete the underlying editorial history.
+
 ## Super Agent State
 
 Runtime state in `state/state.json` now has three learning layers:
