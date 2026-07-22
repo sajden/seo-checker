@@ -17,6 +17,7 @@ This directory is a tracked snapshot of the Discord/Hermes SEO agent currently d
 ```text
 worker.mjs       Main Discord worker, scheduler, action queue, code automation, memory ledger.
 codex-runner.mjs Executes approved code actions in repo checkouts and pushes commits.
+review-promoter.mjs Promotes an operator-approved review branch to main, rebuilds, pushes, and verifies the live target.
 repo-health-check.mjs Fast-forwards repo checkouts and verifies push access for the agent.
 gsc-url-inspection-api.mjs Google Search Console URL Inspection API helper.
 gsc-firefox-ui-tool.mjs Fallback noVNC/Firefox helper for GSC flows that require a logged-in browser.
@@ -59,7 +60,7 @@ The container should run with Docker restart policy `unless-stopped`. The direct
 After editing this snapshot, deploy with:
 
 ```bash
-rsync -av ops/vps/seo-agent-discord/worker.mjs ops/vps/seo-agent-discord/codex-runner.mjs ops/vps/seo-agent-discord/repo-health-check.mjs ops/vps/seo-agent-discord/gsc-url-inspection-api.mjs ops/vps/seo-agent-discord/gsc-firefox-ui-tool.mjs ops/vps/seo-agent-discord/agent-brain.mjs ops/vps/seo-agent-discord/AGENTS.md ops/vps/seo-agent-discord/MEMORY.md ops/vps/seo-agent-discord/README.md deploy@178.104.240.46:/opt/ai-dashboard/apps/seo-agent-discord/
+rsync -av ops/vps/seo-agent-discord/worker.mjs ops/vps/seo-agent-discord/codex-runner.mjs ops/vps/seo-agent-discord/review-promoter.mjs ops/vps/seo-agent-discord/repo-health-check.mjs ops/vps/seo-agent-discord/gsc-url-inspection-api.mjs ops/vps/seo-agent-discord/gsc-firefox-ui-tool.mjs ops/vps/seo-agent-discord/agent-brain.mjs ops/vps/seo-agent-discord/AGENTS.md ops/vps/seo-agent-discord/MEMORY.md ops/vps/seo-agent-discord/README.md deploy@178.104.240.46:/opt/ai-dashboard/apps/seo-agent-discord/
 scp ops/vps/seo-agent-discord/seo-agent-discord.service deploy@178.104.240.46:/home/deploy/.config/systemd/user/seo-agent-discord.service
 ssh deploy@178.104.240.46 'cd /opt/ai-dashboard/apps/seo-agent-discord && node --check worker.mjs && node --check gsc-url-inspection-api.mjs && node --check gsc-firefox-ui-tool.mjs && systemctl --user daemon-reload && systemctl --user restart seo-agent-discord.service && systemctl --user is-active seo-agent-discord.service'
 ```
@@ -104,6 +105,8 @@ Workspace channels are decision and result feeds, not runtime logs. Automatic me
 - `SEO_AGENT_NOTIFY_ROUTINE_STATUS=true` restores routine recovery/status messages for debugging.
 - `SEO_AGENT_NOTIFY_INTERNAL_FAILURES=true` posts internal run, action-fetch, and integration failures to Discord. Keep it disabled in normal operation.
 - Daily ranking reviews are persisted before posting and deduplicated once per workspace and date.
+- An operator approval promotes the exact reviewed commit to `main` only when it is a clean fast-forward, reruns the production build, verifies the remote commit, and waits for the changed content on the live target. A failure keeps the review buttons available and does not mark the experiment complete.
+- A successful promotion records the change as an SEO experiment and blocks new autonomous edits to the same target URL for 14 days; other URLs in the workspace can continue.
 
 Rejected autonomous diffs are saved on the VPS under:
 

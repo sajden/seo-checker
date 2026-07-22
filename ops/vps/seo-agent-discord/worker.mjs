@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { Client, GatewayIntentBits, Partials } from 'discord.js'
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createHash, createHmac } from 'node:crypto'
 import { agentRuntimeSnapshot } from './agent-brain.mjs'
@@ -1086,7 +1086,7 @@ function codeActionResultBlocks(action, workspace, targetChannelId) {
   if (!result) return false
   const status = String(result.status || '')
   if (status === 'archived_failed') return false
-  if (['review_ready', 'operator_approved'].includes(status)) return true
+  if (['review_ready', 'operator_approved', 'promotion_running'].includes(status)) return true
 
   const terminalAt = result.completedAt || result.failedAt || result.archivedAt || ''
   const terminalMs = Date.parse(terminalAt)
@@ -1353,7 +1353,7 @@ function hasPendingWorkspaceReview(workspace) {
   const repoFullName = String(workspace?.repoFullName || '').trim()
   if (!repoFullName) return false
   return Object.values(state.codeActionResults || {}).some((record) => {
-    if (!['review_ready', 'operator_approved'].includes(String(record?.status || ''))) return false
+    if (!['review_ready', 'operator_approved', 'promotion_running'].includes(String(record?.status || ''))) return false
     return String(record?.result?.repoFullName || '').trim() === repoFullName
   })
 }
@@ -2620,19 +2620,13 @@ function reviewReadyComponents() {
   }]
 }
 
-function decideSeoReview(actionId, decision, targetChannelId, operatorId) {
+async function decideSeoReview(actionId, decision, targetChannelId, operatorId) {
   const record = state.codeActionResults?.[actionId]
   if (!record || !['review_ready', 'operator_approved'].includes(String(record.status || ''))) {
     return { summary: 'Jag hittar ingen väntande dev-ändring för den här granskningen.' }
   }
   const now = new Date().toISOString()
   const approved = decision === 'approved'
-  state.codeActionResults[actionId] = {
-    ...record,
-    status: approved ? 'operator_approved' : 'rejected',
-    ...(approved ? { operatorApprovedAt: now } : { rejectedAt: now }),
-    operatorId: operatorId || null
-  }
   const posted = state.postedActionIds?.[actionId] || {}
   const workspace = {
     id: posted.workspaceId || record.result?.repoFullName || '',
@@ -2642,25 +2636,99 @@ function decideSeoReview(actionId, decision, targetChannelId, operatorId) {
   const action = {
     id: actionId,
     title: posted.title || actionId,
-    targetUrl: posted.targetUrl || '',
-    keyword: posted.keyword || ''
+    targetUrl: posted.targetUrl || record.result?.reviewContext?.targetUrl || '',
+    keyword: posted.keyword || record.result?.reviewContext?.keyword || ''
   }
-  recordActionLedger(action, workspace, targetChannelId, approved ? 'operator_approved' : 'rejected', {
+  if (!approved) {
+    state.codeActionResults[actionId] = { ...record, status: 'rejected', rejectedAt: now, operatorId: operatorId || null }
+    recordActionLedger(action, workspace, targetChannelId, 'rejected', {
+      commit: record.result?.commit || null,
+      deliveryBranch: record.result?.deliveryBranch || record.result?.branch || null,
+      source: 'discord_review'
+    })
+    clearActiveAction(actionId)
+    saveState()
+    return {
+      summary: 'Dev-ändringen är avvisad och kommer inte att gå till produktion.',
+      publicMessage: `Avvisad: ${posted.title || actionId}. Branchen sparas som historik men kommer inte att publiceras.`,
+      removeButtons: true
+    }
+  }
+
+  state.codeActionResults[actionId] = { ...record, status: 'promotion_running', operatorApprovedAt: now, operatorId: operatorId || null }
+  recordActionLedger(action, workspace, targetChannelId, 'operator_approved', {
     commit: record.result?.commit || null,
     deliveryBranch: record.result?.deliveryBranch || record.result?.branch || null,
     source: 'discord_review'
   })
-  clearActiveAction(actionId)
   saveState()
-  if (approved) {
+  try {
+    const promotion = await promoteReviewReadyAction(actionId, record.result || {}, action)
+    const completedAt = new Date().toISOString()
+    const completedResult = { ...record.result, ...promotion, mergedToMain: true, requiresReview: false }
+    state.codeActionResults[actionId] = { ...record, status: 'completed', operatorApprovedAt: now, completedAt, operatorId: operatorId || null, result: completedResult }
+    recordActionLedger(action, workspace, targetChannelId, 'completed', {
+      commit: promotion.commit || record.result?.commit || null,
+      deliveryBranch: record.result?.deliveryBranch || null,
+      repoFullName: record.result?.repoFullName || workspace.repoFullName,
+      source: 'discord_review_promotion'
+    })
+    recordSeoExperiment(action, workspace, targetChannelId, completedResult, { source: 'discord_review_promotion' })
+    clearActiveAction(actionId)
+    saveState()
     return {
-      summary: 'Dev-ändringen är godkänd för produktion. Den är fortfarande inte mergad eller publicerad.',
-      publicMessage: `Godkänd för produktion: ${posted.title || actionId}. Inget har ännu mergats till main eller publicerats.`
+      summary: `Godkänd, mergad till main och verifierad på ${promotion.targetUrl || action.targetUrl || 'production'}.`,
+      publicMessage: [
+        `Produktionsändringen är klar: ${posted.title || actionId}.`,
+        `Commit på main: ${promotion.commit || record.result?.commit || 'okänd'}`,
+        promotion.targetUrl ? `Verifierad URL: ${promotion.targetUrl}` : '',
+        'Samma URL är nu låst för nya autonoma SEO-ändringar i 14 dagar medan effekten mäts.'
+      ].filter(Boolean).join('\n'),
+      removeButtons: true
+    }
+  } catch (error) {
+    state.codeActionResults[actionId] = { ...record, status: 'review_ready', promotionFailedAt: new Date().toISOString(), promotionError: error?.message || String(error) }
+    recordActionLedger(action, workspace, targetChannelId, 'review_ready', { error: error?.message || String(error), source: 'discord_review_promotion_failed' })
+    saveState()
+    return {
+      summary: `Godkännandet sparades inte som klart eftersom produktionen stoppades: ${String(error?.message || error).slice(0, 1200)}`,
+      publicMessage: `Produktionssteget stoppades för ${posted.title || actionId}. Main markeras inte som klar. Orsak: ${String(error?.message || error).slice(0, 900)}`,
+      removeButtons: false
     }
   }
-  return {
-    summary: 'Dev-ändringen är avvisad och kommer inte att gå till produktion.',
-    publicMessage: `Avvisad: ${posted.title || actionId}. Branchen sparas som historik men kommer inte att publiceras.`
+}
+
+async function promoteReviewReadyAction(actionId, result, action, options = {}) {
+  const inputPath = join(stateDir, `review-promotion-${createHash('sha256').update(`${actionId}:${Date.now()}`).digest('hex').slice(0, 16)}.json`)
+  writeFileSync(inputPath, JSON.stringify({ ...result, actionId, targetUrl: action.targetUrl || result.reviewContext?.targetUrl || '', dryRun: options.dryRun === true }, null, 2))
+  try {
+    const { execFile } = await import('node:child_process')
+    const { promisify } = await import('node:util')
+    const exec = promisify(execFile)
+    const promoted = await exec('/usr/bin/node', ['/home/deploy/seo-agent-discord/review-promoter.mjs', inputPath], {
+      cwd: '/home/deploy/seo-agent-discord',
+      env: { ...process.env, PATH: `${process.env.HOME || '/home/deploy'}/.npm-global/bin:${process.env.HOME || '/home/deploy'}/.local/bin:${process.env.PATH || ''}` },
+      timeout: 25 * 60 * 1000,
+      maxBuffer: 20 * 1024 * 1024
+    })
+    const payload = JSON.parse(String(promoted.stdout || '').trim())
+    if (!payload.ok) throw new Error(payload.error || 'review_promotion_failed')
+    return payload
+  } catch (error) {
+    const detail = String(error?.stderr || error?.stdout || error?.message || error)
+    const parsed = detail.match(/\{[^\n]*"ok":false[^\n]*\}/)?.[0]
+    if (parsed) {
+      try {
+        const payload = JSON.parse(parsed)
+        if (payload?.error) throw new Error(payload.error)
+      } catch (parseError) {
+        if (parseError instanceof SyntaxError) throw new Error(detail.slice(-1800))
+        throw parseError
+      }
+    }
+    throw new Error(detail.slice(-1800))
+  } finally {
+    try { unlinkSync(inputPath) } catch {}
   }
 }
 
@@ -3090,7 +3158,7 @@ function activeActionStillOpen(active, items) {
   if (!actionId) return false
   const codeResult = state.codeActionResults?.[actionId]
   if (codeResult && ['completed', 'failed', 'rejected'].includes(String(codeResult.status))) return false
-  if (codeResult && ['review_ready', 'operator_approved'].includes(String(codeResult.status))) return true
+  if (codeResult && ['review_ready', 'operator_approved', 'promotion_running'].includes(String(codeResult.status))) return true
   const item = items.find((candidate) => String(candidate?.id || '') === actionId)
   if (!item) return false
   const status = String(item.status || '')
@@ -3529,10 +3597,10 @@ function startDiscordInteractionClient() {
       if (customId.startsWith('seo-review:')) {
         await interaction.deferReply({ ephemeral: true })
         const decision = customId.slice('seo-review:'.length)
-        const result = decideSeoReview(actionId, decision, interaction.channelId, interaction.user?.id)
+        const result = await decideSeoReview(actionId, decision, interaction.channelId, interaction.user?.id)
         await interaction.editReply({ content: result.summary })
         if (result.publicMessage) await sendDiscordMessage(result.publicMessage, interaction.channelId)
-        await interaction.message.edit({ components: [] }).catch(() => null)
+        if (result.removeButtons) await interaction.message.edit({ components: [] }).catch(() => null)
         return
       }
 
