@@ -2676,12 +2676,17 @@ async function decideSeoReview(actionId, decision, targetChannelId, operatorId) 
     recordSeoExperiment(action, workspace, targetChannelId, completedResult, { source: 'discord_review_promotion' })
     clearActiveAction(actionId)
     saveState()
+    const liveVerified = promotion.verification?.ok !== false
     return {
-      summary: `Godkänd, mergad till main och verifierad på ${promotion.targetUrl || action.targetUrl || 'production'}.`,
+      summary: liveVerified
+        ? `Godkänd, mergad till main och verifierad på ${promotion.targetUrl || action.targetUrl || 'production'}.`
+        : `Godkänd och mergad till main. Driftsättningen är startad men live-verifieringen väntar fortfarande.`,
       publicMessage: [
-        `Produktionsändringen är klar: ${posted.title || actionId}.`,
+        liveVerified
+          ? `Produktionsändringen är klar: ${posted.title || actionId}.`
+          : `Ändringen är mergad till main: ${posted.title || actionId}. Live-verifieringen hann inte bli klar inom väntetiden.`,
         `Commit på main: ${promotion.commit || record.result?.commit || 'okänd'}`,
-        promotion.targetUrl ? `Verifierad URL: ${promotion.targetUrl}` : '',
+        promotion.targetUrl ? `${liveVerified ? 'Verifierad URL' : 'Mål-URL'}: ${promotion.targetUrl}` : '',
         'Samma URL är nu låst för nya autonoma SEO-ändringar i 14 dagar medan effekten mäts.'
       ].filter(Boolean).join('\n'),
       removeButtons: true

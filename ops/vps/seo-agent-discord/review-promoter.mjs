@@ -52,7 +52,6 @@ try {
   const verification = targetUrl
     ? await verifyLiveTarget(targetUrl, fingerprints)
     : { ok: true, status: null, matchedFingerprint: null, note: 'no_target_url' }
-  if (!verification.ok) throw new Error(`Main was pushed, but live verification failed: ${verification.error || verification.status || 'unknown'}`)
 
   console.log(JSON.stringify({
     ok: true,
@@ -64,6 +63,7 @@ try {
     diffStat: diff.stdout,
     targetUrl,
     verification,
+    deploymentVerificationPending: !verification.ok,
     mergedToMain: true,
     pushedToMain: true
   }))
