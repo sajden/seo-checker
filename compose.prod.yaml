@@ -11,9 +11,11 @@ services:
       DATA_DIR: /data
       PORT: 3010
       HOSTNAME: 0.0.0.0
+      GOOGLE_SERVICE_ACCOUNT_FILE: /run/secrets/google-service-account.json
     volumes:
       - ${DATA_HOST_DIR:-/opt/ai-dashboard/data/seo-monitor}:/data
       - ${WORKSPACE_HOST_DIR:-/home/sajden/github}:/workspace:ro
+      - /home/deploy/.credentials/google/seo-monitor.json:/run/secrets/google-service-account.json:ro
     networks:
       - default
       - article-generator

@@ -31,7 +31,7 @@ For stable GSC URL Inspection, prefer API credentials over browser automation:
 
 - `GSC_CLIENT_ID` or `GOOGLE_SEARCH_CONSOLE_CLIENT_ID`
 - `GSC_CLIENT_SECRET` or `GOOGLE_SEARCH_CONSOLE_CLIENT_SECRET`
-- `GSC_REFRESH_TOKEN` or `/opt/ai-dashboard/apps/seo-agent-discord/state/gsc-refresh-token.txt`
+- `GOOGLE_SERVICE_ACCOUNT_FILE` (recommended), or the legacy `GSC_REFRESH_TOKEN` / `state/gsc-refresh-token.txt`
 
 The refresh token needs `https://www.googleapis.com/auth/webmasters.readonly` or `https://www.googleapis.com/auth/webmasters` scope. If these are missing, the worker falls back to the noVNC Firefox helper and reports browser automation failures as UI failures, not OAuth failures.
 

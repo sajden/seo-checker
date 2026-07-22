@@ -68,7 +68,7 @@ export type SourceReport = {
 export type GscReport = {
   configured: boolean;
   connected: boolean;
-  mode: "unconfigured" | "oauth";
+  mode: "unconfigured" | "oauth" | "service_account";
   summary: string;
   expectedEnv: string[];
   redirectUri?: string;

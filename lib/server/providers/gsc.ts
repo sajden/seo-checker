@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { readStoredGscOAuth, writeStoredGscOAuth, type StoredGscOAuth } from "@/lib/server/providers/gsc-storage";
+import { getGoogleServiceAccountAccessToken, hasGoogleServiceAccount } from "@/lib/server/providers/google-service-account";
 import type { GscProperty, GscQueryResult, GscQueryRow, GscReport, GscUrlInspectionResult } from "@/lib/types";
 
 const expectedEnv = [
@@ -27,6 +28,31 @@ type TokenResponse = {
 };
 
 export async function getGscProviderReport(): Promise<GscReport> {
+  if (hasGoogleServiceAccount()) {
+    try {
+      const properties = await listGscProperties();
+      if (!properties.length) throw new Error("Servicekontot saknar Search Console-properties.");
+      return {
+        configured: true,
+        connected: true,
+        mode: "service_account",
+        summary: `Google Search Console använder ett stabilt servicekonto med åtkomst till ${properties.length} properties.`,
+        expectedEnv: ["GOOGLE_SERVICE_ACCOUNT_JSON or GOOGLE_SERVICE_ACCOUNT_FILE"],
+        hasStoredRefreshToken: false
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        configured: true,
+        connected: false,
+        mode: "service_account",
+        summary: `Servicekontot kan inte läsa Search Console ännu. ${message}`,
+        expectedEnv: ["GOOGLE_SERVICE_ACCOUNT_JSON or GOOGLE_SERVICE_ACCOUNT_FILE"],
+        hasStoredRefreshToken: false,
+        connectionError: message
+      };
+    }
+  }
   const clientConfig = getClientConfig();
   const storedOAuth = await readStoredGscOAuth();
   const hasEnvRefreshToken = Boolean(process.env.GSC_REFRESH_TOKEN);
@@ -317,6 +343,9 @@ function requireClientConfig() {
 }
 
 async function getAccessToken() {
+  if (hasGoogleServiceAccount()) {
+    return getGoogleServiceAccountAccessToken(gscScope);
+  }
   const existingToken = process.env.GSC_ACCESS_TOKEN?.trim();
   if (existingToken) {
     return existingToken;

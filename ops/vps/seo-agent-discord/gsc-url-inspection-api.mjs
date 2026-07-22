@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { googleServiceAccountAccessToken, hasGoogleServiceAccount } from './google-service-account.mjs'
 
 const inputPath = process.argv[2]
 if (!inputPath) throw new Error('Missing JSON input path')
@@ -18,6 +19,19 @@ console.log(JSON.stringify(result, null, 2))
 async function run(command, input) {
   const config = loadConfig()
   if (command === 'doctor') {
+    if (hasGoogleServiceAccount(env)) {
+      try {
+        const accessToken = await googleServiceAccountAccessToken(env, 'https://www.googleapis.com/auth/webmasters.readonly')
+        const response = await fetch('https://www.googleapis.com/webmasters/v3/sites', { headers: { authorization: `Bearer ${accessToken}` } })
+        const payload = await response.json().catch(() => ({}))
+        if (!response.ok) throw new Error(payload?.error?.message || `google_api_${response.status}`)
+        const propertyCount = Array.isArray(payload.siteEntry) ? payload.siteEntry.length : 0
+        if (!propertyCount) return { ok: false, command, status: 'service_account_no_properties', propertyCount, missing: [] }
+        return { ok: true, command, status: 'service_account_ready', propertyCount, missing: [] }
+      } catch (error) {
+        return { ok: false, command, status: 'service_account_failed', error: error?.message || String(error), missing: [] }
+      }
+    }
     const missing = [
       !config.clientId ? 'GSC_CLIENT_ID or GOOGLE_CLIENT_ID' : '',
       !config.clientSecret ? 'GSC_CLIENT_SECRET or GOOGLE_CLIENT_SECRET' : '',
@@ -50,6 +64,7 @@ async function run(command, input) {
     }
   }
   if (command === 'doctor-shallow') {
+    if (hasGoogleServiceAccount(env)) return { ok: true, command, status: 'service_account_configured', missing: [] }
     return {
       ok: Boolean(config.clientId && config.clientSecret && config.refreshToken),
       command,
@@ -61,7 +76,7 @@ async function run(command, input) {
       ].filter(Boolean)
     }
   }
-  if (!config.clientId || !config.clientSecret || !config.refreshToken) {
+  if (!hasGoogleServiceAccount(env) && (!config.clientId || !config.clientSecret || !config.refreshToken)) {
     return {
       ok: false,
       command,
@@ -73,7 +88,9 @@ async function run(command, input) {
   const targetUrl = String(input.targetUrl || '').trim()
   if (!/^https:\/\//i.test(targetUrl)) return { ok: false, command, status: 'invalid_target_url', error: 'targetUrl must be an https URL' }
   const siteUrl = normalizeSiteUrl(String(input.gscProperty || '').trim(), input)
-  const accessToken = await refreshAccessToken(config)
+  const accessToken = hasGoogleServiceAccount(env)
+    ? await googleServiceAccountAccessToken(env, 'https://www.googleapis.com/auth/webmasters.readonly')
+    : await refreshAccessToken(config)
   const response = await fetch('https://searchconsole.googleapis.com/v1/urlInspection/index:inspect', {
     method: 'POST',
     headers: {
