@@ -1170,7 +1170,7 @@ function scoreActionCandidate(state, action, context) {
 
   if (isLegalOrPolicyTarget(targetUrl || title)) return rejected(action, -100, 'legal_or_policy_route_needs_explicit_request', ['legal/admin-sidor ändras inte autonomt'])
   if (isKeywordPlanActionText(text)) return rejected(action, -80, 'keyword_plan_is_strategy_not_action_card', ['keyword-plan behöver brytas ned i konkreta target-URL-actions'])
-  if (isGscOrOAuthNoise(text)) return rejected(action, -40, 'integration_check_not_content_work', ['integration/GSC-kontroll är inte SEO-contentarbete'])
+  if (isGscOrOAuthNoise(action)) return rejected(action, -40, 'integration_check_not_content_work', ['integration/GSC-kontroll är inte SEO-contentarbete'])
   if (!targetUrl && !isNewPageActionText(text)) {
     score -= 25
     negatives.push('saknar target-URL')
@@ -1414,8 +1414,16 @@ function isKeywordPlanActionText(text) {
   return /keyword-plan|keywordmap|keyword-map|target-pages|target-sidor|lagg-in-foreslagen-keyword-plan|lagg-in-en-forsta-keyword-plan/.test(text)
 }
 
-function isGscOrOAuthNoise(text) {
-  return /gsc|search-console|url-inspection|oauth|token|koppling|not-connected|indexering-startsidan|kontrollera-indexering/.test(text)
+function isGscOrOAuthNoise(action) {
+  const operationalText = normalize([
+    action?.id,
+    action?.title,
+    action?.recommendedAction,
+    action?.type
+  ].filter(Boolean).join(' '))
+  const isSeoContentWork = /title|h1|h2|meta|copy|faq|content|internlank|internal-link|schema/.test(operationalText)
+  if (isSeoContentWork) return false
+  return /gsc|search-console|url-inspection|oauth|token|not-connected|indexering-startsidan|kontrollera-indexering/.test(operationalText)
 }
 
 function isNewPageActionText(text) {
