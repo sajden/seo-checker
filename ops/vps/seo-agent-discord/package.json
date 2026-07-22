@@ -1,6 +1,9 @@
 {
   "type": "module",
   "private": true,
+  "scripts": {
+    "test": "node --test gsc-issue-policy.test.mjs"
+  },
   "dependencies": {
     "discord.js": "^14.19.3",
     "playwright": "^1.52.0",

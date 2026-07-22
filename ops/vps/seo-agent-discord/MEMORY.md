@@ -81,3 +81,11 @@ Treat Vagkollen as a road-weather and route-planning utility for ordinary driver
 - 2026-06-14: GSC issue text pasted in a workspace channel should become a structured `gsc_issue_*` action card. Duplicate canonical warnings should prompt a repo fix for canonical/alias routes and internal links, then build/commit/push.
 - 2026-06-15: SEO Agent now polls for workspace GSC issue endpoints every 6h (`SEO_AGENT_GSC_ISSUE_CHECK_MS`). It tries platform routes for `gsc/issues` and `gsc/indexing-issues`, normalizes returned issues into action cards, and dedupes for 7 days. If Platform API has no issue endpoint, the agent records `no_gsc_issue_endpoint` in state instead of making up GSC findings.
 - 2026-06-15: URL Inspection should be API-first. `gsc-url-inspection-api.mjs` uses Google's official URL Inspection API when GSC OAuth client + refresh token are available, then falls back to noVNC/Firefox only for missing API credentials or API auth failures.
+# GSC issue triage
+
+- Raw GSC rows are observations, not operator decisions.
+- Verify HTTP status, redirects and sitemap membership before posting.
+- Old event URLs may correctly return 404 after leaving the sitemap; do not spam one card per expired event.
+- Inspect live sitemap pages through the GSC API before asking the operator about index discovery.
+- One workspace has one shared review lock across normal SEO actions and GSC issues.
+- Similar unresolved 404s belong in one technical batch.

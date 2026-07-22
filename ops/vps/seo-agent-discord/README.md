@@ -112,6 +112,19 @@ Workspace channels are decision and result feeds, not runtime logs. Automatic me
 - A successful promotion records the change as an SEO experiment. The experiment follow-up starts after 14 days, but autonomous edits to the same URL stay blocked for at least 30 days; other URLs can continue.
 - A decision card remains active for 24 hours by default. When it expires, the worker removes its Discord buttons before deprioritizing it so stale controls cannot remain actionable.
 
+### GSC issue triage
+
+Automatic GSC issue polling is a verification pipeline, not a direct Discord feed:
+
+1. Check the live URL without following redirects and load the workspace sitemap.
+2. Close stale signals already resolved by redirects or successful URL Inspection.
+3. Monitor expired event 404s that are no longer present in sitemap.
+4. Collapse multiple unresolved 404s into one technical batch.
+5. Apply deterministic guards before any Codex card-writing call.
+6. Post at most one verified GSC review card per workspace, and never while another workspace review is open.
+
+The latest per-workspace counts are persisted in `gscIssueCycles` and included in the platform heartbeat. Individual evidence and recheck dates are stored in `gscIssueAssessments`.
+
 ## Chain health alerts
 
 `seo-agent-chain-health.timer` runs every five minutes outside the main worker. This is intentional: a crashed worker cannot alert about itself. The watchdog checks:

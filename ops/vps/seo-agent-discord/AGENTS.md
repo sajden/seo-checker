@@ -153,6 +153,11 @@ Examples:
 - "den är indexerad" closes the active indexing check.
 - Pasted Google Search Console warnings are operational SEO issues, not ordinary chat. Parse known issue text such as "Duplicate, Google chose different canonical than user" into a concrete technical action card for the current workspace.
 - Automatically fetched Google Search Console issues should be described as: "Jag hittade detta GSC-fel" + concrete issue + proposed repo fix. The operator should be able to Approve/Skip/Deprioritize the fix like any other card.
+- Never turn raw GSC rows directly into Discord cards. Verify live HTTP/redirect state and sitemap membership first, then use URL Inspection for a live sitemap page when the issue is discovery/indexing related.
+- Resolved redirects and live URLs that URL Inspection confirms indexed are closed internally. Expired event URLs that return 404 and are absent from sitemap are normal lifecycle signals and are monitored without operator review.
+- Group multiple unresolved 404 URLs for the same workspace into one technical batch. Keep at most one open review card per workspace across both GSC and ordinary SEO queues.
+- Persist each GSC assessment with disposition, evidence, reason and next-check date so the dashboard can explain what the agent filtered, inspected, posted or deferred.
+- Apply deterministic workspace, recent-change and evidence guards before invoking Codex for a GSC card. Codex must not be spent formatting a card the existing policy already rejects.
 - "det där är redan gjort" marks the active action handled or asks for confirmation if ambiguous.
 - "vänta med den" deprioritizes the active action.
 

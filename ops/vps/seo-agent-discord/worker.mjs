@@ -4,6 +4,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeF
 import { join } from 'node:path'
 import { createHash, createHmac } from 'node:crypto'
 import { agentRuntimeSnapshot } from './agent-brain.mjs'
+import { classifyGscIssue, groupGscReviewCandidates } from './gsc-issue-policy.mjs'
 
 const env = loadEnv([
   '/home/deploy/.hermes/.env',
@@ -123,11 +124,13 @@ async function sendPlatformHeartbeat() {
       },
       reviewQueue,
       activity: currentAgentActivity(reviewQueue),
+      gsc: currentGscStatusSummary(),
       schedule: {
         dailyHourUtc,
         pollMs,
         contentReviewEveryMs,
         technicalCheckEveryMs,
+        gscIssueCheckEveryMs,
         weeklyStrategy: 'once-per-ISO-week'
       }
     }
@@ -221,6 +224,22 @@ function currentAgentActivity(reviewQueue) {
     lastContentReviewAt: state.lastContentReviewSyncAt || null,
     nextContentReviewAt: nextIntervalAt(state.lastContentReviewSyncAt, contentReviewEveryMs),
     nextFullAnalysisAt: nextDailyRunIso()
+  }
+}
+
+function currentGscStatusSummary() {
+  const cycles = Object.values(state.gscIssueCycles || {})
+  return {
+    lastCheckAt: state.lastGscIssueCheckAt || null,
+    workspaceCount: cycles.length,
+    fetched: cycles.reduce((sum, cycle) => sum + Number(cycle.fetched || 0), 0),
+    resolvedInternally: cycles.reduce((sum, cycle) => sum + Number(cycle.resolved || 0), 0),
+    monitored: cycles.reduce((sum, cycle) => sum + Number(cycle.monitored || 0), 0),
+    inspected: cycles.reduce((sum, cycle) => sum + Number(cycle.inspected || 0), 0),
+    reviewCandidates: cycles.reduce((sum, cycle) => sum + Number(cycle.reviewCandidates || 0), 0),
+    guarded: cycles.reduce((sum, cycle) => sum + Number(cycle.guarded || 0), 0),
+    postedCards: cycles.reduce((sum, cycle) => sum + Number(cycle.postedCards || 0), 0),
+    workspaces: cycles.slice(0, 8)
   }
 }
 
@@ -954,11 +973,26 @@ async function checkGscIssuesForWorkspaces(workspaces) {
   state.lastGscIssueCheckAt = new Date(now).toISOString()
   state.gscIssueFetchStatus = state.gscIssueFetchStatus || {}
   state.gscIssueSeen = state.gscIssueSeen || {}
+  state.gscIssueCycles = state.gscIssueCycles || {}
   for (const workspace of workspaces) {
     const targetChannelId = await channelForWorkspace(workspace)
     if (!targetChannelId || !workspace?.gscProperty) continue
+    const cycleKey = workspace.id || workspace.label || workspace.gscProperty
+    const cycle = {
+      workspaceId: workspace.id || null,
+      workspaceLabel: workspace.label || null,
+      checkedAt: new Date().toISOString(),
+      fetched: 0,
+      resolved: 0,
+      monitored: 0,
+      inspected: 0,
+      reviewCandidates: 0,
+      postedCards: 0,
+      status: 'checking'
+    }
     const activeKey = activeWorkspaceActionKey(workspace, targetChannelId)
     if (workspaceReviewCardIsOpen(activeKey)) {
+      state.gscIssueCycles[cycleKey] = { ...cycle, status: 'waiting_for_existing_review' }
       logThrottled(`gsc_issue_waiting_for_review:${activeKey}`, 30 * 60 * 1000, 'gsc_issue_waiting_for_review', {
         workspace: workspace.label || workspace.id,
         actionId: state.activeActionByWorkspace?.[activeKey]?.actionId || null
@@ -973,7 +1007,9 @@ async function checkGscIssuesForWorkspaces(workspaces) {
       error: result.error || null,
       checkedAt: new Date().toISOString()
     }
+    cycle.fetched = Array.isArray(result.issues) ? result.issues.length : 0
     if (!result.ok) {
+      state.gscIssueCycles[cycleKey] = { ...cycle, status: 'fetch_failed', error: result.error || 'unknown' }
       logThrottled(`gsc_issue_fetch_unavailable:${workspace.id || workspace.label || workspace.gscProperty}`, 24 * 60 * 60 * 1000, 'gsc_issue_fetch_unavailable', {
         workspace: workspace.label || workspace.id,
         gscProperty: workspace.gscProperty,
@@ -981,17 +1017,78 @@ async function checkGscIssuesForWorkspaces(workspaces) {
       })
       continue
     }
-    for (const rawIssue of result.issues.slice(0, 8)) {
+    const sitemapUrls = await fetchWorkspaceSitemapUrls(workspace)
+    const deferredIssues = deferredGscIssuesForWorkspace(workspace, targetChannelId)
+    const candidates = []
+    for (const rawIssue of [...deferredIssues, ...result.issues].slice(0, 20)) {
       const issue = normalizeGscIssue(rawIssue, workspace)
       if (!issue) continue
       const action = createGscIssueAction(issue, workspace, targetChannelId, { source: result.source || 'gsc_issue_poll' })
       if (hasSeenGscIssueAction(action, workspace, issue)) continue
-      const posted = await postGscIssueAction({ action, issue, workspace, targetChannelId, sourceLabel: `GSC issue hittad automatiskt (${result.source || 'platform'})` })
-      if (posted) break
+      const evidence = await collectGscIssueEvidence(issue, sitemapUrls)
+      let policy = classifyGscIssue({ issue, evidence })
+      let inspection = null
+      if (policy.disposition === 'inspect') {
+        cycle.inspected += 1
+        inspection = await inspectGscIssueQuietly(action, workspace)
+        if (inspection?.status === 'indexed' && Number(inspection?.confidence || 0) >= 0.8) {
+          policy = { disposition: 'resolved', reason: 'url_inspection_confirms_indexed', score: 0 }
+        } else {
+          policy = { disposition: 'review', reason: 'url_inspection_confirms_indexing_attention', score: 75 }
+        }
+      }
+      rememberGscIssueAssessment({ action, issue, workspace, evidence, policy, inspection, source: result.source })
+      if (policy.disposition !== 'review') {
+        if (policy.disposition === 'resolved') cycle.resolved += 1
+        else cycle.monitored += 1
+        delete state.deferredGscIssues?.[action.id]
+        rememberGscIssueAction(action, workspace, issue)
+        recordActionLedger(action, workspace, targetChannelId, 'ignored', {
+          source: result.source || 'gsc_issue_poll',
+          reason: policy.reason,
+          evidence,
+          recheckAfter: isoDatePlusDays(policy.disposition === 'resolved' ? 30 : 14)
+        })
+        continue
+      }
+      cycle.reviewCandidates += 1
+      candidates.push({ action, issue, evidence, inspection, score: policy.score, policy })
+    }
+    const [selected] = groupGscReviewCandidates(candidates)
+    if (selected) {
+      const action = selected.batch
+        ? createGscIssueBatchAction(selected, workspace, targetChannelId, { source: result.source || 'gsc_issue_poll' })
+        : selected.action
+      const issue = selected.batch ? batchIssueFromCandidate(selected) : selected.issue
+      const posted = await postGscIssueAction({ action, issue, workspace, targetChannelId, sourceLabel: `GSC issue verifierat automatiskt (${result.source || 'platform'})` })
+      delete state.deferredGscIssues?.[selected.action?.id || action.id]
+      cycle.postedCards = posted ? 1 : 0
+      if (!posted) cycle.guarded = Number(cycle.guarded || 0) + 1
+      if (selected.batch) {
+        for (const child of selected.issues || []) {
+          const childAction = createGscIssueAction(child, workspace, targetChannelId, { source: result.source || 'gsc_issue_poll' })
+          delete state.deferredGscIssues?.[childAction.id]
+          rememberGscIssueAction(childAction, workspace, child)
+        }
+      }
+    }
+    state.gscIssueCycles[cycleKey] = {
+      ...cycle,
+      status: cycle.postedCards ? 'review_posted' : selected ? 'guarded_without_post' : 'complete'
     }
   }
   pruneSeenGscIssues()
   saveState()
+}
+
+function deferredGscIssuesForWorkspace(workspace, targetChannelId) {
+  return Object.values(state.deferredGscIssues || {})
+    .filter((record) => (
+      String(record?.workspaceId || '') === String(workspace?.id || '') ||
+      String(record?.channelId || '') === String(targetChannelId || '')
+    ))
+    .map((record) => record.issue)
+    .filter(Boolean)
 }
 
 async function fetchGscIssuesForWorkspace(workspace) {
@@ -1040,6 +1137,161 @@ function extractGscIssuesFromPayload(payload) {
   return found || []
 }
 
+async function fetchWorkspaceSitemapUrls(workspace) {
+  const host = workspaceHost(workspace)
+  if (!host) return null
+  try {
+    const roots = new Set([`https://${host}/sitemap.xml`])
+    const robots = await fetch(`https://${host}/robots.txt`, { signal: AbortSignal.timeout(8000) }).then((response) => response.ok ? response.text() : '').catch(() => '')
+    for (const match of robots.matchAll(/^sitemap:\s*(\S+)/gim)) roots.add(match[1])
+    const pageUrls = new Set()
+    const childSitemaps = new Set()
+    for (const sitemapUrl of [...roots].slice(0, 5)) {
+      const locations = await fetchSitemapLocations(sitemapUrl)
+      for (const location of locations) {
+        if (/\.xml(?:\?|$)/i.test(location)) childSitemaps.add(location)
+        else pageUrls.add(normalizeComparableUrl(location))
+      }
+    }
+    for (const sitemapUrl of [...childSitemaps].slice(0, 20)) {
+      const locations = await fetchSitemapLocations(sitemapUrl)
+      for (const location of locations) if (!/\.xml(?:\?|$)/i.test(location)) pageUrls.add(normalizeComparableUrl(location))
+    }
+    return pageUrls
+  } catch (error) {
+    logThrottled(`gsc_sitemap_fetch_failed:${host}`, 6 * 60 * 60 * 1000, 'gsc_sitemap_fetch_failed', { host, error: error?.message || String(error) })
+    return null
+  }
+}
+
+async function fetchSitemapLocations(sitemapUrl) {
+  try {
+    const response = await fetch(sitemapUrl, { signal: AbortSignal.timeout(8000) })
+    if (!response.ok) return []
+    const xml = await response.text()
+    return [...xml.matchAll(/<loc>\s*([^<]+?)\s*<\/loc>/gi)].map((match) => match[1].trim())
+  } catch {
+    return []
+  }
+}
+
+async function collectGscIssueEvidence(issue, sitemapUrls) {
+  const targetUrl = String(issue?.affectedUrl || '')
+  const evidence = {
+    checkedAt: new Date().toISOString(),
+    httpStatus: 0,
+    redirected: false,
+    finalUrl: targetUrl,
+    inSitemap: sitemapUrls instanceof Set ? sitemapUrls.has(normalizeComparableUrl(targetUrl)) : null
+  }
+  if (!/^https:\/\//i.test(targetUrl)) return evidence
+  try {
+    const response = await fetch(targetUrl, { redirect: 'manual', signal: AbortSignal.timeout(8000) })
+    evidence.httpStatus = response.status
+    const location = response.headers.get('location')
+    if (location && response.status >= 300 && response.status < 400) {
+      evidence.redirected = true
+      evidence.finalUrl = new URL(location, targetUrl).toString()
+      try {
+        const finalResponse = await fetch(evidence.finalUrl, { redirect: 'follow', signal: AbortSignal.timeout(8000) })
+        evidence.finalStatus = finalResponse.status
+        evidence.finalUrl = finalResponse.url || evidence.finalUrl
+        await finalResponse.body?.cancel().catch(() => null)
+      } catch (error) {
+        evidence.finalFetchError = error?.message || String(error)
+      }
+    }
+    await response.body?.cancel().catch(() => null)
+  } catch (error) {
+    evidence.fetchError = error?.message || String(error)
+  }
+  return evidence
+}
+
+async function inspectGscIssueQuietly(action, workspace) {
+  try {
+    const targetUrl = String(action?.targetUrl || '')
+    const host = targetUrl ? new URL(targetUrl).hostname.replace(/^www\./, '') : workspaceHost(workspace)
+    const result = await runGscInspectionThroughRuntime({
+      command: 'inspect-url',
+      workspaceId: workspace?.id || null,
+      workspaceHost: host,
+      gscProperty: workspace?.gscProperty || '',
+      targetUrl
+    })
+    return result?.inspection || null
+  } catch (error) {
+    logThrottled(`gsc_quiet_inspection_failed:${action?.id || 'unknown'}`, 6 * 60 * 60 * 1000, 'gsc_quiet_inspection_failed', {
+      actionId: action?.id || null,
+      error: error?.message || String(error)
+    })
+    return null
+  }
+}
+
+function rememberGscIssueAssessment({ action, issue, workspace, evidence, policy, inspection, source }) {
+  state.gscIssueAssessments = state.gscIssueAssessments || {}
+  state.gscIssueAssessments[action.id] = {
+    actionId: action.id,
+    workspaceId: workspace?.id || null,
+    issueType: issue?.type || null,
+    targetUrl: issue?.affectedUrl || null,
+    disposition: policy?.disposition || 'unknown',
+    reason: policy?.reason || null,
+    score: Number(policy?.score || 0),
+    evidence,
+    inspection,
+    source: source || null,
+    assessedAt: new Date().toISOString(),
+    nextCheckAt: isoDatePlusDays(policy?.disposition === 'resolved' ? 30 : policy?.disposition === 'monitor' ? 14 : 1)
+  }
+}
+
+function createGscIssueBatchAction(candidate, workspace, targetChannelId, options = {}) {
+  const issues = candidate.issues || []
+  const host = workspaceHost(workspace)
+  const targets = issues.map((issue) => issue.affectedUrl).filter(Boolean)
+  const digest = createHash('sha256').update(targets.slice().sort().join('\n')).digest('hex').slice(0, 10)
+  return {
+    id: `gsc_issue_${slugify(workspace?.label || host || targetChannelId)}_404_batch_${digest}`.slice(0, 180),
+    title: `Granska ${targets.length} relaterade 404-URL:er som en teknisk batch`,
+    targetUrl: host ? `https://${host}/` : '',
+    url: host ? `https://${host}/` : '',
+    keyword: null,
+    priority: 'high',
+    category: 'technical',
+    why: `GSC visar ${targets.length} relaterade 404-URL:er. Agenten har slagit ihop dem så internlänkar, sitemap och eventlivscykel kan granskas i ett sammanhang.`,
+    recommendedAction: `Kontrollera samtliga URL:er i samma körning. Ta bort felaktiga internlänkar eller sitemap-poster och lägg bara 301 när en tydlig motsvarande sida finns. URL:er: ${targets.slice(0, 6).join(', ')}`,
+    status: 'pending',
+    workspaceId: workspace?.id || null,
+    workspaceSlug: workspace?.label || null,
+    projectSlug: workspace?.repoFullName || null,
+    source: options.source || 'gsc_issue_batch',
+    gscBatchTargets: targets
+  }
+}
+
+function batchIssueFromCandidate(candidate) {
+  const issues = candidate.issues || []
+  return {
+    type: 'not_found_404_batch',
+    title: `GSC: ${issues.length} relaterade 404-URL:er`,
+    severity: 'high',
+    affectedUrl: candidate.action?.targetUrl || '',
+    reason: `${issues.length} verifierade 404-signaler grupperades till en teknisk kontroll.`,
+    targets: issues.map((issue) => issue.affectedUrl).filter(Boolean)
+  }
+}
+
+function normalizeComparableUrl(value) {
+  try {
+    const url = new URL(String(value || '').trim())
+    return `${url.protocol}//${url.host}${url.pathname.replace(/\/$/, '') || '/'}${url.search}`
+  } catch {
+    return String(value || '').trim().replace(/\/$/, '')
+  }
+}
+
 function normalizeGscIssue(rawIssue, workspace) {
   if (!rawIssue) return null
   if (typeof rawIssue === 'string') return parseGscIssueMessage(rawIssue)
@@ -1085,6 +1337,33 @@ async function postGscIssueAction({ action, issue, workspace, targetChannelId, s
   }
   ensureWorkspaceProfile(workspace, targetChannelId)
   const review = reviewActionForPosting(action, workspace, targetChannelId, sourceLabel)
+  if (!review.ok) {
+    if (state.gscIssueAssessments?.[action.id]) {
+      state.gscIssueAssessments[action.id] = {
+        ...state.gscIssueAssessments[action.id],
+        disposition: 'guarded',
+        reason: review.reason,
+        guardScore: review.score,
+        guardedAt: new Date().toISOString(),
+        nextCheckAt: isoDatePlusDays(14)
+      }
+    }
+    rememberGscIssueAction(action, workspace, issue)
+    recordActionLedger(action, workspace, targetChannelId, 'guarded', {
+      source: action.source || 'gsc_issue_poll',
+      guard: review.reason,
+      review,
+      recheckAfter: isoDatePlusDays(14)
+    })
+    rememberAgentLesson(`GSC issue guarded before Codex for ${workspace.label || workspace.id}: ${review.reason}`)
+    log('gsc_issue_guarded_before_codex', {
+      actionId: action.id,
+      workspace: workspace.label || workspace.id,
+      reason: review.reason,
+      score: review.score
+    })
+    return null
+  }
   const message = await buildActionCardMessage(action, sourceLabel, workspace, review, targetChannelId)
   if (!message) return null
   const posted = await sendDiscordMessage(message, targetChannelId, actionComponents(action), { kind: 'action_card' })
@@ -1140,6 +1419,8 @@ function workspaceReviewCardIsOpen(activeKey) {
 function hasSeenGscIssueAction(action, workspace, issue) {
   const key = gscIssueSeenKey(action, workspace, issue)
   const seenAt = state.gscIssueSeen?.[key]?.seenAt
+  const nextCheckAt = state.gscIssueAssessments?.[action.id]?.nextCheckAt
+  if (nextCheckAt && Date.parse(nextCheckAt) > Date.now()) return true
   return Boolean(seenAt && Date.now() - Date.parse(seenAt) < 7 * 24 * 60 * 60 * 1000)
 }
 
@@ -1167,6 +1448,11 @@ function pruneSeenGscIssues() {
   state.gscIssueSeen = Object.fromEntries(entries.filter(([, value]) => {
     const seenAt = Date.parse(value?.seenAt || '')
     return seenAt && seenAt > cutoff
+  }))
+  const assessmentCutoff = Date.now() - 90 * 24 * 60 * 60 * 1000
+  state.gscIssueAssessments = Object.fromEntries(Object.entries(state.gscIssueAssessments || {}).filter(([, value]) => {
+    const assessedAt = Date.parse(value?.assessedAt || '')
+    return assessedAt && assessedAt > assessmentCutoff
   }))
 }
 
@@ -3689,6 +3975,8 @@ function activeActionStillOpen(active, items) {
   const codeResult = state.codeActionResults?.[actionId]
   if (codeResult && ['completed', 'failed', 'rejected'].includes(String(codeResult.status))) return false
   if (codeResult && ['review_ready', 'operator_approved', 'promotion_running'].includes(String(codeResult.status))) return true
+  const posted = state.postedActionIds?.[actionId]
+  if (posted?.messageId && !posted?.handledAt) return true
   const item = items.find((candidate) => String(candidate?.id || '') === actionId)
   if (!item) return false
   const status = String(item.status || '')
@@ -4858,56 +5146,19 @@ async function maybeHandleGscIssueMessage(message, targetChannelId) {
     return true
   }
   const action = createGscIssueAction(issue, workspace, targetChannelId)
-  state.gscIssues = state.gscIssues || {}
-  state.gscIssues[action.id] = {
-    ...issue,
+  state.deferredGscIssues = state.deferredGscIssues || {}
+  state.deferredGscIssues[action.id] = {
     actionId: action.id,
+    issue,
     workspaceId: workspace.id || null,
-    workspaceLabel: workspace.label || null,
     channelId: targetChannelId,
     receivedAt: new Date().toISOString(),
     raw: String(message || '').slice(0, 2000)
   }
-  ensureWorkspaceProfile(workspace, targetChannelId)
-  const review = reviewActionForPosting(action, workspace, targetChannelId, 'GSC issue från Search Console')
-  const actionMessage = await buildActionCardMessage(action, 'GSC issue från Search Console', workspace, review, targetChannelId)
-  if (!actionMessage) return true
-  const posted = await sendDiscordMessage(actionMessage, targetChannelId, actionComponents(action), { kind: 'action_card' })
-  const activeKey = activeWorkspaceActionKey(workspace, targetChannelId)
-  const runtimePosted = await markActionPostedThroughRuntime({
-    action,
-    workspace,
-    targetChannelId,
-    messageId: posted.id,
-    activeKey,
-    systemKey: gscIssueSeenKey(action, workspace, issue),
-    guard: 'gsc_issue_message',
-    review
-  })
-  if (!runtimePosted.ok) {
-    state.postedActionIds = state.postedActionIds || {}
-    state.postedActionIds[action.id] = {
-      messageId: posted.id,
-      channelId: targetChannelId,
-      title: action.title,
-      workspaceId: workspace.id || null,
-      postedAt: new Date().toISOString()
-    }
-    state.activeActionByWorkspace = state.activeActionByWorkspace || {}
-    state.activeActionByWorkspace[activeKey] = {
-      actionId: action.id,
-      messageId: posted.id,
-      channelId: targetChannelId,
-      workspaceId: workspace.id || null,
-      firstPostedAt: new Date().toISOString(),
-      postedAt: new Date().toISOString()
-    }
-    state.messageToAction = state.messageToAction || {}
-    state.messageToAction[posted.id] = action.id
-    recordActionLedger(action, workspace, targetChannelId, 'posted', { source: 'gsc_issue_message', issueType: issue.type, messageId: posted.id, review })
-  }
-  rememberAgentLesson(`GSC issue captured for ${workspace.label || workspace.id}: ${issue.type}`)
+  state.lastGscIssueCheckAt = null
+  rememberAgentLesson(`GSC issue queued for verification for ${workspace.label || workspace.id}: ${issue.type}`)
   saveState()
+  await sendDiscordMessage('Jag sparade GSC-signalen i den tekniska kön. Jag verifierar live-status, sitemap och URL Inspection innan den eventuellt blir ett granskningskort.', targetChannelId)
   return true
 }
 
