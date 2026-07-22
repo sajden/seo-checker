@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { createHash, createHmac } from 'node:crypto'
 import { agentRuntimeSnapshot } from './agent-brain.mjs'
 import { classifyGscIssue, groupGscReviewCandidates } from './gsc-issue-policy.mjs'
+import { buildGscExperimentSnapshot, evaluateExperimentMeasurement, nextExperimentPhase, nextMeasurementDate } from './seo-experiment-measurement.mjs'
 
 const env = loadEnv([
   '/home/deploy/.hermes/.env',
@@ -125,6 +126,7 @@ async function sendPlatformHeartbeat() {
       reviewQueue,
       activity: currentAgentActivity(reviewQueue),
       gsc: currentGscStatusSummary(),
+      experiments: currentExperimentMeasurementSummary(),
       schedule: {
         dailyHourUtc,
         pollMs,
@@ -243,6 +245,23 @@ function currentGscStatusSummary() {
   }
 }
 
+function currentExperimentMeasurementSummary() {
+  const experiments = Object.values(state.seoExperiments || {})
+  const outcomes = Object.values(state.experimentOutcomes || {})
+  return {
+    total: experiments.length,
+    baselineReady: experiments.filter((item) => item.baselineStatus === 'ready').length,
+    baselineUnavailable: experiments.filter((item) => String(item.baselineStatus || '').includes('unavailable')).length,
+    baselinePending: experiments.filter((item) => !item.baselineStatus || item.baselineStatus === 'pending_gsc_snapshot').length,
+    day14Measured: experiments.filter((item) => item.measurements?.followups?.day14).length,
+    day30Measured: experiments.filter((item) => item.measurements?.followups?.day30).length,
+    improved: outcomes.filter((item) => item.outcome === 'improved').length,
+    declined: outcomes.filter((item) => item.outcome === 'declined').length,
+    inconclusive: outcomes.filter((item) => ['mixed', 'inconclusive', 'insufficient_data'].includes(item.outcome)).length,
+    legacyUnverified: outcomes.filter((item) => ['provisionally_improved', 'needs_more_work'].includes(item.outcome)).length
+  }
+}
+
 function nextIntervalAt(lastAt, intervalMs) {
   const last = Date.parse(lastAt || '')
   return new Date((Number.isFinite(last) ? last : Date.now()) + intervalMs).toISOString()
@@ -311,6 +330,7 @@ async function tick() {
   await runTickStep('reconcile_interrupted_promotions', () => reconcileInterruptedPromotions(workspaces))
   if (steps.syncWorkspaceRepoCommits !== false) await runTickStep('sync_workspace_repo_commits', () => syncWorkspaceRepoCommits(workspaces))
   await runTickStep('hourly_technical_checks', () => maybeRunHourlyTechnicalChecks(workspaces))
+  await runTickStep('capture_experiment_baselines', () => capturePendingExperimentBaselines(workspaces))
   if (steps.ensureDailyRunsForWorkspaces !== false) await runTickStep('ensure_daily_runs_for_workspaces', () => ensureDailyRunsForWorkspaces(workspaces))
   if (steps.runDailyRankingReviews !== false) await runTickStep('run_daily_ranking_reviews', () => runDailyRankingReviews(workspaces))
   await runTickStep('weekly_strategy_review', () => maybeRunWeeklyStrategyReview(workspaces))
@@ -855,7 +875,7 @@ async function maybeNotifyReadinessRecovery(workspace, targetChannelId, readines
 }
 
 async function workspaceReadiness(workspace) {
-  const batchPayload = await fetchPlatformJson(`/api/platform/seo-monitor/batch?gscProperty=${encodeURIComponent(workspace.gscProperty || '')}&repoFullName=${encodeURIComponent(workspace.repoFullName || '')}&branch=${encodeURIComponent(workspace.branch || '')}`).catch((error) => ({ error: error?.message || String(error), batch: null }))
+  const batchPayload = await fetchWorkspaceSeoBatchPayload(workspace).catch((error) => ({ error: error?.message || String(error), batch: null }))
   const batch = batchPayload.batch || null
   const lastRunAt = batch?.lastRunAt || batch?.lastRunSummary?.ranAt || null
   const lastRunDate = lastRunAt ? new Date(lastRunAt).toISOString().slice(0, 10) : null
@@ -884,6 +904,86 @@ async function workspaceReadiness(workspace) {
     measurementReady: checks.gscRawRows > 0,
     ready: checks.gscConfigured && checks.repoConfigured && checks.batchAvailable && checks.dataFresh,
   }
+}
+
+function fetchWorkspaceSeoBatchPayload(workspace) {
+  return fetchPlatformJson(`/api/platform/seo-monitor/batch?gscProperty=${encodeURIComponent(workspace.gscProperty || '')}&repoFullName=${encodeURIComponent(workspace.repoFullName || '')}&branch=${encodeURIComponent(workspace.branch || '')}`)
+}
+
+async function fetchWorkspaceSeoBatch(workspace) {
+  const payload = await fetchWorkspaceSeoBatchPayload(workspace)
+  return payload?.batch || null
+}
+
+async function capturePendingExperimentBaselines(workspaces) {
+  const pending = Object.values(state.seoExperiments || {})
+    .filter((item) => !item.measurements?.baseline && (!item.baselineStatus || item.baselineStatus === 'pending_gsc_snapshot'))
+  if (!pending.length) return
+  const batches = new Map()
+  for (const experiment of pending) {
+    const workspace = workspaces.find((item) => workspaceMatchesExperiment(item, experiment))
+    if (!workspace) continue
+    const workspaceKey = workspaceProfileKey(workspace, null)
+    if (!batches.has(workspaceKey)) {
+      batches.set(workspaceKey, await fetchWorkspaceSeoBatch(workspace).catch(() => null))
+    }
+    const batch = batches.get(workspaceKey)
+    const sourceRunAt = batch?.lastRunAt || batch?.lastRunSummary?.ranAt || null
+    const sourceRunMs = Date.parse(sourceRunAt || '')
+    const completedMs = Date.parse(experiment.completedAt || '')
+    const current = state.seoExperiments[experiment.id]
+    if (!current) continue
+    if (!experiment.targetUrl) {
+      closeExperimentWithoutBaseline(current, 'unavailable_missing_target_url', 'Experimentet saknar en mål-URL och kan därför inte matchas mot GSC.')
+      continue
+    }
+    if (!batch || !Number.isFinite(sourceRunMs)) continue
+    if (!Number.isFinite(completedMs) || sourceRunMs > completedMs) {
+      closeExperimentWithoutBaseline(current, 'unavailable_historical', 'Ingen sparad GSC-körning från före ändringen finns; en senare mätning används inte som falsk baslinje.')
+      continue
+    }
+    if (completedMs - sourceRunMs > 72 * 60 * 60 * 1000) {
+      closeExperimentWithoutBaseline(current, 'unavailable_stale', 'Senaste GSC-körningen före ändringen var äldre än 72 timmar.')
+      continue
+    }
+    const baseline = buildGscExperimentSnapshot({
+      batch,
+      targetUrl: experiment.targetUrl,
+      keyword: experiment.keyword || experiment.mappedKeyword || ''
+    })
+    current.measurements = { ...(current.measurements || {}), baseline, followups: current.measurements?.followups || {} }
+    current.baselineStatus = baseline.status === 'ready' ? 'ready' : 'unavailable_gsc_coverage'
+    current.baselineCapturedAt = baseline.capturedAt
+    current.baselineReason = baseline.status === 'ready'
+      ? `GSC-baslinje från ${baseline.windowStart} till ${baseline.windowEnd}.`
+      : 'Mål-URL:en saknas i ett trunkerat GSC-resultat och kan därför inte säkert räknas som noll.'
+    if (baseline.status !== 'ready') closeExperimentWithoutBaseline(current, current.baselineStatus, current.baselineReason)
+  }
+  saveState()
+}
+
+function closeExperimentWithoutBaseline(experiment, status, reason) {
+  const at = new Date().toISOString()
+  experiment.baselineStatus = status
+  experiment.baselineReason = reason
+  experiment.measurements = {
+    ...(experiment.measurements || {}),
+    baseline: null,
+    followups: {
+      day14: { status, capturedAt: at },
+      day30: { status, capturedAt: at }
+    }
+  }
+  experiment.measurementClosedAt = at
+  experiment.reviewAfter = null
+  experiment.nextReviewAfter = null
+}
+
+function workspaceMatchesExperiment(workspace, experiment) {
+  if (experiment.repoFullName && workspace?.repoFullName === experiment.repoFullName) return true
+  if (experiment.workspaceKey && experiment.workspaceKey === workspaceProfileKey(workspace, null)) return true
+  const host = workspaceHost(workspace)
+  return Boolean(host && String(experiment.targetUrl || '').includes(host))
 }
 
 function formatReadinessMessage(workspace, readiness) {
@@ -7268,8 +7368,12 @@ async function buildRankingReview(workspace, targetChannelId) {
   const experiments = Object.values(state.seoExperiments || {})
     .filter((item) => item.workspaceKey === workspaceKey)
     .sort((a, b) => Date.parse(b.completedAt || 0) - Date.parse(a.completedAt || 0))
-  const outcomeReview = evaluateDueSeoExperiments({ workspace, targetChannelId, actions, experiments })
-  const pendingFollowups = experiments.filter((item) => item.reviewAfter && item.reviewAfter <= new Date().toISOString().slice(0, 10) && !item.reviewedAt)
+  const batch = await fetchWorkspaceSeoBatch(workspace).catch(() => null)
+  const outcomeReview = await evaluateDueSeoExperiments({ workspace, targetChannelId, actions, experiments, batch })
+  const refreshedExperiments = Object.values(state.seoExperiments || {})
+    .filter((item) => item.workspaceKey === workspaceKey)
+    .sort((a, b) => Date.parse(b.completedAt || 0) - Date.parse(a.completedAt || 0))
+  const pendingFollowups = refreshedExperiments.filter((item) => nextExperimentPhase(item, new Date()))
   const unmappedActions = actions
     .filter((action) => isCodeAction(action) && !isIndexingCheckAction(action))
     .filter((action) => !mapKeywordForAction(action, keywordMap))
@@ -7287,7 +7391,7 @@ async function buildRankingReview(workspace, targetChannelId) {
       return completedAt && Date.now() - completedAt > 30 * 24 * 60 * 60 * 1000
     })
     .slice(0, 5)
-  const next = selectRankingReviewNextStep({ workspace, profile, keywordMap, actions, experiments, staleKeywordTargets, weakLiveQueue, targetChannelId })
+  const next = selectRankingReviewNextStep({ workspace, profile, keywordMap, actions, experiments: refreshedExperiments, staleKeywordTargets, weakLiveQueue, targetChannelId })
   return {
     ok: true,
     profileLabel: profile.label,
@@ -7380,34 +7484,34 @@ function formatRankingReviewMessage(workspace, review) {
   ].filter(Boolean).join('\n').slice(0, 1900)
 }
 
-function evaluateDueSeoExperiments({ workspace, targetChannelId, actions, experiments }) {
-  const today = new Date().toISOString().slice(0, 10)
-  const dueExperiments = experiments.filter((item) => item?.reviewAfter && item.reviewAfter <= today && !item.reviewedAt)
+async function evaluateDueSeoExperiments({ workspace, targetChannelId, actions, experiments, batch }) {
+  const now = new Date()
+  const dueExperiments = experiments.filter((item) => nextExperimentPhase(item, now))
+  if (!batch) return { reviewed: [], dueCount: dueExperiments.length, deferredReason: 'gsc_batch_unavailable' }
   const reviewed = []
   for (const experiment of dueExperiments) {
+    const phase = nextExperimentPhase(experiment, now)
+    if (!phase) continue
+    const sourceRunMs = Date.parse(batch?.lastRunAt || batch?.lastRunSummary?.ranAt || '')
+    const phaseDueMs = Date.parse(experiment.completedAt || '') + (phase === 'day30' ? 30 : 14) * 24 * 60 * 60 * 1000
+    if (Number.isFinite(sourceRunMs) && sourceRunMs + 12 * 60 * 60 * 1000 < phaseDueMs) continue
     const matchingActions = actions.filter((action) => experimentMatchesAction(experiment, action))
     const unresolvedCodeActions = matchingActions.filter((action) => isCodeAction(action) && !isIndexingCheckAction(action))
     const gscOrIndexingActions = matchingActions.filter((action) => isIndexingCheckAction(action) || isGscAuthAction(action))
-    let outcome = 'inconclusive'
-    let confidence = 'low'
-    let reason = 'No direct live action matched this experiment at follow-up time, but no Search Console performance snapshot is available.'
-    let nextReviewAfter = addDaysIso(today, 14)
-    if (unresolvedCodeActions.length) {
-      outcome = 'needs_more_work'
-      confidence = 'medium'
-      reason = `SEO Monitor still has ${unresolvedCodeActions.length} matching content/code action(s), so the previous experiment did not fully clear the problem.`
-      nextReviewAfter = addDaysIso(today, 7)
-    } else if (gscOrIndexingActions.length) {
-      outcome = 'inconclusive'
-      confidence = 'medium'
-      reason = 'Matching issue is operational/GSC-related, so content impact cannot be judged from live actions alone.'
-      nextReviewAfter = addDaysIso(today, 7)
-    } else {
-      outcome = 'provisionally_improved'
-      confidence = 'low'
-      reason = 'No matching live action remains; treat this as a weak positive signal until GSC/query metrics confirm it.'
-      nextReviewAfter = addDaysIso(today, 30)
-    }
+    const followup = batch ? buildGscExperimentSnapshot({
+      batch,
+      targetUrl: experiment.targetUrl,
+      keyword: experiment.keyword || experiment.mappedKeyword || ''
+    }) : null
+    const measurement = evaluateExperimentMeasurement({ baseline: experiment.measurements?.baseline, followup, phase })
+    const operationalStatus = unresolvedCodeActions.length
+      ? `${unresolvedCodeActions.length} matchande kod/content-actions finns fortfarande.`
+      : gscOrIndexingActions.length
+        ? 'En matchande teknisk GSC/indexeringssignal finns fortfarande.'
+        : 'Ingen matchande live-action finns kvar; detta används endast som kontext, inte som resultatmått.'
+    const nextReviewAfter = phase === 'day14'
+      ? new Date(Date.parse(experiment.completedAt) + 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+      : null
     const outcomeRecord = {
       experimentId: experiment.id,
       actionId: experiment.actionId || null,
@@ -7416,9 +7520,11 @@ function evaluateDueSeoExperiments({ workspace, targetChannelId, actions, experi
       targetUrl: experiment.targetUrl || '',
       keyword: experiment.keyword || experiment.mappedKeyword || '',
       commit: experiment.commit || '',
-      outcome,
-      confidence,
-      reason,
+      phase,
+      outcome: measurement.outcome,
+      confidence: measurement.confidence,
+      reason: `${measurement.reason} ${operationalStatus}`,
+      measurement,
       matchingActionIds: matchingActions.map((action) => action.id).filter(Boolean).slice(0, 10),
       reviewedAt: new Date().toISOString(),
       nextReviewAfter
@@ -7427,14 +7533,31 @@ function evaluateDueSeoExperiments({ workspace, targetChannelId, actions, experi
     state.experimentOutcomes[experiment.id] = outcomeRecord
     state.seoExperiments[experiment.id] = {
       ...state.seoExperiments[experiment.id],
-      reviewedAt: outcomeRecord.reviewedAt,
-      outcome,
-      outcomeConfidence: confidence,
-      outcomeReason: reason,
+      measurements: {
+        ...(state.seoExperiments[experiment.id]?.measurements || {}),
+        followups: {
+          ...(state.seoExperiments[experiment.id]?.measurements?.followups || {}),
+          [phase]: followup ? { ...followup, evaluation: measurement } : { capturedAt: outcomeRecord.reviewedAt, status: 'unavailable', evaluation: measurement }
+        }
+      },
+      ...(phase === 'day30' ? { reviewedAt: outcomeRecord.reviewedAt } : {}),
+      outcome: measurement.outcome,
+      outcomeConfidence: measurement.confidence,
+      outcomeReason: outcomeRecord.reason,
       nextReviewAfter,
-      reviewAfter: nextReviewAfter
+      reviewAfter: nextReviewAfter,
+      nextMeasurementAt: nextMeasurementDate({
+        ...state.seoExperiments[experiment.id],
+        measurements: {
+          ...(state.seoExperiments[experiment.id]?.measurements || {}),
+          followups: {
+            ...(state.seoExperiments[experiment.id]?.measurements?.followups || {}),
+            [phase]: followup || { status: 'unavailable' }
+          }
+        }
+      })
     }
-    rememberExperimentLesson(outcomeRecord)
+    if (['improved', 'declined', 'mixed'].includes(outcomeRecord.outcome)) rememberExperimentLesson(outcomeRecord)
     reviewed.push(outcomeRecord)
   }
   return {
@@ -7461,7 +7584,7 @@ function rememberExperimentLesson(outcome) {
     outcome.keyword ? `keyword "${outcome.keyword}"` : '',
     outcome.targetUrl ? `target ${outcome.targetUrl}` : '',
     outcome.commit ? `commit ${outcome.commit}` : '',
-    `confidence ${outcome.confidence}: ${outcome.reason}`
+    `phase ${outcome.phase || 'followup'} confidence ${outcome.confidence}: ${outcome.reason}`
   ].filter(Boolean).join(' ')
   rememberAgentLesson(text.slice(0, 700))
 }
@@ -7484,9 +7607,9 @@ function buildWorkspaceLearningSummary(workspaceKey) {
       outcome: item.outcome || null,
       outcomeConfidence: item.outcomeConfidence || null
     })),
-    positiveSignals: outcomes.filter((item) => item.outcome === 'provisionally_improved').slice(0, 6),
-    needsMoreWork: outcomes.filter((item) => item.outcome === 'needs_more_work').slice(0, 6),
-    inconclusive: outcomes.filter((item) => item.outcome === 'inconclusive').slice(0, 4)
+    positiveSignals: outcomes.filter((item) => item.outcome === 'improved').slice(0, 6),
+    needsMoreWork: outcomes.filter((item) => item.outcome === 'declined').slice(0, 6),
+    inconclusive: outcomes.filter((item) => ['mixed', 'inconclusive', 'insufficient_data'].includes(item.outcome)).slice(0, 4)
   }
 }
 
@@ -7796,7 +7919,9 @@ function recordSeoExperiment(action, workspace, targetChannelId, result, meta = 
     completedAt,
     reviewAfter: reviewDate.toISOString().slice(0, 10),
     source: meta.source || 'code_action',
-    baselineStatus: 'pending_gsc_snapshot'
+    baselineStatus: 'pending_gsc_snapshot',
+    measurements: { baseline: null, followups: {} },
+    nextMeasurementAt: reviewDate.toISOString().slice(0, 10)
   }
   rememberAgentLesson(`Started SEO experiment for ${workspace?.label || workspaceKey}: ${keyword || targetUrl || action.id}${result?.commit ? ` (${result.commit})` : ''}`)
 }

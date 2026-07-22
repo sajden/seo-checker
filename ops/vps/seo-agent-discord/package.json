@@ -2,7 +2,7 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "test": "node --test gsc-issue-policy.test.mjs"
+    "test": "node --test gsc-issue-policy.test.mjs seo-experiment-measurement.test.mjs"
   },
   "dependencies": {
     "discord.js": "^14.19.3",

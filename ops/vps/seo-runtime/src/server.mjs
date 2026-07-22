@@ -1024,7 +1024,9 @@ function recordRuntimeSeoExperiment(state, action, workspace, result, meta = {})
     completedAt,
     reviewAfter: reviewDate.toISOString().slice(0, 10),
     source: meta.source || 'seo-runtime',
-    baselineStatus: 'pending_gsc_snapshot'
+    baselineStatus: 'pending_gsc_snapshot',
+    measurements: { baseline: null, followups: {} },
+    nextMeasurementAt: reviewDate.toISOString().slice(0, 10)
   }
 }
 
