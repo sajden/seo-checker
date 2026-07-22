@@ -2756,7 +2756,7 @@ async function decideSeoReview(actionId, decision, targetChannelId, operatorId) 
           : `Ändringen är mergad till main: ${posted.title || actionId}. Live-verifieringen hann inte bli klar inom väntetiden.`,
         `Commit på main: ${promotion.commit || record.result?.commit || 'okänd'}`,
         promotion.targetUrl ? `${liveVerified ? 'Verifierad URL' : 'Mål-URL'}: ${promotion.targetUrl}` : '',
-        'Samma URL är nu låst för nya autonoma SEO-ändringar i 14 dagar medan effekten mäts.'
+        'Första effektkontrollen sker efter 14 dagar. Samma URL är låst för nya autonoma ändringar i minst 30 dagar; samma sökintention kräver därefter ny positiv GSC-data under de första 90 dagarna.'
       ].filter(Boolean).join('\n'),
       removeButtons: true
     }
