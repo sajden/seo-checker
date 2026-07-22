@@ -1237,7 +1237,7 @@ function scoreActionCandidate(state, action, context) {
 
 function workspaceReviewPending(state, workspace) {
   const repoFullName = String(workspace?.repoFullName || '').trim()
-  if (!repoFullName || !repoFullName.toLowerCase().includes('sebcastwall')) return false
+  if (!repoFullName) return false
   return Object.values(state.codeActionResults || {}).some((record) => {
     if (!['review_ready', 'operator_approved'].includes(String(record?.status || ''))) return false
     return String(record?.result?.repoFullName || '').trim() === repoFullName

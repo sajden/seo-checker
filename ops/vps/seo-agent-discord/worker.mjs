@@ -1284,10 +1284,10 @@ function isAutonomousCodeCandidate(action, workspace, targetChannelId) {
 
 function autonomousCodeCandidateCheck(action, workspace, targetChannelId) {
   if (!isCodeAction(action)) return { ok: false, reason: 'not_code_action' }
-  if (isSebcastwallWorkspace(workspace) && hasPendingWorkspaceReview(workspace)) {
+  if (hasPendingWorkspaceReview(workspace)) {
     return { ok: false, reason: 'workspace_review_pending' }
   }
-  if (isSebcastwallWorkspace(workspace) && requiresSebcastwallOperatorProposal(action)) {
+  if (requiresOperatorProposal(action)) {
     return { ok: false, reason: 'operator_proposal_required' }
   }
   if (isIndexingCheckAction(action)) return { ok: false, reason: 'indexing_or_gsc_check' }
@@ -1316,7 +1316,7 @@ function autonomousCodeCandidateCheck(action, workspace, targetChannelId) {
   return { ok: true, reason: 'candidate' }
 }
 
-function requiresSebcastwallOperatorProposal(action) {
+function requiresOperatorProposal(action) {
   const text = actionText(action)
   return /design|layout|css|bild|image|navigation|navbar|formul[aä]r|cta|pris|pricing|route|redirect|positionering|kundcase|customer claim|ny sida|new page|landningssida/.test(text)
 }
@@ -3018,7 +3018,7 @@ function shouldSuppressDecisionCard(action, review, workspace, targetChannelId) 
   if (isKeywordPlanAction(action)) return true
   const kind = review?.kind || actionKindForLearning(action)
   if (kind === 'new-page') return false
-  if (isSebcastwallWorkspace(workspace) && requiresSebcastwallOperatorProposal(action)) return false
+  if (requiresOperatorProposal(action)) return false
   if (!isCodeAction(action)) return true
   if (!automationEnabled || !autonomousCodeEnabled || !codeAutomationEnabled) return false
   if (['Approve', 'Review'].includes(String(review?.recommendation || ''))) return true
@@ -6800,7 +6800,7 @@ function ensureWorkspaceProfile(workspace, targetChannelId = null) {
   const profile = {
     ...defaults,
     ...existing,
-    autonomy: existing.autonomy === 'approve_before_code' ? 'autonomous_low_risk' : (existing.autonomy || defaults.autonomy || 'autonomous_low_risk'),
+    autonomy: 'autonomous_seo_review_branch',
     goals: [...new Set([...(existing.goals || []), ...(defaults.goals || [])])].slice(0, 20),
     prefer: [...new Set([...(existing.prefer || []), ...(defaults.prefer || [])])].slice(0, 30),
     avoid: [...new Set([...(existing.avoid || []), ...(defaults.avoid || [])])].slice(0, 30),
@@ -6937,7 +6937,7 @@ function defaultWorkspaceProfile(workspace) {
         { keyword: 'nätverksevent', targetUrl: 'https://natverkskollen.se/evenemang', intent: 'event_discovery', priority: 'high' },
         { keyword: 'entreprenör event', targetUrl: 'https://natverkskollen.se/evenemang/entreprenor', intent: 'event_discovery', priority: 'medium' }
       ],
-      autonomy: 'autonomous_low_risk'
+      autonomy: 'autonomous_seo_review_branch'
     }
   }
   if (label.includes('parkeringspolaren')) {
@@ -6953,7 +6953,7 @@ function defaultWorkspaceProfile(workspace) {
         { keyword: 'långtidsparkering', targetUrl: 'https://parkeringspolaren.se/', intent: 'commercial', priority: 'high' },
         { keyword: 'billig parkering', targetUrl: 'https://parkeringspolaren.se/', intent: 'commercial', priority: 'medium' }
       ],
-      autonomy: 'autonomous_low_risk'
+      autonomy: 'autonomous_seo_review_branch'
     }
   }
   if (inferred.siteType !== 'generic') return inferred
@@ -6965,7 +6965,7 @@ function defaultWorkspaceProfile(workspace) {
       prefer: [],
       avoid: [],
       keywordMap: [],
-      autonomy: 'autonomous_low_risk'
+      autonomy: 'autonomous_seo_review_branch'
     }
   }
 
@@ -6991,7 +6991,7 @@ function inferWorkspaceProfile(workspace) {
         { keyword: 'trafikläge', targetUrl: 'https://vagkollen.se/', intent: 'utility', priority: 'medium' },
         { keyword: 'vägförhållanden', targetUrl: 'https://vagkollen.se/', intent: 'utility', priority: 'medium' }
       ],
-      autonomy: 'autonomous_low_risk'
+      autonomy: 'autonomous_seo_review_branch'
     }
   }
   if (/\b(event|events|nätverk|network|startup|meetup)\b/.test(signal)) {
@@ -7007,7 +7007,7 @@ function inferWorkspaceProfile(workspace) {
         { keyword: 'startup events', targetUrl: 'https://natverkskollen.se/evenemang/startup-events', intent: 'event_discovery', priority: 'high' },
         { keyword: 'nätverksevent', targetUrl: 'https://natverkskollen.se/evenemang', intent: 'event_discovery', priority: 'high' }
       ],
-      autonomy: 'autonomous_low_risk'
+      autonomy: 'autonomous_seo_review_branch'
     }
   }
   if (/\b(parking|parkering|airport|flygplats|garage)\b/.test(signal)) {
@@ -7022,7 +7022,7 @@ function inferWorkspaceProfile(workspace) {
         { keyword: 'parkering', targetUrl: workspace?.siteUrl || '', intent: 'commercial', priority: 'high' },
         { keyword: 'långtidsparkering', targetUrl: workspace?.siteUrl || '', intent: 'commercial', priority: 'medium' }
       ],
-      autonomy: 'autonomous_low_risk'
+      autonomy: 'autonomous_seo_review_branch'
     }
   }
   if (/\b(ai|automation|app|web|konsult|consult|agent)\b/.test(signal)) {
@@ -7037,7 +7037,7 @@ function inferWorkspaceProfile(workspace) {
         { keyword: 'AI konsult', targetUrl: workspace?.siteUrl || '', intent: 'commercial', priority: 'high' },
         { keyword: 'AI automatisering', targetUrl: workspace?.siteUrl || '', intent: 'commercial', priority: 'medium' }
       ],
-      autonomy: 'autonomous_low_risk'
+      autonomy: 'autonomous_seo_review_branch'
     }
   }
   return {
@@ -7048,7 +7048,7 @@ function inferWorkspaceProfile(workspace) {
     prefer: [],
     avoid: [],
     keywordMap: [],
-    autonomy: 'autonomous_low_risk'
+    autonomy: 'autonomous_seo_review_branch'
   }
 }
 
@@ -7402,7 +7402,7 @@ function formatWorkspaceProfileMessage(workspace, targetChannelId) {
     `Prioritera: ${(profile.prefer || []).join(', ') || 'saknas'}`,
     `Undvik: ${(profile.avoid || []).join(', ') || 'saknas'}`,
     keywordMap.length ? `Keyword-map:\n${keywordMap.map((item) => `- ${item.keyword} -> ${item.targetUrl || 'URL saknas'} (${item.priority})`).join('\n')}` : 'Keyword-map: saknas',
-    `Autonomi: ${profile.autonomy || 'autonomous_low_risk'}`
+    `Autonomi: ${profile.autonomy || 'autonomous_seo_review_branch'}`
   ].join('\n').slice(0, 1900)
 }
 

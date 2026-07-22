@@ -22,7 +22,7 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
   })
 }
 const baseBranch = action.branch || 'main'
-const requiresReview = isSebcastwallAction(action, repoName)
+const requiresReview = isManagedWebsiteAction(action, repoName)
 const deliveryBranch = requiresReview
   ? `seo-agent/${safeBranchPart(action.id || action.title || Date.now())}`
   : baseBranch
@@ -68,9 +68,10 @@ await run('git', ['commit', '-m', seoAgentCommitMessage(action.title || 'SEO act
 const commit = await run('git', ['rev-parse', '--short', 'HEAD'], repoDir)
 await run('git', ['push', '--force-with-lease', 'origin', `HEAD:${deliveryBranch}`], repoDir)
 
-const devDeployment = requiresReview
-  ? await deployReviewBranchToDev(bestBuildDir(repoDir))
-  : { attempted: false, ok: false, url: null, error: null }
+const devTarget = reviewDevTarget(action, repoName)
+const devDeployment = requiresReview && devTarget
+  ? await deployReviewBranchToDev(bestBuildDir(repoDir), devTarget)
+  : { attempted: false, ok: false, url: devTarget?.url || null, error: requiresReview ? 'dev_target_not_configured' : null }
 
 const reviewUrl = requiresReview
   ? `https://github.com/${action.repoFullName}/compare/${baseBranch}...${deliveryBranch}?expand=1`
@@ -267,8 +268,8 @@ async function runBestBuild(cwd) {
   if (scripts.build) await runBuildScriptWithRecovery(cwd)
 }
 
-async function deployReviewBranchToDev(cwd) {
-  const url = 'https://dev.sebcastwall.se'
+async function deployReviewBranchToDev(cwd, target) {
+  const url = target.url
   if (!deploySebcastwallDev) return { attempted: false, ok: false, url, error: 'disabled' }
   const pkgPath = join(cwd, 'package.json')
   if (!existsSync(pkgPath)) return { attempted: false, ok: false, url, error: 'package_json_missing' }
@@ -280,6 +281,11 @@ async function deployReviewBranchToDev(cwd) {
   } catch (error) {
     return { attempted: true, ok: false, url, error: String(error?.stderr || error?.message || error).slice(0, 1200) }
   }
+}
+
+function reviewDevTarget(input, name = '') {
+  if (isSebcastwallAction(input, name)) return { url: 'https://dev.sebcastwall.se' }
+  return null
 }
 
 async function runPackageScript(cwd, script) {
@@ -547,6 +553,12 @@ function isSebcastwallAction(input, name = '') {
     input?.targetUrl,
     input?.gscProperty
   ].filter(Boolean).join(' ').toLowerCase().includes('sebcastwall')
+}
+
+function isManagedWebsiteAction(input, name = '') {
+  const repo = String(input?.repoFullName || '').trim()
+  const targetUrl = String(input?.targetUrl || input?.url || '').trim()
+  return Boolean(repo && (name || targetUrl))
 }
 
 function safeBranchPart(value) {

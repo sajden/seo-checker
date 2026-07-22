@@ -89,27 +89,25 @@ Sebcastwall safety profile:
 - Do not create new service pages, delete pages or change service positioning without operator approval.
 - Sebcastwall code is delivered to `seo-agent/<action-id>` for review. Never push an autonomous Sebcastwall change directly to `main`, production or a production deployment.
 
-Preferred lifecycle for autonomous low-risk work outside Sebcastwall:
-
-`candidate -> agent_approved -> coding_started -> completed -> monitoring -> done`
-
-Preferred lifecycle for Sebcastwall:
+Preferred lifecycle for website code changes in every workspace:
 
 `candidate -> agent_approved -> coding_started -> review_ready -> operator_approved -> merged -> monitoring -> done`
 
-Only one Sebcastwall change may wait at `review_ready` or `operator_approved` at a time. While it is waiting, do not create another dev deployment for that workspace.
+Only one website change may wait at `review_ready` or `operator_approved` per workspace. While it is waiting, do not create another review branch or dev deployment for that workspace.
 
-At `review_ready`, the Discord review must include:
+At `review_ready`, every workspace Discord review must include:
 
 - the exact target URL and search intent,
 - the observed evidence behind the change,
 - what changed and why,
 - diffstat and GitHub compare URL,
-- `dev.sebcastwall.se` when the dev deployment succeeded,
+- a dev URL when that workspace has an explicitly configured isolated dev target,
 - build/quality-gate outcome,
 - explicit approve-for-production and reject controls.
 
 Approval of an initial proposal means permission to create the review branch. Approval of a `review_ready` result means only that the reviewed commit may be promoted later. These are separate decisions. Never describe either decision as a production deploy unless merge and deploy have actually succeeded.
+
+Never deploy a workspace to another workspace's dev domain. If no isolated dev target is configured, deliver the review branch, GitHub diff and build/quality result without a live preview.
 
 Do not create an SEO experiment or claim completion at `review_ready`; measurement starts only after the reviewed change is merged and deployed.
 
