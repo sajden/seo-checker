@@ -589,11 +589,13 @@ async function maybeRunHourlyTechnicalChecks(workspaces) {
   if (state.lastTechnicalCheckAt && now - Date.parse(state.lastTechnicalCheckAt) < technicalCheckEveryMs) return
   state.lastTechnicalCheckAt = new Date(now).toISOString()
   state.technicalChecks = state.technicalChecks || {}
+  let technicalStatusChanged = false
   for (const workspace of workspaces) {
     const key = workspaceProfileKey(workspace, null)
     const previous = state.technicalChecks[key] || null
     const result = await runWorkspaceTechnicalCheck(workspace)
     state.technicalChecks[key] = result
+    if (previous && previous.ok !== result.ok) technicalStatusChanged = true
     const targetChannelId = await channelForWorkspace(workspace)
     if (!targetChannelId) continue
     if (!result.ok && notifyInternalFailures) {
@@ -604,9 +606,12 @@ async function maybeRunHourlyTechnicalChecks(workspaces) {
         ...result.failures.slice(0, 5).map((failure) => `- ${failure}`),
         'Agenten fortsätter kontrollera automatiskt. Ingen webbplatsändring görs utan den vanliga kvalitetsgrinden.'
       ].join('\n'))
-    } else if (result.ok && previous && previous.ok === false && notifyRoutineStatus) {
+    } else if (result.ok && previous && previous.ok === false && (notifyRoutineStatus || notifyInternalFailures)) {
       await sendDiscordMessage(`Teknikkontrollen är grön igen för ${workspace.label}.`, targetChannelId)
     }
+  }
+  if (technicalStatusChanged && state.lastWeeklyStrategyKey) {
+    delete state.weeklyStrategyReviews?.[state.lastWeeklyStrategyKey]
   }
   log('hourly_technical_checks_completed', {
     workspaceCount: workspaces.length,
