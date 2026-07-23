@@ -28,3 +28,9 @@ test('self-repair requires both approved code automation and self-repair opt-in'
 test('startup reconciles stale transitional ledger statuses', () => {
   assert.match(workerSource, /ensureAutonomousAgentState\(\)\s+reconcileTransitionalLedgerStatuses\(\)/)
 })
+
+test('blocked backlog actions do not fall back to opportunity scout', () => {
+  assert.doesNotMatch(workerSource, /synthetic_backlog_fallback_to_scout/)
+  assert.doesNotMatch(workerSource, /function shouldScoutAfterBlockedBacklog/)
+  assert.match(workerSource, /blocked-backlog/)
+})
