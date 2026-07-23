@@ -1923,11 +1923,11 @@ async function maybeQueueAutonomousCodeActions(workspaces) {
     await markPostedActionHandled(candidate.action.id, targetChannelId, 'autonomous_code_queued')
     clearActiveAction(candidate.action.id)
     await sendDiscordMessage([
-      `Autopilot startar en låg-risk SEO-fix för ${workspace.label}.`,
+      `SEO Agent förbereder ett låg-riskförslag för ${workspace.label}.`,
       `Kort: ${candidate.codexBrief?.title || candidate.action.title}`,
       candidate.action.targetUrl ? `URL: ${candidate.action.targetUrl}` : '',
       `Varför: ${candidate.reason}`,
-      'Jag kodar och bygger i en separat granskningsbranch. Main och production lämnas orörda tills du godkänner ändringen här.'
+      'Jag skapar och kvalitetssäkrar en separat granskningsbranch. Ingen ändring görs på main eller production utan att du godkänner den färdiga diffen i Discord.'
     ].filter(Boolean).join('\n').slice(0, 1900), targetChannelId)
     saveState()
     return
