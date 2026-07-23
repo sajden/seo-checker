@@ -2631,6 +2631,22 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
       keywordPlanner: keywordPlanner.length
     }
   }
+  if (!hasVerifiedOpportunityEvidence(evidenceContext)) {
+    state.codexOpportunityScout = state.codexOpportunityScout || {}
+    state.codexOpportunityScout[key] = {
+      at: new Date().toISOString(),
+      status: 'no_verified_opportunity',
+      evidenceRunAt: evidenceContext.runAt || null,
+      reason: 'empty_verified_evidence'
+    }
+    saveState()
+    log('codex_opportunity_no_action', {
+      workspace: workspace?.label || workspace?.id || null,
+      reason: 'empty_verified_evidence',
+      counts: evidenceContext.counts || {}
+    })
+    return null
+  }
   const promptPath = join(stateDir, `codex-opportunity-${slugify(key).slice(0, 80)}.md`)
   const contextJson = {
     workspace: {
@@ -2863,6 +2879,14 @@ function parseCodexOpportunity(text) {
   } catch {
     return null
   }
+}
+
+function hasVerifiedOpportunityEvidence(evidenceContext) {
+  const counts = evidenceContext?.counts || {}
+  return Number(counts.gscRows || 0) > 0
+    || Number(counts.gscOpportunities || 0) > 0
+    || Number(counts.crawlSignals || 0) > 0
+    || Number(counts.keywordPlanner || 0) > 0
 }
 
 function opportunityScoutIntervalForWorkspace(profile, context = {}) {
