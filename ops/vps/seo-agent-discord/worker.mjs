@@ -2523,12 +2523,21 @@ async function syntheticAutonomousActionForWorkspace({ workspace, targetChannelI
   if (rawAction) {
     const backlogCheck = autonomousCodeCandidateCheck(rawAction, workspace, targetChannelId)
     if (!backlogCheck.ok) {
-      logThrottled(`synthetic_autonomous_skipped:${workspace?.id || workspace?.label}:${rawAction.id}:blocked-backlog`, 30 * 60 * 1000, 'synthetic_autonomous_skipped', {
-        workspace: workspace?.label || workspace?.id || null,
-        actionId: rawAction.id || null,
-        reason: `candidate:${backlogCheck.reason}`
-      })
-      return null
+      if (shouldScoutAfterBlockedBacklog(backlogCheck.reason)) {
+        logThrottled(`synthetic_backlog_fallback_to_scout:${workspace?.id || workspace?.label}:${backlogCheck.reason}`, 30 * 60 * 1000, 'synthetic_backlog_fallback_to_scout', {
+          workspace: workspace?.label || workspace?.id || null,
+          actionId: rawAction.id || null,
+          reason: backlogCheck.reason
+        })
+        rawAction = null
+      } else {
+        logThrottled(`synthetic_autonomous_skipped:${workspace?.id || workspace?.label}:${rawAction.id}:blocked-backlog`, 30 * 60 * 1000, 'synthetic_autonomous_skipped', {
+          workspace: workspace?.label || workspace?.id || null,
+          actionId: rawAction.id || null,
+          reason: `candidate:${backlogCheck.reason}`
+        })
+        return null
+      }
     }
   }
   if (!rawAction) rawAction = await buildCodexOpportunityAction(workspace, targetChannelId, {
@@ -2613,6 +2622,19 @@ async function syntheticAutonomousActionForWorkspace({ workspace, targetChannelI
     codexBrief,
     reason: codexBrief.why || syntheticEvidenceReason(action)
   }
+}
+
+function shouldScoutAfterBlockedBacklog(reason) {
+  const text = String(reason || '')
+  return (
+    text === 'operator_proposal_required'
+    || text === 'target_review_pending'
+    || text === 'same_target_recent_experiment_limit'
+    || text === 'new_page_needs_human_approval'
+    || text === 'legacy_route_not_seo_target'
+    || /^already_result:/.test(text)
+    || /^legal_or_policy_route/.test(text)
+  )
 }
 
 function buildWorkspaceGoalGapAction(workspace, targetChannelId = null, sourcePayload = null) {
