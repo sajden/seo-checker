@@ -2749,7 +2749,13 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
     }
     const policyCheck = autonomousCodeCandidateCheck(action, workspace, targetChannelId)
     if (!policyCheck.ok) {
-      rejectedSuggestions.push({ title: action.title, targetUrl, reason: policyCheck.reason })
+      rejectedSuggestions.push({
+        title: action.title,
+        targetUrl,
+        reason: policyCheck.reason,
+        why: action.why,
+        recommendedAction: action.recommendedAction
+      })
       continue
     }
     state.codexOpportunityScout[key] = {
