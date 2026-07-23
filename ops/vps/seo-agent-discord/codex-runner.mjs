@@ -291,7 +291,15 @@ async function deployReviewBranchToDev(cwd, target) {
 }
 
 function reviewDevTarget(input, name = '') {
-  if (isSebcastwallAction(input, name)) return { url: 'https://dev.sebcastwall.se' }
+  if (isSebcastwallAction(input, name)) {
+    const targetUrl = String(input?.targetUrl || input?.url || '').trim()
+    try {
+      const parsed = new URL(targetUrl)
+      return { url: `https://dev.sebcastwall.se${parsed.pathname}${parsed.search}` }
+    } catch {
+      return { url: 'https://dev.sebcastwall.se' }
+    }
+  }
   return null
 }
 
