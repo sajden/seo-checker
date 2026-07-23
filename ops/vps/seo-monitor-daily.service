@@ -1,0 +1,9 @@
+[Unit]
+Description=Run seo-monitor daily SEO review
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/opt/ai-dashboard/apps/seo-monitor/.env.local
+ExecStart=/usr/bin/curl -fsS -X POST http://127.0.0.1:3010/api/internal/cron/daily -H "x-internal-cron-token: ${INTERNAL_CRON_TOKEN}"

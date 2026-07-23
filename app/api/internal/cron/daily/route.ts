@@ -6,11 +6,12 @@ export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
   const expectedToken = process.env.INTERNAL_CRON_TOKEN;
-  if (expectedToken) {
-    const receivedToken = request.headers.get("x-internal-cron-token");
-    if (receivedToken !== expectedToken) {
-      return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
-    }
+  if (!expectedToken) {
+    return NextResponse.json({ error: "Cron authentication is not configured." }, { status: 503 });
+  }
+  const receivedToken = request.headers.get("x-internal-cron-token");
+  if (receivedToken !== expectedToken) {
+    return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
   }
 
   const profile = resolveSeoRunProfile(request);

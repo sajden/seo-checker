@@ -10,6 +10,9 @@ EnvironmentFile=/opt/ai-dashboard/apps/seo-runtime/.env
 ExecStart=/usr/bin/npm start
 Restart=always
 RestartSec=10
+MemoryHigh=2G
+MemoryMax=2800M
+TasksMax=256
 
 [Install]
 WantedBy=default.target

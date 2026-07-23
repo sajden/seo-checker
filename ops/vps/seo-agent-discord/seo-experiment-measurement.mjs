@@ -68,12 +68,16 @@ export function evaluateExperimentMeasurement({ baseline, followup, phase = 'day
   else if (positive.length) outcome = 'improved'
   else if (negative.length) outcome = 'declined'
 
-  const confidence = totalImpressions >= 200 ? 'high' : totalImpressions >= 40 ? 'medium' : 'low'
+  const rawConfidence = totalImpressions >= 200 ? 'high' : totalImpressions >= 40 ? 'medium' : 'low'
+  const windowOverlapDays = phase === 'day14' ? 14 : 0
+  const confidence = windowOverlapDays > 0 ? 'low' : rawConfidence
   return {
     phase,
     scope,
     outcome,
     confidence,
+    rawConfidence,
+    windowOverlapDays,
     before,
     after,
     deltas,

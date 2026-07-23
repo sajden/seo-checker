@@ -169,6 +169,6 @@ cd /opt/ai-dashboard/apps/seo-runtime
 npm run check
 systemctl --user is-active seo-runtime.service
 curl -fsS http://127.0.0.1:1460/healthz | jq .
-curl -fsS 'http://127.0.0.1:1460/seo/today?limit=5' | jq .
-curl -fsS -X POST http://127.0.0.1:1460/seo/actions/run-next -H 'content-type: application/json' --data '{}' | jq .
+curl -fsS 'http://127.0.0.1:1460/seo/today?limit=5' -H "authorization: Bearer $SEO_RUNTIME_TOKEN" | jq .
+curl -fsS -X POST http://127.0.0.1:1460/seo/actions/run-next -H "authorization: Bearer $SEO_RUNTIME_TOKEN" -H 'content-type: application/json' --data '{}' | jq .
 ```

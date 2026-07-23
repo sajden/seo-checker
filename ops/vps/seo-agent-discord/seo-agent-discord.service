@@ -9,6 +9,9 @@ WorkingDirectory=/opt/ai-dashboard/apps/seo-agent-discord
 ExecStart=/usr/bin/node /opt/ai-dashboard/apps/seo-agent-discord/worker.mjs
 Restart=always
 RestartSec=10
+MemoryHigh=2G
+MemoryMax=2800M
+TasksMax=256
 
 [Install]
 WantedBy=default.target

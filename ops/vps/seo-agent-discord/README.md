@@ -61,7 +61,7 @@ The container should run with Docker restart policy `unless-stopped`. The direct
 After editing this snapshot, deploy with:
 
 ```bash
-rsync -av ops/vps/seo-agent-discord/worker.mjs ops/vps/seo-agent-discord/codex-runner.mjs ops/vps/seo-agent-discord/review-promoter.mjs ops/vps/seo-agent-discord/repo-health-check.mjs ops/vps/seo-agent-discord/gsc-url-inspection-api.mjs ops/vps/seo-agent-discord/gsc-firefox-ui-tool.mjs ops/vps/seo-agent-discord/agent-brain.mjs ops/vps/seo-agent-discord/AGENTS.md ops/vps/seo-agent-discord/MEMORY.md ops/vps/seo-agent-discord/README.md deploy@178.104.240.46:/opt/ai-dashboard/apps/seo-agent-discord/
+rsync -av ops/vps/seo-agent-discord/worker.mjs ops/vps/seo-agent-discord/codex-runner.mjs ops/vps/seo-agent-discord/review-promoter.mjs ops/vps/seo-agent-discord/repo-health-check.mjs ops/vps/seo-agent-discord/workload-capacity.mjs ops/vps/seo-agent-discord/json-state-merge.mjs ops/vps/seo-agent-discord/gsc-url-inspection-api.mjs ops/vps/seo-agent-discord/gsc-firefox-ui-tool.mjs ops/vps/seo-agent-discord/agent-brain.mjs ops/vps/seo-agent-discord/AGENTS.md ops/vps/seo-agent-discord/MEMORY.md ops/vps/seo-agent-discord/README.md deploy@178.104.240.46:/opt/ai-dashboard/apps/seo-agent-discord/
 scp ops/vps/seo-agent-discord/seo-agent-discord.service deploy@178.104.240.46:/home/deploy/.config/systemd/user/seo-agent-discord.service
 ssh deploy@178.104.240.46 'cd /opt/ai-dashboard/apps/seo-agent-discord && node --check worker.mjs && node --check gsc-url-inspection-api.mjs && node --check gsc-firefox-ui-tool.mjs && systemctl --user daemon-reload && systemctl --user restart seo-agent-discord.service && systemctl --user is-active seo-agent-discord.service'
 ```
@@ -158,7 +158,7 @@ The VPS also runs `seo-agent-repo-health.timer` every 30 minutes. It executes `r
 - checks `sebcastwall`, `natverkskollen`, `parkeringspolaren-web`, and `vagkollen`,
 - refuses dirty worktrees,
 - runs `git fetch origin main` and `git merge --ff-only FETCH_HEAD`,
-- verifies push access with `git push --dry-run origin HEAD:main`,
+- requires the local checkout to match `origin/main` exactly after a safe fast-forward,
 - writes JSONL status to `/mnt/HC_Volume_105954589/deploy-storage/logs/seo-agent-repo-health.jsonl`.
 
 ## Useful Checks

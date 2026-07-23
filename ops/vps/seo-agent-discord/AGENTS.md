@@ -93,7 +93,7 @@ Preferred lifecycle for website code changes in every workspace:
 
 `candidate -> agent_approved -> coding_started -> review_ready -> operator_approved -> merged -> monitoring -> done`
 
-Only one website change may wait at `review_ready` or `operator_approved` per workspace. While it is waiting, do not create another review branch or dev deployment for that workspace.
+Only the configured number of website changes may wait at `review_ready` or `operator_approved` per workspace, and never more than one per target URL. While the review capacity is full, do not create another review branch or dev deployment for that workspace.
 
 At `review_ready`, every workspace Discord review must include:
 

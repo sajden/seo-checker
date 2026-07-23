@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { Client, GatewayIntentBits, MessageFlags, Partials } from 'discord.js'
-import { appendFileSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createHash, createHmac } from 'node:crypto'
 import { agentRuntimeSnapshot } from './agent-brain.mjs'
@@ -8,6 +8,7 @@ import { classifyGscIssue, groupGscReviewCandidates } from './gsc-issue-policy.m
 import { buildGscExperimentSnapshot, evaluateExperimentMeasurement, nextExperimentPhase, nextMeasurementDate } from './seo-experiment-measurement.mjs'
 import { buildOpportunityEvidenceContext, excludeOpportunityEvidenceTargets, validateOpportunityEvidence } from './opportunity-evidence.mjs'
 import { requestsVisualChangeText, requiresOperatorProposalText } from './operator-proposal-policy.mjs'
+import { isPlainObject, mergeJsonChanges } from './json-state-merge.mjs'
 
 const env = loadEnv([
   '/home/deploy/.hermes/.env',
@@ -23,6 +24,7 @@ const platformApiUrl = (env.PLATFORM_API_URL || 'https://dashboard2-platform-api
 const platformToken = env.PLATFORM_API_TOKEN || ''
 const platformRunnerId = env.SEO_AGENT_PLATFORM_RUNNER_ID || 'seo-agent-vps'
 const seoRuntimeUrl = (env.SEO_RUNTIME_URL || 'http://127.0.0.1:1460').replace(/\/$/, '')
+const seoRuntimeToken = env.SEO_RUNTIME_TOKEN || ''
 const googleAdsOauthRedirectUri = env.GOOGLE_ADS_OAUTH_REDIRECT_URI || 'http://localhost:1455/oauth/google-ads/callback'
 const googleAdsOauthState = env.GOOGLE_ADS_OAUTH_STATE || 'seo-agent-google-ads-oauth'
 const googleServiceAccountEmail = env.GOOGLE_SERVICE_ACCOUNT_EMAIL || ''
@@ -43,6 +45,7 @@ const repoCommitSyncLimit = Number(env.SEO_AGENT_REPO_COMMIT_SYNC_LIMIT || '8')
 const activeActionReminderMs = Number(env.SEO_AGENT_ACTIVE_ACTION_REMINDER_MS || String(6 * 60 * 60 * 1000))
 const staleRunningMs = Number(env.SEO_AGENT_STALE_RUNNING_MS || String(2 * 60 * 60 * 1000))
 const staleQueuedApprovedMs = Number(env.SEO_AGENT_STALE_APPROVED_QUEUE_MS || String(36 * 60 * 60 * 1000))
+const staleReviewReadyMs = Number(env.SEO_AGENT_STALE_REVIEW_READY_MS || String(21 * 24 * 60 * 60 * 1000))
 const staleActiveActionMs = Number(env.SEO_AGENT_STALE_ACTIVE_ACTION_MS || String(2 * 60 * 60 * 1000))
 const autonomousActiveBlockMs = Number(env.SEO_AGENT_AUTONOMOUS_ACTIVE_BLOCK_MS || String(24 * 60 * 60 * 1000))
 const stalePlatformIncidentMs = Number(env.SEO_AGENT_STALE_PLATFORM_INCIDENT_MS || String(48 * 60 * 60 * 1000))
@@ -78,9 +81,11 @@ const technicalCheckPageLimit = Number(env.SEO_AGENT_TECHNICAL_CHECK_PAGE_LIMIT 
 const codexCli = env.CODEX_CLI || `${env.HOME || '/home/deploy'}/.npm-global/bin/codex`
 const stateDir = '/home/deploy/seo-agent-discord/state'
 const statePath = join(stateDir, 'state.json')
+const stateLockPath = `${statePath}.lock`
 const agentSpecFiles = ['AGENTS.md', 'SKILLS.md', 'TOOLS.md', 'POLICIES.md', 'MEMORY.md']
 const processStartedAtMs = Date.now()
 if (!existsSync(stateDir)) mkdirSync(stateDir, { recursive: true })
+let stateBaseline = {}
 const state = loadState()
 ensureAutonomousAgentState()
 reconcileTransitionalLedgerStatuses()
@@ -366,6 +371,7 @@ async function tick() {
     saveState()
     return
   }
+  migrateWorkspaceIdentities(workspaces)
   await runTickStep('reconcile_interrupted_promotions', () => reconcileInterruptedPromotions(workspaces))
   if (steps.syncWorkspaceRepoCommits !== false) await runTickStep('sync_workspace_repo_commits', () => syncWorkspaceRepoCommits(workspaces))
   await runTickStep('hourly_technical_checks', () => maybeRunHourlyTechnicalChecks(workspaces))
@@ -5037,7 +5043,7 @@ async function runGscInspectionAction(action, workspace, targetChannelId, source
 async function runGscInspectionThroughRuntime(input) {
   const response = await fetch(`${seoRuntimeUrl}/seo/integrations/gsc/url-inspection`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: runtimeHeaders(),
     body: JSON.stringify(input)
   })
   const text = await response.text()
@@ -5122,7 +5128,7 @@ async function executeActionDecisionThroughRuntime({
   try {
     const response = await fetch(`${seoRuntimeUrl}/seo/actions/${encodeURIComponent(actionId)}/execute`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: runtimeHeaders(),
       body: JSON.stringify({
         decision,
         operatorId: operatorId ? `discord:${operatorId}` : 'discord:unknown',
@@ -5159,7 +5165,7 @@ async function selectNextActionThroughRuntime({ workspace, targetChannelId, acti
   try {
     const response = await fetch(`${seoRuntimeUrl}/seo/workspaces/${workspaceKey}/actions/next`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: runtimeHeaders(),
       body: JSON.stringify({
         workspace,
         targetChannelId,
@@ -5202,7 +5208,7 @@ async function fetchCurrentSeoActionThroughRuntime(workspace, targetChannelId, l
   try {
     const response = await fetch(`${seoRuntimeUrl}/seo/workspaces/${workspaceKey}/actions/current`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: runtimeHeaders(),
       body: JSON.stringify({
         workspace,
         targetChannelId,
@@ -5242,7 +5248,7 @@ async function fetchRuntimeTickAdvice() {
   try {
     const response = await fetch(`${seoRuntimeUrl}/seo/tick/advice`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: runtimeHeaders(),
       body: JSON.stringify({
         now: new Date().toISOString(),
         dailyHourUtc,
@@ -5300,7 +5306,7 @@ async function markActionPostedThroughRuntime({ action, workspace, targetChannel
   try {
     const response = await fetch(`${seoRuntimeUrl}/seo/actions/${encodeURIComponent(actionId)}/posted`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: runtimeHeaders(),
       body: JSON.stringify({
         action,
         workspace,
@@ -6490,7 +6496,7 @@ async function formatGscFirefoxUiDoctorMessage() {
 async function runGscDoctorThroughRuntime(input = {}) {
   const response = await fetch(`${seoRuntimeUrl}/seo/integrations/gsc/doctor`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: runtimeHeaders(),
     body: JSON.stringify(input)
   })
   const text = await response.text()
@@ -6589,7 +6595,7 @@ async function formatGscOauthStartMessage() {
 async function startGscOauthThroughRuntime() {
   const response = await fetch(`${seoRuntimeUrl}/seo/integrations/gsc/oauth/start`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: runtimeHeaders(),
     body: '{}'
   })
   const text = await response.text()
@@ -6652,7 +6658,7 @@ async function handleGscOauthCode(code, message, targetChannelId) {
 async function exchangeGscOauthCodeThroughRuntime(code) {
   const response = await fetch(`${seoRuntimeUrl}/seo/integrations/gsc/oauth/exchange`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: runtimeHeaders(),
     body: JSON.stringify({ code })
   })
   const text = await response.text()
@@ -6792,7 +6798,7 @@ async function formatGoogleAdsOauthStartMessage() {
 async function startGoogleAdsOauthThroughRuntime() {
   const response = await fetch(`${seoRuntimeUrl}/seo/integrations/google-ads/oauth/start`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: runtimeHeaders(),
     body: '{}'
   })
   const text = await response.text()
@@ -6905,7 +6911,7 @@ async function handleGoogleAdsOauthCode(code, message, targetChannelId) {
 async function exchangeGoogleAdsOauthCodeThroughRuntime(code) {
   const response = await fetch(`${seoRuntimeUrl}/seo/integrations/google-ads/oauth/exchange`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: runtimeHeaders(),
     body: JSON.stringify({ code })
   })
   const text = await response.text()
@@ -7080,7 +7086,7 @@ async function fetchSeoMonitorActionsViaRuntime(workspace, limit, options = {}) 
     const response = await fetch(`${seoRuntimeUrl}/seo/workspaces/${workspaceKey}/actions/live`, {
       method: 'POST',
       signal: controller.signal,
-      headers: { 'content-type': 'application/json' },
+      headers: runtimeHeaders(),
       body: JSON.stringify({
         workspace,
         limit,
@@ -7129,7 +7135,7 @@ async function runNextApprovedCodeActionThroughRuntime() {
     const response = await fetch(`${seoRuntimeUrl}/seo/actions/run-next`, {
       method: 'POST',
       signal: controller.signal,
-      headers: { 'content-type': 'application/json' },
+      headers: runtimeHeaders(),
       body: JSON.stringify({ source: 'seo-agent-discord' })
     })
     const text = await response.text()
@@ -8199,6 +8205,30 @@ function cleanupStaleRuntimeState() {
     changed = true
   }
   for (const [actionId, result] of Object.entries(state.codeActionResults || {})) {
+    if (result?.status !== 'review_ready') continue
+    const reviewReadyAt = Date.parse(result.reviewReadyAt || result.result?.reviewReadyAt || '')
+    if (!reviewReadyAt || now - reviewReadyAt <= staleReviewReadyMs) continue
+    state.codeActionResults[actionId] = {
+      ...result,
+      status: 'expired_review',
+      expiredAt: new Date().toISOString(),
+      expiryReason: 'review_not_decided_before_expiry'
+    }
+    for (const ledger of Object.values(state.actionLedger || {})) {
+      if (String(ledger?.actionId || '') !== actionId) continue
+      ledger.status = 'expired_review'
+      ledger.lastEventAt = new Date().toISOString()
+      ledger.recheckAfter = new Date(now + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+      ledger.events = [
+        { event: 'expired_review', at: ledger.lastEventAt, reason: 'review_not_decided_before_expiry' },
+        ...(ledger.events || [])
+      ].slice(0, 20)
+    }
+    clearActiveAction(actionId)
+    log('stale_review_archived', { actionId, reviewReadyAt: result.reviewReadyAt || null })
+    changed = true
+  }
+  for (const [actionId, result] of Object.entries(state.codeActionResults || {})) {
     if (result?.status !== 'failed') continue
     const failedAt = Date.parse(result.failedAt || '')
     if (!failedAt || now - failedAt <= 7 * 24 * 60 * 60 * 1000) continue
@@ -8286,7 +8316,130 @@ function migrateExistingStateToActionLedger() {
 }
 
 function workspaceProfileKey(workspace, targetChannelId = null) {
-  return String(workspace?.id || workspace?.gscProperty || workspace?.repoFullName || targetChannelId || 'default')
+  const repoFullName = canonicalRepoFullName(workspace)
+  if (repoFullName) return `repo:${repoFullName}`
+  const gscProperty = String(workspace?.gscProperty || '').trim().toLowerCase()
+  if (gscProperty) return `gsc:${gscProperty}`
+  const workspaceId = String(workspace?.id || '').trim()
+  if (workspaceId) return `workspace:${workspaceId}`
+  return targetChannelId ? `channel:${targetChannelId}` : 'default'
+}
+
+function canonicalRepoFullName(workspace) {
+  const direct = String(workspace?.repoFullName || '').trim().toLowerCase()
+  if (/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/.test(direct)) return direct
+  const candidates = [workspace?.id, workspace?.label, workspace?.workspaceKey]
+    .map((value) => String(value || '').trim().toLowerCase())
+  for (const candidate of candidates) {
+    const embedded = candidate.match(/(?:^|__)([a-z0-9_.-]+\/[a-z0-9_.-]+)(?:__|$)/)
+    if (embedded?.[1]) return embedded[1]
+    if (/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/.test(candidate)) return candidate
+  }
+  return ''
+}
+
+function migrateWorkspaceIdentities(workspaces) {
+  const aliases = new Map()
+  for (const workspace of workspaces || []) {
+    const canonical = workspaceProfileKey(workspace)
+    const rawAliases = [
+      workspace?.id,
+      workspace?.gscProperty,
+      workspace?.repoFullName,
+      workspace?.label,
+      workspace?.repoFullName ? `repo:${String(workspace.repoFullName).toLowerCase()}` : '',
+      workspace?.gscProperty ? `gsc:${String(workspace.gscProperty).toLowerCase()}` : ''
+    ].filter(Boolean)
+    for (const alias of rawAliases) aliases.set(String(alias), canonical)
+  }
+  const canonicalFor = (value, record = null) => {
+    const direct = aliases.get(String(value || ''))
+    if (direct) return direct
+    const repo = canonicalRepoFullName(record || { id: value })
+    return repo ? `repo:${repo}` : String(value || '')
+  }
+
+  let changed = false
+  for (const key of ['workspaceProfiles', 'keywordMaps', 'rankingReviews']) {
+    const source = state[key] || {}
+    const migrated = {}
+    for (const [oldKey, value] of Object.entries(source)) {
+      const newKey = canonicalFor(oldKey, value)
+      migrated[newKey] = mergeWorkspaceStateValue(migrated[newKey], value)
+      if (newKey !== oldKey) changed = true
+    }
+    state[key] = migrated
+  }
+  for (const collectionName of ['actionLedger', 'seoExperiments', 'experimentOutcomes']) {
+    for (const record of Object.values(state[collectionName] || {})) {
+      const canonical = canonicalFor(record?.workspaceKey, record)
+      if (canonical && canonical !== record?.workspaceKey) {
+        record.workspaceKey = canonical
+        changed = true
+      }
+    }
+  }
+  if (deduplicateSeoExperiments()) changed = true
+  if (changed) {
+    state.workspaceIdentityMigratedAt = new Date().toISOString()
+    saveState()
+  }
+}
+
+function mergeWorkspaceStateValue(existing, incoming) {
+  if (!existing) return incoming
+  if (Array.isArray(existing) || Array.isArray(incoming)) {
+    return [...new Set([...(Array.isArray(existing) ? existing : []), ...(Array.isArray(incoming) ? incoming : [])])]
+  }
+  if (!isPlainObject(existing) || !isPlainObject(incoming)) return incoming
+  return { ...existing, ...incoming }
+}
+
+function deduplicateSeoExperiments() {
+  const byAction = new Map()
+  let changed = false
+  for (const [id, experiment] of Object.entries(state.seoExperiments || {})) {
+    const actionId = String(experiment?.actionId || '').trim()
+    if (!actionId) continue
+    const existing = byAction.get(actionId)
+    if (!existing) {
+      byAction.set(actionId, { id, experiment })
+      continue
+    }
+    const winner = experimentEvidenceScore(experiment) > experimentEvidenceScore(existing.experiment)
+      ? { id, experiment }
+      : existing
+    const duplicate = winner.id === id ? existing : { id, experiment }
+    winner.experiment = mergeExperimentRecords(duplicate.experiment, winner.experiment)
+    state.seoExperiments[winner.id] = winner.experiment
+    delete state.seoExperiments[duplicate.id]
+    byAction.set(actionId, winner)
+    changed = true
+  }
+  return changed
+}
+
+function experimentEvidenceScore(experiment) {
+  return (experiment?.measurements?.baseline ? 1_000_000_000_000_000 : 0)
+    + (experiment?.commit ? 1_000_000_000_000 : 0)
+    + (Date.parse(experiment?.completedAt || '') || 0)
+}
+
+function mergeExperimentRecords(older, newer) {
+  return {
+    ...older,
+    ...newer,
+    workspaceKey: newer.workspaceKey || older.workspaceKey,
+    measurements: {
+      ...(older.measurements || {}),
+      ...(newer.measurements || {}),
+      baseline: newer.measurements?.baseline || older.measurements?.baseline || null,
+      followups: {
+        ...(older.measurements?.followups || {}),
+        ...(newer.measurements?.followups || {})
+      }
+    }
+  }
 }
 
 function ensureWorkspaceProfile(workspace, targetChannelId = null) {
@@ -9779,17 +9932,91 @@ function required(key) {
   return value
 }
 
+function runtimeHeaders(extra = {}) {
+  if (!seoRuntimeToken) throw new Error('Missing SEO_RUNTIME_TOKEN')
+  return {
+    authorization: `Bearer ${seoRuntimeToken}`,
+    'content-type': 'application/json',
+    ...extra
+  }
+}
+
 function loadState() {
-  if (!existsSync(statePath)) return { startedAt: null, postedActionIds: {}, postedSystemKeys: {}, messageToAction: {}, seenMessageIds: {}, dailyRunDates: {}, workspaceRunDates: {}, onceMessages: {} }
+  const fallback = { startedAt: null, postedActionIds: {}, postedSystemKeys: {}, messageToAction: {}, seenMessageIds: {}, dailyRunDates: {}, workspaceRunDates: {}, onceMessages: {} }
+  if (!existsSync(statePath)) {
+    stateBaseline = structuredClone(fallback)
+    return fallback
+  }
   try {
-    return { postedSystemKeys: {}, messageToAction: {}, activeActionByWorkspace: {}, dailyRunDates: {}, workspaceRunDates: {}, onceMessages: {}, ...JSON.parse(readFileSync(statePath, 'utf8')) }
+    const loaded = { postedSystemKeys: {}, messageToAction: {}, activeActionByWorkspace: {}, dailyRunDates: {}, workspaceRunDates: {}, onceMessages: {}, ...JSON.parse(readFileSync(statePath, 'utf8')) }
+    stateBaseline = structuredClone(loaded)
+    return loaded
   } catch {
-    return { startedAt: null, postedActionIds: {}, postedSystemKeys: {}, messageToAction: {}, seenMessageIds: {}, dailyRunDates: {}, workspaceRunDates: {}, onceMessages: {} }
+    stateBaseline = structuredClone(fallback)
+    return fallback
   }
 }
 
 function saveState() {
-  writeFileSync(statePath, JSON.stringify(state, null, 2))
+  const release = acquireStateFileLock()
+  try {
+    const latest = readStateFileOrEmpty()
+    const merged = mergeJsonChanges(stateBaseline, state, latest)
+    const tempPath = `${statePath}.${process.pid}.${Date.now()}.tmp`
+    writeFileSync(tempPath, JSON.stringify(merged, null, 2))
+    renameSync(tempPath, statePath)
+    replaceObjectContents(state, merged)
+    stateBaseline = structuredClone(merged)
+  } finally {
+    release()
+  }
+}
+
+function acquireStateFileLock(timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    try {
+      writeFileSync(stateLockPath, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }), { flag: 'wx', mode: 0o600 })
+      return () => {
+        try {
+          const owner = JSON.parse(readFileSync(stateLockPath, 'utf8'))
+          if (Number(owner.pid) === process.pid) unlinkSync(stateLockPath)
+        } catch {}
+      }
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error
+      let owner = null
+      try { owner = JSON.parse(readFileSync(stateLockPath, 'utf8')) } catch {}
+      if (!owner?.pid || !processIsAlive(Number(owner.pid))) {
+        rmSync(stateLockPath, { force: true })
+        continue
+      }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25)
+    }
+  }
+  throw new Error('Timed out waiting for SEO state lock')
+}
+
+function readStateFileOrEmpty() {
+  try {
+    return JSON.parse(readFileSync(statePath, 'utf8'))
+  } catch {
+    return {}
+  }
+}
+
+function replaceObjectContents(target, source) {
+  for (const key of Object.keys(target)) delete target[key]
+  Object.assign(target, source)
+}
+
+function processIsAlive(pid) {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
 }
 
 function sleep(ms) {

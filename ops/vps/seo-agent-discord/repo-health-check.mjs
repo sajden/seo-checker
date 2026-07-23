@@ -36,33 +36,45 @@ if (failed.length) process.exitCode = 1
 async function checkRepo(repo) {
   const dir = join(workspaceRoot, repo)
   if (!existsSync(join(dir, '.git'))) return { repo, ok: false, status: 'missing_checkout', dir }
-  const activePromotion = activePromotionLock(repo)
-  if (activePromotion) {
+  const activeWork = activeRepoWorkLock(repo)
+  if (activeWork) {
     return {
       repo,
       ok: true,
-      status: 'busy_review_promotion',
+      status: 'busy_seo_work',
       dir,
-      actionId: activePromotion.actionId || null,
-      pid: activePromotion.pid
+      actionId: activeWork.actionId || null,
+      purpose: activeWork.purpose || null,
+      pid: activeWork.pid
     }
   }
   const status = await run('git', ['status', '--porcelain'], dir)
   if (status.stdout.trim()) return { repo, ok: false, status: 'dirty_worktree', dir, details: status.stdout.slice(0, 800) }
   await run('git', ['fetch', 'origin', branch], dir)
   await run('git', ['merge', '--ff-only', 'FETCH_HEAD'], dir)
-  await run('git', ['push', '--dry-run', 'origin', `HEAD:${branch}`], dir)
+  const divergence = await run('git', ['rev-list', '--left-right', '--count', `HEAD...origin/${branch}`], dir)
+  const [ahead, behind] = divergence.stdout.trim().split(/\s+/).map(Number)
+  if (ahead || behind) {
+    return {
+      repo,
+      ok: false,
+      status: ahead ? 'unpushed_commits' : 'behind_remote',
+      dir,
+      ahead: ahead || 0,
+      behind: behind || 0
+    }
+  }
   const head = await run('git', ['rev-parse', '--short', 'HEAD'], dir)
   return { repo, ok: true, status: 'ready', dir, head: head.stdout.trim() }
 }
 
-function activePromotionLock(repo) {
+function activeRepoWorkLock(repo) {
   const lockPath = join(workspaceRoot, '.locks', `${repo.replace(/[^a-z0-9-]/gi, '-').toLowerCase()}.json`)
   if (!existsSync(lockPath)) return null
   try {
     const lock = JSON.parse(readFileSync(lockPath, 'utf8'))
     const pid = Number(lock?.pid)
-    if (lock?.purpose !== 'review_promotion' || !Number.isInteger(pid) || pid <= 0) return null
+    if (!['review_promotion', 'codex_review_branch'].includes(lock?.purpose) || !Number.isInteger(pid) || pid <= 0) return null
     process.kill(pid, 0)
     return { ...lock, pid }
   } catch {

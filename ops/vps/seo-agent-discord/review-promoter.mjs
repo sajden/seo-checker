@@ -3,6 +3,7 @@ import { execFile } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
+import { acquireHeavyWorkCapacity } from './workload-capacity.mjs'
 
 const exec = promisify(execFile)
 const node22Bin = '/home/deploy/.local/node22/node_modules/node/bin'
@@ -26,7 +27,10 @@ if (!/^[0-9a-f]{7,40}$/i.test(expectedCommit)) throw new Error('Invalid review c
 
 const repoDir = join(workspaceRoot, repoName)
 if (!existsSync(join(repoDir, '.git'))) throw new Error(`Missing repo checkout: ${repoDir}`)
-const promotionCapacity = await acquirePromotionCapacity(input.actionId || expectedCommit)
+const promotionCapacity = await acquireHeavyWorkCapacity({
+  actionId: input.actionId || expectedCommit,
+  purpose: 'review_promotion'
+})
 const lock = acquireRepoLock(repoName, input.actionId || expectedCommit)
 process.on('exit', () => {
   lock.release()
@@ -34,6 +38,7 @@ process.on('exit', () => {
 })
 
 let pushed = false
+let deployedBeforePush = false
 try {
   await assertClean(repoDir)
   await run('git', ['fetch', 'origin', baseBranch, deliveryBranch], repoDir)
@@ -53,15 +58,27 @@ try {
   await run('git', ['cherry-pick', reviewedCommit], repoDir)
   const promotedCommit = (await run('git', ['rev-parse', 'HEAD'], repoDir)).stdout.trim()
   await runBestBuild(repoDir)
+  const configuredDeploy = hasConfiguredProductionDeploy(repoDir)
+  if (configuredDeploy) {
+    await runConfiguredProductionDeploy(repoDir)
+    deployedBeforePush = true
+  }
+  let verification = configuredDeploy && targetUrl
+    ? await verifyLiveTarget(targetUrl, fingerprints)
+    : { ok: true, status: null, matchedFingerprint: null, note: configuredDeploy ? 'no_target_url' : 'awaiting_main_push' }
+  if (configuredDeploy && !verification.ok) {
+    throw new Error(`Production verification failed before main push: ${verification.error || verification.status || 'new content not visible'}`)
+  }
   await run('git', ['push', 'origin', `HEAD:${baseBranch}`], repoDir)
   pushed = true
-  await runConfiguredProductionDeploy(repoDir)
   await run('git', ['fetch', 'origin', baseBranch], repoDir)
   await run('git', ['merge-base', '--is-ancestor', promotedCommit, `origin/${baseBranch}`], repoDir)
 
-  const verification = targetUrl
-    ? await verifyLiveTarget(targetUrl, fingerprints)
-    : { ok: true, status: null, matchedFingerprint: null, note: 'no_target_url' }
+  if (!configuredDeploy) {
+    verification = targetUrl
+      ? await verifyLiveTarget(targetUrl, fingerprints)
+      : { ok: true, status: null, matchedFingerprint: null, note: 'no_target_url' }
+  }
 
   console.log(JSON.stringify({
     ok: true,
@@ -81,6 +98,9 @@ try {
   }))
 } catch (error) {
   if (!pushed) {
+    if (deployedBeforePush) {
+      await restoreProductionFromMain(repoDir, baseBranch).catch(() => null)
+    }
     await run('git', ['merge', '--abort'], repoDir).catch(() => null)
     await run('git', ['cherry-pick', '--abort'], repoDir).catch(() => null)
     await run('git', ['checkout', '-B', baseBranch, `origin/${baseBranch}`], repoDir).catch(() => null)
@@ -116,44 +136,6 @@ function acquireRepoLock(name, actionId) {
   return { release() { if (released) return; released = true; try { const owner = JSON.parse(readFileSync(lockPath, 'utf8')); if (Number(owner.pid) === process.pid) unlinkSync(lockPath) } catch {} } }
 }
 
-async function acquirePromotionCapacity(actionId) {
-  const lockDir = join(workspaceRoot, '.locks')
-  const lockPath = join(lockDir, 'review-promotion-global.json')
-  const deadline = Date.now() + 50 * 60 * 1000
-  mkdirSync(lockDir, { recursive: true })
-  while (Date.now() < deadline) {
-    try {
-      writeFileSync(lockPath, JSON.stringify({
-        pid: process.pid,
-        actionId,
-        purpose: 'review_promotion_global',
-        startedAt: new Date().toISOString()
-      }), { flag: 'wx', mode: 0o600 })
-      let released = false
-      return {
-        release() {
-          if (released) return
-          released = true
-          try {
-            const owner = JSON.parse(readFileSync(lockPath, 'utf8'))
-            if (Number(owner.pid) === process.pid) unlinkSync(lockPath)
-          } catch {}
-        }
-      }
-    } catch (error) {
-      if (error?.code !== 'EEXIST') throw error
-      let owner = null
-      try { owner = JSON.parse(readFileSync(lockPath, 'utf8')) } catch {}
-      if (!owner?.pid || !processIsAlive(Number(owner.pid))) {
-        rmSync(lockPath, { force: true })
-        continue
-      }
-      await new Promise((resolve) => setTimeout(resolve, 5_000))
-    }
-  }
-  throw new Error('Timed out waiting for another SEO review promotion to finish')
-}
-
 function processIsAlive(pid) {
   try { process.kill(pid, 0); return true } catch { return false }
 }
@@ -181,6 +163,20 @@ async function runConfiguredProductionDeploy(repoDir) {
   const hasCloudflareConfig = existsSync(join(cwd, 'wrangler.jsonc')) || existsSync(join(cwd, 'wrangler.toml'))
   if (!packageJson.scripts?.deploy || !hasCloudflareConfig) return
   await run('pnpm', ['run', 'deploy'], cwd, 20 * 60 * 1000)
+}
+
+function hasConfiguredProductionDeploy(repoDir) {
+  const cwd = existsSync(join(repoDir, 'package.json')) ? repoDir : existsSync(join(repoDir, 'web', 'package.json')) ? join(repoDir, 'web') : null
+  if (!cwd) return false
+  const packageJson = JSON.parse(readFileSync(join(cwd, 'package.json'), 'utf8'))
+  const hasCloudflareConfig = existsSync(join(cwd, 'wrangler.jsonc')) || existsSync(join(cwd, 'wrangler.toml'))
+  return Boolean(packageJson.scripts?.deploy && hasCloudflareConfig)
+}
+
+async function restoreProductionFromMain(repoDir, baseBranch) {
+  await run('git', ['checkout', '-B', baseBranch, `origin/${baseBranch}`], repoDir)
+  await runBestBuild(repoDir)
+  await runConfiguredProductionDeploy(repoDir)
 }
 
 async function reviewFingerprints(cwd, base, delivery) {

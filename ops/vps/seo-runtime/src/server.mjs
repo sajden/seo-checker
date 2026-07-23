@@ -1,14 +1,18 @@
 #!/usr/bin/env node
 import http from 'node:http'
 import { execFile } from 'node:child_process'
-import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
+import { mergeJsonChanges } from '../../seo-agent-discord/json-state-merge.mjs'
 
 const env = loadEnv(['/opt/ai-dashboard/apps/seo-runtime/.env', '/opt/ai-dashboard/apps/seo-agent-discord/.env', '/home/deploy/seo-agent-discord/.env'])
 const host = env.SEO_RUNTIME_HOST || '127.0.0.1'
 const port = Number(env.SEO_RUNTIME_PORT || '1460')
 const statePath = env.SEO_RUNTIME_STATE_PATH || '/opt/ai-dashboard/apps/seo-agent-discord/state/state.json'
+const stateLockPath = `${statePath}.lock`
+const runtimeToken = env.SEO_RUNTIME_TOKEN || ''
+const autonomousCodeEnabled = env.SEO_AGENT_AUTONOMOUS_CODE_ENABLED === 'true'
 const runtimeKey = 'seo-agent'
 const platformApiUrl = (env.PLATFORM_API_URL || 'https://dashboard2-platform-api.sebastian-castwall.workers.dev').replace(/\/$/, '')
 const platformToken = env.PLATFORM_API_TOKEN || ''
@@ -45,6 +49,8 @@ async function handleRequest(request, response) {
       codeActionResultsCount: Object.keys(state.codeActionResults || {}).length
     })
   }
+  if (!runtimeToken) return sendJson(response, 503, { ok: false, error: 'runtime_auth_not_configured' })
+  if (!isAuthorizedRuntimeRequest(request)) return sendJson(response, 401, { ok: false, error: 'unauthorized' })
   if (request.method === 'GET' && url.pathname === '/seo/today') {
     const limit = clampNumber(url.searchParams.get('limit'), 1, 100, 20)
     const workspace = url.searchParams.get('workspace') || url.searchParams.get('workspaceKey') || ''
@@ -201,7 +207,7 @@ function tickAdvice(payload = {}) {
     postReadinessForWorkspaces: true,
     checkGscIssuesForWorkspaces: dueByInterval(state.lastGscIssueCheckAt, nowMs, intervals.gscIssueCheckMs, 6 * 60 * 60 * 1000),
     postPendingActionsForWorkspaces: true,
-    prepareAutonomousCodeWork: true,
+    prepareAutonomousCodeWork: autonomousCodeEnabled,
     runIntegrationDoctor: dueByInterval(state.lastIntegrationDoctorAt, nowMs, intervals.integrationDoctorMs, 12 * 60 * 60 * 1000),
     askForGscApiOauth: true
   }
@@ -1498,14 +1504,73 @@ function actionMatchesWorkspace(action, workspaceNeedle) {
 }
 
 function readState() {
-  if (!existsSync(statePath)) return {}
-  return JSON.parse(readFileSync(statePath, 'utf8'))
+  const state = readStateFileOrEmpty()
+  runtimeStateBaselines.set(state, structuredClone(state))
+  return state
 }
 
 function writeState(state) {
-  const tempPath = `${statePath}.${process.pid}.${Date.now()}.tmp`
-  writeFileSync(tempPath, JSON.stringify(state, null, 2))
-  renameSync(tempPath, statePath)
+  const release = acquireStateFileLock()
+  try {
+    const latest = readStateFileOrEmpty()
+    const baseline = runtimeStateBaselines.get(state) || {}
+    const merged = mergeJsonChanges(baseline, state, latest)
+    const tempPath = `${statePath}.${process.pid}.${Date.now()}.tmp`
+    writeFileSync(tempPath, JSON.stringify(merged, null, 2))
+    renameSync(tempPath, statePath)
+  } finally {
+    release()
+  }
+}
+
+const runtimeStateBaselines = new WeakMap()
+
+function readStateFileOrEmpty() {
+  if (!existsSync(statePath)) return {}
+  try {
+    return JSON.parse(readFileSync(statePath, 'utf8'))
+  } catch {
+    return {}
+  }
+}
+
+function acquireStateFileLock(timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    try {
+      writeFileSync(stateLockPath, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }), { flag: 'wx', mode: 0o600 })
+      return () => {
+        try {
+          const owner = JSON.parse(readFileSync(stateLockPath, 'utf8'))
+          if (Number(owner.pid) === process.pid) unlinkSync(stateLockPath)
+        } catch {}
+      }
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error
+      let owner = null
+      try { owner = JSON.parse(readFileSync(stateLockPath, 'utf8')) } catch {}
+      if (!owner?.pid || !processIsAlive(Number(owner.pid))) {
+        rmSync(stateLockPath, { force: true })
+        continue
+      }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25)
+    }
+  }
+  throw new Error('Timed out waiting for SEO state lock')
+}
+
+function isAuthorizedRuntimeRequest(request) {
+  const authorization = String(request.headers.authorization || '')
+  return authorization === `Bearer ${runtimeToken}`
+}
+
+function processIsAlive(pid) {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
 }
 
 async function readJsonBody(request) {

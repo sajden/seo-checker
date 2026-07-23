@@ -4,6 +4,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, unlinkSync
 import { dirname, join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { promisify } from 'node:util'
+import { acquireHeavyWorkCapacity } from './workload-capacity.mjs'
 
 const exec = promisify(execFile)
 const runnerEnv = { ...process.env, PATH: `/home/deploy/.npm-global/bin:/home/deploy/.local/bin:${process.env.PATH || ""}` }
@@ -14,11 +15,19 @@ const deploySebcastwallDev = process.env.SEO_AGENT_DEPLOY_SEBCASTWALL_DEV === 't
 const action = JSON.parse(readFileSync(process.argv[2], 'utf8'))
 const repoName = String(action.repoFullName || '').split('/')[1]
 if (!repoName) throw new Error('Missing repoFullName in action payload')
+const heavyWorkCapacity = await acquireHeavyWorkCapacity({
+  actionId: action.id,
+  purpose: 'codex_review_branch'
+})
 const repoLock = acquireRepoLock(repoName, action)
-process.on('exit', repoLock.release)
+process.on('exit', () => {
+  repoLock.release()
+  heavyWorkCapacity.release()
+})
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.once(signal, () => {
     repoLock.release()
+    heavyWorkCapacity.release()
     process.kill(process.pid, signal)
   })
 }
@@ -106,7 +115,7 @@ function acquireRepoLock(name, input) {
   mkdirSync(lockDir, { recursive: true })
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
-      writeFileSync(lockPath, JSON.stringify({ pid: process.pid, actionId: input.id || null, startedAt: new Date().toISOString() }), { flag: 'wx', mode: 0o600 })
+      writeFileSync(lockPath, JSON.stringify({ pid: process.pid, actionId: input.id || null, purpose: 'codex_review_branch', startedAt: new Date().toISOString() }), { flag: 'wx', mode: 0o600 })
       let released = false
       return {
         path: lockPath,
