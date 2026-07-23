@@ -7,7 +7,7 @@ import { agentRuntimeSnapshot } from './agent-brain.mjs'
 import { classifyGscIssue, groupGscReviewCandidates } from './gsc-issue-policy.mjs'
 import { buildGscExperimentSnapshot, evaluateExperimentMeasurement, nextExperimentPhase, nextMeasurementDate } from './seo-experiment-measurement.mjs'
 import { buildOpportunityEvidenceContext, excludeOpportunityEvidenceTargets, validateOpportunityEvidence } from './opportunity-evidence.mjs'
-import { requiresOperatorProposalText } from './operator-proposal-policy.mjs'
+import { requestsVisualChangeText, requiresOperatorProposalText } from './operator-proposal-policy.mjs'
 
 const env = loadEnv([
   '/home/deploy/.hermes/.env',
@@ -2146,6 +2146,9 @@ async function chooseAutonomousCodeAction(actions, workspace, targetChannelId, w
     const enrichedAction = await enrichActionWithKeywordMetrics(action)
     const candidateCheck = autonomousCodeCandidateCheck(enrichedAction, workspace, targetChannelId)
     if (!candidateCheck.ok) {
+      if (candidateCheck.reason === 'operator_proposal_required') {
+        await maybeReportVisualDesignFinding(enrichedAction, workspace, targetChannelId)
+      }
       rejectionReasons.push({ id: enrichedAction.id, title: enrichedAction.title || enrichedAction.id, reason: candidateCheck.reason })
       continue
     }
@@ -2305,6 +2308,78 @@ function requiresOperatorProposal(action) {
     action?.recommendedAction,
     action?.category
   ].filter(Boolean).join(' ').toLowerCase())
+}
+
+async function maybeReportVisualDesignFinding(action, workspace, targetChannelId) {
+  const text = [
+    action?.title,
+    action?.recommendedAction,
+    action?.category
+  ].filter(Boolean).join(' ')
+  if (!requestsVisualChangeText(text)) return false
+
+  const repoFullName = String(workspace?.repoFullName || action?.repoFullName || '').trim()
+  const targetUrl = String(action?.targetUrl || action?.url || '').trim()
+  const fingerprint = createHash('sha256')
+    .update([repoFullName, targetUrl, action?.title, action?.recommendedAction].filter(Boolean).join('|'))
+    .digest('hex')
+    .slice(0, 16)
+  state.visualDesignFindings = state.visualDesignFindings || {}
+  if (state.visualDesignFindings[fingerprint]) return false
+
+  const title = String(action?.title || 'Visuell observation från SEO Agent').trim()
+  const why = String(action?.why || '').trim()
+  const evidence = Array.isArray(action?.evidence)
+    ? action.evidence.filter(Boolean).map((item) => String(item)).slice(0, 5)
+    : []
+  const issueBody = [
+    '## Observation',
+    String(action?.recommendedAction || title).trim(),
+    '',
+    '## Varför detta kan vara viktigt',
+    why || 'SEO Agent saknar tillräckligt underlag för att motivera en designändring. Ingen kodändring har gjorts.',
+    '',
+    '## Underlag',
+    ...(evidence.length ? evidence.map((item) => `- ${item}`) : ['- Inget verifierat visuellt underlag bifogades.']),
+    '',
+    '## Berörd sida',
+    targetUrl || 'Ej angiven',
+    '',
+    '## Beslut',
+    'Visuell design är fryst. Förslaget kräver ett separat mänskligt produktbeslut och får inte implementeras av SEO Agent.'
+  ].join('\n')
+  const issueUrl = repoFullName
+    ? `https://github.com/${repoFullName}/issues/new?title=${encodeURIComponent(`[Designobservation] ${title}`)}&body=${encodeURIComponent(issueBody)}`
+    : ''
+
+  await sendDiscordMessage([
+    `**Designobservation · ingen ändring gjord**`,
+    `Webbplats: ${workspace?.label || repoFullName || 'okänd'}`,
+    targetUrl ? `Sida: ${targetUrl}` : '',
+    `Problem: ${String(action?.recommendedAction || title).slice(0, 500)}`,
+    `Varför det kan vara viktigt: ${why ? why.slice(0, 700) : 'Agenten hade inte tillräcklig evidens för att motivera ändringen.'}`,
+    evidence.length ? `Underlag:\n${evidence.map((item) => `- ${item}`).join('\n').slice(0, 700)}` : 'Underlag: saknas eller är för svagt.',
+    '',
+    'Designen är fryst. Ingen branch, kodändring eller deploy har skapats.'
+  ].filter(Boolean).join('\n').slice(0, 1900), targetChannelId, issueUrl ? [{
+    type: 1,
+    components: [{ type: 2, style: 5, label: 'Skapa GitHub-issue', url: issueUrl }]
+  }] : [], { kind: 'design_finding' })
+
+  state.visualDesignFindings[fingerprint] = {
+    at: new Date().toISOString(),
+    actionId: action?.id || null,
+    repoFullName: repoFullName || null,
+    targetUrl: targetUrl || null,
+    issueUrl: issueUrl || null
+  }
+  saveState()
+  log('visual_design_finding_reported', {
+    actionId: action?.id || null,
+    repoFullName: repoFullName || null,
+    targetUrl: targetUrl || null
+  })
+  return true
 }
 
 function hasPendingWorkspaceReview(workspace) {

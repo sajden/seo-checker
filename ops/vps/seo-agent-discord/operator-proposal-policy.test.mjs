@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { requiresOperatorProposalText } from './operator-proposal-policy.mjs'
+import { requestsVisualChangeText, requiresOperatorProposalText } from './operator-proposal-policy.mjs'
 
 test('blocks a requested CTA or design change', () => {
   assert.equal(requiresOperatorProposalText('Ändra CTA och layout på sidan.'), true)
@@ -18,4 +18,9 @@ test('allows metadata work without changing protected surfaces', () => {
     requiresOperatorProposalText('Lägg Stockholm-vinkel i metadata utan att ändra CTA, priser eller formulär.'),
     false
   )
+})
+
+test('classifies a requested visual change separately', () => {
+  assert.equal(requestsVisualChangeText('Ändra layout och bilder på sidan.'), true)
+  assert.equal(requestsVisualChangeText('Ändra metadata men behåll layout och bilder.'), false)
 })
