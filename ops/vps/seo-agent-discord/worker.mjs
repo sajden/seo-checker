@@ -2333,13 +2333,6 @@ function sameTargetRecentExperimentCheck(action, workspace, targetChannelId) {
   return { ok: true, reason: 'same_target_ok' }
 }
 
-function shouldSkipCodexOpportunityScoutForLiveRejections(pending, rejectionReasons) {
-  if (!Array.isArray(pending) || !pending.length) return false
-  const rejected = Array.isArray(rejectionReasons) ? rejectionReasons.filter(Boolean) : []
-  if (rejected.length < Math.min(pending.length, 4)) return false
-  return rejected.every((item) => isWaitOrGuardRejectionReason(item?.reason))
-}
-
 function runtimeCurrentBlocksAutonomousCode(payload) {
   if (!payload || String(payload.selectedActionId || '')) return false
   if (Number(payload.acceptedCount ?? 0) !== 0) return false
@@ -2399,8 +2392,7 @@ async function syntheticAutonomousActionForWorkspace({ workspace, targetChannelI
     logThrottled(`synthetic_autonomous_skipped:${workspace?.id || workspace?.label}:live`, 30 * 60 * 1000, 'synthetic_autonomous_skipped', { workspace: workspace?.label || workspace?.id || null, reason: 'good_live_candidate_available', pendingCount: pending.length })
     return null
   }
-  const allLiveCandidatesGuarded = shouldSkipCodexOpportunityScoutForLiveRejections(pending, rejectionReasons)
-  let rawAction = allLiveCandidatesGuarded
+  let rawAction = queueIsWeak
     ? await buildCodexOpportunityAction(workspace, targetChannelId, {
         pending,
         rejectionReasons,
