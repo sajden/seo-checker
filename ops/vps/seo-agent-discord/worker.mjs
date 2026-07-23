@@ -247,6 +247,8 @@ function currentAgentActivity(reviewQueue) {
       ? 'Senaste scoutförslaget stoppades eftersom dess evidens inte kunde verifieras mot färsk data.'
       : latestScout?.status === 'verified_but_policy_blocked'
         ? `Senaste verifierade signalen stoppades av affärs- eller säkerhetspolicyn: ${latestScout.blockedReason || 'ej autonomt tillåten'}.`
+        : latestScout?.status === 'no_policy_compatible_opportunity'
+          ? latestScout.reason || 'Verifierade signaler fanns, men inget förslag klarade affärs-, cooldown- och säkerhetspolicyn.'
       : null
   return {
     mode: 'monitoring',
@@ -2611,7 +2613,7 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
   }
   const prompt = [
     'Du är SEO Agentens opportunity scout.',
-    'Hitta exakt EN evidensbaserad låg-risk SEO-kodaction för en befintlig sida, eller returnera null om inget verifierat behov finns.',
+    'Hitta upp till TRE rangordnade evidensbaserade låg-risk SEO-kodactions för befintliga sidor, eller returnera en tom lista om inget verifierat behov finns.',
     '',
     'Regler:',
     '- Returnera ENDAST JSON.',
@@ -2624,17 +2626,18 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
     '- TargetUrl måste matcha en befintlig route från repo hints. Föreslå inte URL:er som inte redan finns.',
     '- Läs den tänkta målfilen innan du returnerar action. Om recommendedAction redan finns i filen: returnera action=null eller välj en annan befintlig sida.',
     '- Välj inte auth, GSC, privacy, terms eller rent tekniskt driftarbete.',
+    '- Föreslå inte design, layout, CSS, bilder, navigation, formulär, CTA, priser, redirects, positionering eller kundcase. De kräver mänskligt produktbeslut.',
     '- Repetera inte recentExperiments innan reviewAfter, om inte hypotesen är tydligt annorlunda.',
     '- Repetera aldrig recentCodeResults med status no_changes, completed, build_failed eller failed utan en tydligt ny hypotes och annan konkret ändringsyta.',
     '- Använd learningSummary: undvik mönster som needs_more_work utan ny vinkel, och prioritera mönster som provisionally_improved när de passar dagens mål.',
-    '- Kandidaten måste ha targetUrl, keyword/focus, problem, hypotes och konkret repoändring.',
+    '- Varje kandidat måste ha targetUrl, keyword/focus, problem, hypotes och konkret repoändring.',
     '- Workspace-profilen styr målgrupp och språk. Vägkollen får aldrig SMB/B2B/konsultspråk.',
     '',
-    'JSON-format vid bra kandidat:',
-    '{"action":{"title":"kort titel","targetUrl":"https://...","keyword":"exakt verifierbar sökfras/fokus","evidenceType":"gsc|crawl","priority":"high|medium","category":"content|internal-links","why":"mätvärden och varför detta är bästa nästa experimentet","recommendedAction":"exakt vad kodaren ska ändra i repo"}}',
+    'JSON-format vid bra kandidater:',
+    '{"actions":[{"title":"kort titel","targetUrl":"https://...","keyword":"exakt verifierbar sökfras/fokus","evidenceType":"gsc|crawl","priority":"high|medium","category":"content|internal-links","why":"mätvärden och varför detta är bästa nästa experimentet","recommendedAction":"exakt liten copy/metadata/internlänksändring i repo"}]}',
     '',
     'JSON-format om ingen kandidat finns:',
-    '{"action":null,"reason":"kort varför"}',
+    '{"actions":[],"reason":"kort varför"}',
     '',
     'AGENT SPEC:',
     readAgentSpecs(5000),
@@ -2664,74 +2667,89 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
   state.codexOpportunityScout[key] = { at: new Date().toISOString(), status: 'completed' }
   const output = extractCodexExecText(result.stdout || '')
   const parsed = parseCodexOpportunity(output)
-  if (!parsed?.action) {
+  const suggestions = Array.isArray(parsed?.actions)
+    ? parsed.actions.slice(0, 3)
+    : parsed?.action
+      ? [parsed.action]
+      : []
+  if (!suggestions.length) {
     state.codexOpportunityScout[key].status = 'no_verified_opportunity'
     state.codexOpportunityScout[key].reason = parsed?.reason || 'no_action'
     log('codex_opportunity_no_action', { workspace: workspace?.label || workspace?.id || null, reason: parsed?.reason || 'no_action' })
     return null
   }
   const host = workspaceHost(workspace) || slugify(workspace?.label || repoName)
-  const targetUrl = String(parsed.action.targetUrl || '').trim()
-  const keyword = String(parsed.action.keyword || parsed.action.focus || '').trim()
-  if (!targetUrl || !keyword) return null
-  const evidenceCheck = validateOpportunityEvidence(parsed.action, evidenceContext)
-  if (!evidenceCheck.ok) {
-    state.codexOpportunityScout[key] = {
-      at: new Date().toISOString(),
-      status: 'rejected_unverified_evidence',
-      blockedReason: evidenceCheck.reason
+  const rejectedSuggestions = []
+  for (const suggestion of suggestions) {
+    const targetUrl = String(suggestion?.targetUrl || '').trim()
+    const keyword = String(suggestion?.keyword || suggestion?.focus || '').trim()
+    if (!targetUrl || !keyword) {
+      rejectedSuggestions.push({ title: suggestion?.title || null, reason: 'missing_target_or_keyword' })
+      continue
     }
-    log('codex_opportunity_unverified_evidence', {
-      workspace: workspace?.label || workspace?.id || null,
-      reason: evidenceCheck.reason,
-      title: parsed.action.title || null,
+    const evidenceCheck = validateOpportunityEvidence(suggestion, evidenceContext)
+    if (!evidenceCheck.ok) {
+      rejectedSuggestions.push({ title: suggestion?.title || null, targetUrl, reason: evidenceCheck.reason })
+      continue
+    }
+    const scoutSurface = codexOpportunitySurfaceCheck(suggestion, targetUrl)
+    if (!scoutSurface.ok) {
+      rejectedSuggestions.push({ title: suggestion?.title || null, targetUrl, reason: scoutSurface.reason })
+      continue
+    }
+    const evidenceLine = evidenceCheck.evidence.type === 'gsc'
+      ? `GSC ${evidenceCheck.evidence.runAt || ''}: "${evidenceCheck.evidence.query}" på ${evidenceCheck.evidence.page} hade ${evidenceCheck.evidence.impressions} impressions, ${evidenceCheck.evidence.clicks} klick och position ${Number(evidenceCheck.evidence.position || 0).toFixed(1)}.`
+      : `Crawl ${evidenceCheck.evidence.runAt || ''}: ${evidenceCheck.evidence.page} hade verifierade fel: ${(evidenceCheck.evidence.issues || []).join(', ')}.`
+    const action = {
+      id: `seo_scout_${slugify(`${host}-${repoName}-${normalizeActionPath(targetUrl)}-${keyword}`).slice(0, 140)}`,
+      status: 'pending',
+      priority: ['high', 'medium', 'low'].includes(suggestion.priority) ? suggestion.priority : 'high',
+      category: ['content', 'internal-links'].includes(suggestion.category) ? suggestion.category : 'content',
+      workspaceSlug: workspace?.label || host,
+      projectSlug: repoFullName,
+      synthetic: true,
+      scout: true,
+      title: String(suggestion.title || `Scout: förbättra ${normalizeActionPath(targetUrl) || targetUrl}`).slice(0, 180),
       targetUrl,
-      keyword
-    })
-    return null
-  }
-  const scoutSurface = codexOpportunitySurfaceCheck(parsed.action, targetUrl)
-  if (!scoutSurface.ok) {
+      url: targetUrl,
+      keyword,
+      why: String(suggestion.why || `Verifierad ${evidenceCheck.evidence.type}-signal visar ett mätbart förbättringstillfälle på en befintlig sida.`).slice(0, 900),
+      recommendedAction: String(suggestion.recommendedAction || '').slice(0, 1400),
+      evidence: [evidenceLine],
+      verifiedEvidence: evidenceCheck.evidence,
+      evidenceSource: `fresh_${evidenceCheck.evidence.type}_plus_codex_repo_scout`,
+      evidenceBatchId: context.sourcePayload?.batchId || null,
+      evidenceRunAt: evidenceCheck.evidence.runAt || null
+    }
+    const policyCheck = autonomousCodeCandidateCheck(action, workspace, targetChannelId)
+    if (!policyCheck.ok) {
+      rejectedSuggestions.push({ title: action.title, targetUrl, reason: policyCheck.reason })
+      continue
+    }
     state.codexOpportunityScout[key] = {
       at: new Date().toISOString(),
-      blockedReason: scoutSurface.reason
+      status: 'verified_candidate',
+      targetUrl,
+      keyword,
+      evidence: evidenceCheck.evidence,
+      consideredCount: suggestions.length,
+      rejectedSuggestions
     }
-    rememberAgentLesson(`Codex opportunity scout suggested an unsupported surface for ${workspace?.label || workspace?.id || key}: ${scoutSurface.reason}; retry later with stricter existing-page instructions instead of blocking the workspace for days.`)
-    log('codex_opportunity_invalid_action', {
-      workspace: workspace?.label || workspace?.id || null,
-      reason: scoutSurface.reason,
-      title: parsed.action.title || null,
-      targetUrl
-    })
-    return null
+    return action
   }
   state.codexOpportunityScout[key] = {
     at: new Date().toISOString(),
-    status: 'verified_candidate',
-    targetUrl,
-    keyword,
-    evidence: evidenceCheck.evidence
+    status: 'no_policy_compatible_opportunity',
+    reason: 'Alla verifierade scoutförslag stoppades av evidens-, cooldown- eller affärspolicyn.',
+    consideredCount: suggestions.length,
+    rejectedSuggestions
   }
-  return {
-    id: `seo_scout_${slugify(`${host}-${repoName}-${normalizeActionPath(targetUrl)}-${keyword}`).slice(0, 140)}`,
-    status: 'pending',
-    priority: ['high', 'medium', 'low'].includes(parsed.action.priority) ? parsed.action.priority : 'high',
-    category: ['content', 'internal-links'].includes(parsed.action.category) ? parsed.action.category : 'content',
-    workspaceSlug: workspace?.label || host,
-    projectSlug: repoFullName,
-    synthetic: true,
-    scout: true,
-    title: String(parsed.action.title || `Scout: förbättra ${normalizeActionPath(targetUrl) || targetUrl}`).slice(0, 180),
-    targetUrl,
-    url: targetUrl,
-    keyword,
-    why: String(parsed.action.why || `Verifierad ${evidenceCheck.evidence.type}-signal visar ett mätbart förbättringstillfälle på en befintlig sida.`).slice(0, 900),
-    recommendedAction: String(parsed.action.recommendedAction || '').slice(0, 1400),
-    evidence: [evidenceCheck.evidence],
-    evidenceSource: `fresh_${evidenceCheck.evidence.type}_plus_codex_repo_scout`,
-    evidenceBatchId: context.sourcePayload?.batchId || null,
-    evidenceRunAt: evidenceCheck.evidence.runAt || null
-  }
+  log('codex_opportunity_no_policy_compatible_action', {
+    workspace: workspace?.label || workspace?.id || null,
+    consideredCount: suggestions.length,
+    rejectedSuggestions
+  })
+  return null
 }
 
 function codexOpportunitySurfaceCheck(action, targetUrl) {
