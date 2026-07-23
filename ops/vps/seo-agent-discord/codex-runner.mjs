@@ -10,7 +10,7 @@ const runnerEnv = { ...process.env, PATH: `/home/deploy/.npm-global/bin:/home/de
 const codexCli = process.env.CODEX_CLI || '/home/deploy/.npm-global/bin/codex'
 const workspaceRoot = '/home/deploy/seo-agent-workspaces'
 const skipGithubActions = process.env.SEO_AGENT_SKIP_GITHUB_ACTIONS !== 'false'
-const deploySebcastwallDev = process.env.SEO_AGENT_DEPLOY_SEBCASTWALL_DEV !== 'false'
+const deploySebcastwallDev = process.env.SEO_AGENT_DEPLOY_SEBCASTWALL_DEV === 'true'
 const action = JSON.parse(readFileSync(process.argv[2], 'utf8'))
 const repoName = String(action.repoFullName || '').split('/')[1]
 if (!repoName) throw new Error('Missing repoFullName in action payload')
@@ -426,6 +426,7 @@ async function reviewDiffWithCodex(repoDir, input, diffStat, diff, attempt) {
     '- inte upprepar samma experiment utan ny evidens,',
     '- inte lägger SMB/B2B/konsult/SaaS-språk på konsumenttjänster,',
     '- använder naturlig, idiomatisk svenska i synlig copy; verifierad sökvolym tillåter inte ordagrann keyword-stuffing, utelämnade prepositioner eller sökfraser som låter som rå querydata,',
+    '- lämnar visuell design helt orörd: ingen CSS, layout, spacing, bild, ikon, animation, navigation, formulärstruktur eller visuell komponentändring,',
     '- inte skickar in sajtens varumärke i en metadata-helper som redan lägger till varumärket; renderad title får aldrig dubblera sajtnamnet,',
     '- verifierar repots faktiska metadataflöde innan den flaggar varumärkesdubblering. Blockera inte en komplett title med varumärke om befintliga poster följer samma konvention och ingen helper eller template lägger till namnet igen.',
     ...(isSebcastwallAction(input, repoName) ? [
@@ -542,7 +543,7 @@ async function rejectDirtyWorktree(repoDir, input, review) {
 }
 
 async function runWorkspaceSafetyGate(repoDir, input) {
-  if (!isSebcastwallAction(input, repoName)) return { ok: true, profile: 'default' }
+  const isSebcastwall = isSebcastwallAction(input, repoName)
 
   const nameStatus = await run('git', ['diff', '--name-status', '--', '.'], repoDir)
   const changed = String(nameStatus.stdout || '').trim().split(/\r?\n/).filter(Boolean).map((line) => {
@@ -550,17 +551,21 @@ async function runWorkspaceSafetyGate(repoDir, input) {
     return { status, path: parts[parts.length - 1] || '' }
   })
   const blockedPaths = changed.filter(({ path }) => (
-    /(^|\/)app\/_components\//.test(path)
-    || /(^|\/)app\/tjanster\/_components\//.test(path)
-    || /(^|\/)app\/(kontakt|api)\//.test(path)
-    || /(^|\/)public\//.test(path)
+    /(^|\/)public\//.test(path)
     || /\.css$/.test(path)
     || /(^|\/)(package\.json|next\.config\.[^/]+|wrangler\.jsonc|middleware\.[^/]+)$/.test(path)
+    || (isSebcastwall && (
+      /(^|\/)app\/_components\//.test(path)
+      || /(^|\/)app\/tjanster\/_components\//.test(path)
+      || /(^|\/)app\/(kontakt|api)\//.test(path)
+    ))
   ))
   if (blockedPaths.length) {
-    await rejectDirtyWorktree(repoDir, input, { reason: `sebcastwall_design_freeze:${blockedPaths.map((item) => item.path).join(',')}` })
-    throw new Error(`Sebcastwall SEO safety gate blocked design/system files: ${blockedPaths.map((item) => item.path).join(', ')}`)
+    await rejectDirtyWorktree(repoDir, input, { reason: `seo_visual_freeze:${blockedPaths.map((item) => item.path).join(',')}` })
+    throw new Error(`SEO safety gate blocked visual/system files: ${blockedPaths.map((item) => item.path).join(', ')}`)
   }
+
+  if (!isSebcastwall) return { ok: true, profile: 'seo_visual_freeze', changedFiles: changed.map((item) => item.path) }
 
   const unsafeLifecycle = changed.filter(({ status, path }) => /^[DR]/.test(status) || (status === 'A' && !/^content\/articles\/[^/]+\.mdx$/.test(path)))
   if (unsafeLifecycle.length) {
@@ -708,6 +713,7 @@ function buildPrompt(input) {
     '- Do not touch unrelated files.',
     '- Do not change deploy config, auth, API integrations, pricing, redirects, or routing unless the action explicitly requires it.',
     '- Prefer metadata, copy, schema, internal links, FAQ, or small existing-page changes.',
+    '- Visual design is frozen for every workspace. Do not change CSS, layout, spacing, images, icons, animation, navigation, forms or visual component structure.',
     '- If the action text contains a generic template that conflicts with the workspace rules, rewrite the implementation around the workspace rules instead of copying the template.',
     '- Do not add B2B/SMB/konsult/SaaS language to consumer utilities such as vagkollen.se or parkeringspolaren.se.',
     '- Do not repeat a previously completed page/keyword experiment unless the action provides new evidence or a clearly different hypothesis.',

@@ -1926,9 +1926,7 @@ async function maybeQueueAutonomousCodeActions(workspaces) {
       `Kort: ${candidate.codexBrief?.title || candidate.action.title}`,
       candidate.action.targetUrl ? `URL: ${candidate.action.targetUrl}` : '',
       `Varför: ${candidate.reason}`,
-      isSebcastwallWorkspace(workspace)
-        ? 'Jag kodar och bygger i en separat granskningsbranch. Main och production lämnas orörda tills ändringen har granskats.'
-        : 'Jag kodar, bygger, committar och postar diff/commit här. Jag frågar bara vid hög risk, ny sida, oklar riktning eller konflikt.'
+      'Jag kodar och bygger i en separat granskningsbranch. Main och production lämnas orörda tills du godkänner ändringen här.'
     ].filter(Boolean).join('\n').slice(0, 1900), targetChannelId)
     saveState()
     return
@@ -7242,9 +7240,6 @@ async function recoverUncertainRuntimeApprovedQueue(uncertainty) {
     if (targetChannelId) {
       await markPostedActionHandled(entry.id, targetChannelId, requiresReview ? 'code_action_review_ready' : 'code_action_completed')
       const commitUrl = githubCommitUrl(repoFullName, completedResult.commit)
-      const devReviewUrl = requiresReview && isSebcastwallWorkspace(workspace)
-        ? sebcastwallDevUrl(entry.targetUrl || entry.url)
-        : ''
       const posted = await sendDiscordMessage([
         requiresReview
           ? `SEO-ändring redo för granskning för ${workspace.label}: ${entry.title || entry.id}`
@@ -7253,11 +7248,10 @@ async function recoverUncertainRuntimeApprovedQueue(uncertainty) {
         `Commit: ${completedResult.commit}`,
         commitUrl ? `GitHub: ${commitUrl}` : '',
         ...codeDeliveryLines(completedResult),
-        devReviewUrl ? `Granska sidan i dev: ${devReviewUrl}` : '',
         completedResult.diffStat ? `Diff:\n\`\`\`\n${String(completedResult.diffStat).slice(0, 1200)}\n\`\`\`` : '',
         '',
         requiresReview
-          ? 'Review-branchen är klar. Main och production är orörda tills du väljer Godkänn ändringen. Dev-deployen kan ta någon minut att slå igenom.'
+          ? 'Review-branchen är klar. Main och production är orörda tills du väljer Godkänn ändringen.'
           : 'Jag fick ett osäkert runtime-svar, men hittade den färdiga SEO Agent-committen i repot och tog bort actionen från kön.'
       ].filter(Boolean).join('\n'), targetChannelId, requiresReview ? reviewReadyComponents() : rollbackComponents(), { kind: 'code_result' })
       state.messageToAction = state.messageToAction || {}
@@ -7276,16 +7270,6 @@ async function recoverUncertainRuntimeApprovedQueue(uncertainty) {
     saveState()
   }
   return recoveredCount
-}
-
-function sebcastwallDevUrl(value) {
-  const targetUrl = String(value || '').trim()
-  try {
-    const parsed = new URL(targetUrl)
-    return `https://dev.sebcastwall.se${parsed.pathname}${parsed.search}`
-  } catch {
-    return 'https://dev.sebcastwall.se'
-  }
 }
 
 async function recoverRuntimeNoChangesAfterRecentCommit(action, workspace) {
