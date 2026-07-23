@@ -18,6 +18,10 @@ test('allows metadata work without changing protected surfaces', () => {
     requiresOperatorProposalText('Lägg Stockholm-vinkel i metadata utan att ändra CTA, priser eller formulär.'),
     false
   )
+  assert.equal(
+    requiresOperatorProposalText('Skicka renderServerH1 till sidan så den får en server-renderad H1 utan layoutändring.'),
+    false
+  )
 })
 
 test('classifies a requested visual change separately', () => {

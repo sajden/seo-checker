@@ -8452,7 +8452,7 @@ function inferWorkspaceProfile(workspace) {
     workspace?.repoFullName,
     workspace?.siteUrl
   ].filter(Boolean).join(' ').toLowerCase()
-  if (/\b(vag|väg|road|route|trafik|traffic|weather|väder|bilresa|driving)\b/.test(signal)) {
+  if (/vagkollen|vägkollen|\b(vag|väg|road|route|trafik|traffic|weather|väder|bilresa|driving)\b/.test(signal)) {
     return {
       label: workspace?.label || 'road/weather workspace',
       siteType: 'road_weather_utility',
