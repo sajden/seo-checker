@@ -110,11 +110,13 @@ export function buildOpportunityEvidenceContext(batch) {
     gscOpportunities,
     pageOpportunities,
     crawlSignals,
+    keywordPlanner: [],
     counts: {
       gscRows: gscRows.length,
       gscOpportunities: gscOpportunities.length,
       pageOpportunities: pageOpportunities.length,
-      crawlSignals: crawlSignals.length
+      crawlSignals: crawlSignals.length,
+      keywordPlanner: 0
     }
   }
 }
@@ -133,13 +135,15 @@ export function excludeOpportunityEvidenceTargets(evidenceContext, excludedTarge
     gscRows: (evidenceContext?.gscRows || []).filter((item) => allowed(item?.page)),
     gscOpportunities: (evidenceContext?.gscOpportunities || []).filter((item) => allowed(item?.page)),
     pageOpportunities: (evidenceContext?.pageOpportunities || []).filter((item) => allowed(item?.url)),
-    crawlSignals: (evidenceContext?.crawlSignals || []).filter((item) => allowed(item?.url))
+    crawlSignals: (evidenceContext?.crawlSignals || []).filter((item) => allowed(item?.url)),
+    keywordPlanner: (evidenceContext?.keywordPlanner || []).filter((item) => allowed(item?.targetUrl))
   }
   result.counts = {
     gscRows: result.gscRows.length,
     gscOpportunities: result.gscOpportunities.length,
     pageOpportunities: result.pageOpportunities.length,
     crawlSignals: result.crawlSignals.length,
+    keywordPlanner: result.keywordPlanner.length,
     excludedTargets: targets.length
   }
   return result
@@ -195,6 +199,30 @@ export function validateOpportunityEvidence(action, evidenceContext) {
         runAt: evidenceContext?.runAt || null,
         page: crawlMatch.url,
         issues: crawlMatch.issues
+      }
+    }
+  }
+
+  if (evidenceType === 'keyword_planner') {
+    const match = (evidenceContext?.keywordPlanner || []).find((item) => (
+      sameTarget(item?.targetUrl, targetUrl)
+      && keywordMatches(item?.keyword, keyword)
+      && Number(item?.avgMonthlySearches || 0) > 0
+    ))
+    if (!match) return { ok: false, reason: 'keyword_planner_evidence_not_verified' }
+    return {
+      ok: true,
+      reason: 'verified_keyword_planner_signal',
+      evidence: {
+        type: 'keyword_planner',
+        runAt: match.checkedAt || evidenceContext?.runAt || null,
+        page: match.targetUrl,
+        keyword: match.keyword,
+        avgMonthlySearches: Number(match.avgMonthlySearches || 0),
+        competition: match.competition || null,
+        competitionIndex: Number.isFinite(Number(match.competitionIndex)) ? Number(match.competitionIndex) : null,
+        lowTopOfPageBid: Number.isFinite(Number(match.lowTopOfPageBid)) ? Number(match.lowTopOfPageBid) : null,
+        highTopOfPageBid: Number.isFinite(Number(match.highTopOfPageBid)) ? Number(match.highTopOfPageBid) : null
       }
     }
   }

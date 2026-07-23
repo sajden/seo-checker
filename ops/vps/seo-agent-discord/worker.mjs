@@ -2556,10 +2556,10 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
   }
   const keywordMap = ensureKeywordMap(workspace, targetChannelId)
   const learningSummary = buildWorkspaceLearningSummary(key)
-  const experiments = Object.values(state.seoExperiments || {})
+  const allWorkspaceExperiments = Object.values(state.seoExperiments || {})
     .filter((item) => workspaceMatchesExperiment(workspace, item))
     .sort((a, b) => Date.parse(b.completedAt || 0) - Date.parse(a.completedAt || 0))
-    .slice(0, 20)
+  const experiments = allWorkspaceExperiments.slice(0, 20)
   const recentCodeResults = recentCodeResultsForWorkspace(workspace, targetChannelId)
   const batch = await fetchWorkspaceSeoBatch(workspace).catch(() => null)
   const rawEvidenceContext = buildOpportunityEvidenceContext(batch)
@@ -2568,7 +2568,7 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
     .filter((item) => rejectedIds.has(String(item?.id || '')))
     .map((item) => item?.targetUrl || item?.url)
     .filter(Boolean)
-  for (const experiment of experiments) {
+  for (const experiment of allWorkspaceExperiments) {
     const completedAt = Date.parse(experiment.completedAt || '')
     const reviewAfter = Date.parse(experiment.reviewAfter || '')
     const inMeasurementWindow = Number.isFinite(completedAt) && Date.now() - completedAt < sameTargetAutonomousCooldownMs
@@ -2583,7 +2583,16 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
     ].filter((url) => /\/tjanster\/(?:integrationer|microsoft-365|m365-hardvara)(?:\/|$)/i.test(String(url || '')))
     excludedTargets.push(...supportTrackUrls)
   }
-  const evidenceContext = excludeOpportunityEvidenceTargets(rawEvidenceContext, excludedTargets)
+  const filteredEvidenceContext = excludeOpportunityEvidenceTargets(rawEvidenceContext, excludedTargets)
+  const keywordPlanner = await buildKeywordPlannerDiscoveryEvidence(keywordMap, excludedTargets)
+  const evidenceContext = {
+    ...filteredEvidenceContext,
+    keywordPlanner,
+    counts: {
+      ...filteredEvidenceContext.counts,
+      keywordPlanner: keywordPlanner.length
+    }
+  }
   const promptPath = join(stateDir, `codex-opportunity-${slugify(key).slice(0, 80)}.md`)
   const contextJson = {
     workspace: {
@@ -2621,9 +2630,10 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
     'Regler:',
     '- Returnera ENDAST JSON.',
     '- Välj bara en befintlig sida/route som verkar finnas i repo.',
-    '- Ett förslag måste utgå från verifiedEvidence och ange evidenceType "gsc" eller "crawl". Repoanalys får bara verifiera route, nuläge och genomförbarhet.',
+    '- Ett förslag måste utgå från verifiedEvidence och ange evidenceType "gsc", "crawl" eller "keyword_planner". Repoanalys får bara verifiera route, nuläge och genomförbarhet.',
     '- GSC-förslag måste använda exakt targetUrl och en query/fokusfras som kan matchas mot en rad med fler än 0 impressions i verifiedEvidence.',
     '- Crawl-förslag måste använda en targetUrl som har ett uttryckligt crawlSignals-fel i verifiedEvidence.',
+    '- Keyword Planner-förslag måste använda exakt targetUrl och keyword från verifiedEvidence.keywordPlanner med avgMonthlySearches över 0.',
     '- Uppfinn aldrig att en sida behöver förbättras enbart för att copy skulle kunna skrivas annorlunda. Om underlaget inte bevisar ett problem: action=null.',
     '- Skapa inte ny sida. Om bästa idén är en ny route, ny landningssida, dashboard/adminyta eller research/new-page: returnera action=null.',
     '- TargetUrl måste matcha en befintlig route från repo hints. Föreslå inte URL:er som inte redan finns.',
@@ -2637,7 +2647,7 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
     '- Workspace-profilen styr målgrupp och språk. Vägkollen får aldrig SMB/B2B/konsultspråk.',
     '',
     'JSON-format vid bra kandidater:',
-    '{"actions":[{"title":"kort titel","targetUrl":"https://...","keyword":"exakt verifierbar sökfras/fokus","evidenceType":"gsc|crawl","priority":"high|medium","category":"content|internal-links","why":"mätvärden och varför detta är bästa nästa experimentet","recommendedAction":"exakt liten copy/metadata/internlänksändring i repo"}]}',
+    '{"actions":[{"title":"kort titel","targetUrl":"https://...","keyword":"exakt verifierbar sökfras/fokus","evidenceType":"gsc|crawl|keyword_planner","priority":"high|medium","category":"content|internal-links","why":"mätvärden och varför detta är bästa nästa experimentet","recommendedAction":"exakt liten copy/metadata/internlänksändring i repo"}]}',
     '',
     'JSON-format om ingen kandidat finns:',
     '{"actions":[],"reason":"kort varför"}',
@@ -2702,7 +2712,9 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
     }
     const evidenceLine = evidenceCheck.evidence.type === 'gsc'
       ? `GSC ${evidenceCheck.evidence.runAt || ''}: "${evidenceCheck.evidence.query}" på ${evidenceCheck.evidence.page} hade ${evidenceCheck.evidence.impressions} impressions, ${evidenceCheck.evidence.clicks} klick och position ${Number(evidenceCheck.evidence.position || 0).toFixed(1)}.`
-      : `Crawl ${evidenceCheck.evidence.runAt || ''}: ${evidenceCheck.evidence.page} hade verifierade fel: ${(evidenceCheck.evidence.issues || []).join(', ')}.`
+      : evidenceCheck.evidence.type === 'keyword_planner'
+        ? `Keyword Planner ${evidenceCheck.evidence.runAt || ''}: "${evidenceCheck.evidence.keyword}" för ${evidenceCheck.evidence.page} hade ${evidenceCheck.evidence.avgMonthlySearches} genomsnittliga sökningar/mån och konkurrens ${evidenceCheck.evidence.competition || 'okänd'}.`
+        : `Crawl ${evidenceCheck.evidence.runAt || ''}: ${evidenceCheck.evidence.page} hade verifierade fel: ${(evidenceCheck.evidence.issues || []).join(', ')}.`
     const action = {
       id: `seo_scout_${slugify(`${host}-${repoName}-${normalizeActionPath(targetUrl)}-${keyword}`).slice(0, 140)}`,
       status: 'pending',
@@ -2720,6 +2732,17 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
       recommendedAction: String(suggestion.recommendedAction || '').slice(0, 1400),
       evidence: [evidenceLine],
       verifiedEvidence: evidenceCheck.evidence,
+      keywordMetrics: evidenceCheck.evidence.type === 'keyword_planner'
+        ? {
+            text: evidenceCheck.evidence.keyword,
+            avgMonthlySearches: evidenceCheck.evidence.avgMonthlySearches,
+            competition: evidenceCheck.evidence.competition,
+            competitionIndex: evidenceCheck.evidence.competitionIndex,
+            lowTopOfPageBid: evidenceCheck.evidence.lowTopOfPageBid,
+            highTopOfPageBid: evidenceCheck.evidence.highTopOfPageBid
+          }
+        : undefined,
+      keywordMetricsStatus: evidenceCheck.evidence.type === 'keyword_planner' ? 'ready' : undefined,
       evidenceSource: `fresh_${evidenceCheck.evidence.type}_plus_codex_repo_scout`,
       evidenceBatchId: context.sourcePayload?.batchId || null,
       evidenceRunAt: evidenceCheck.evidence.runAt || null
@@ -2803,6 +2826,70 @@ function opportunityScoutIntervalForWorkspace(profile, context = {}) {
   const weakQueue = !rejected.length || rejected.length >= 4 || rejected.some((item) => /already_result|missing_target_url|not_code_action|guard:|recently/i.test(String(item?.reason || '')))
   if (String(profile?.siteType || '').includes('consultancy') && weakQueue) return opportunityScoutGrowthMinIntervalMs
   return opportunityScoutMinIntervalMs
+}
+
+async function buildKeywordPlannerDiscoveryEvidence(keywordMap, excludedTargets = []) {
+  const owners = new Map()
+  for (const item of Array.isArray(keywordMap) ? keywordMap : []) {
+    const keyword = String(item?.keyword || '').trim()
+    const targetUrl = String(item?.targetUrl || '').trim()
+    if (!keyword || !targetUrl) continue
+    if (excludedTargets.some((excluded) => sameSeoUrl(excluded, targetUrl))) continue
+    for (const variant of keywordDiscoveryVariants(keyword)) {
+      const normalized = normalizeKeywordText(variant)
+      if (!normalized || owners.has(normalized)) continue
+      owners.set(normalized, { keyword: variant, targetUrl, sourceKeyword: keyword })
+      if (owners.size >= 30) break
+    }
+    if (owners.size >= 30) break
+  }
+  if (!owners.size) return []
+  try {
+    const payload = await fetchPlatformJson('/api/platform/ad-automation/keyword-metrics', {
+      method: 'POST',
+      body: JSON.stringify({ keywords: [...owners.values()].map((item) => item.keyword) })
+    })
+    if (payload?.status !== 'ready') return []
+    const checkedAt = new Date().toISOString()
+    return (Array.isArray(payload.metrics) ? payload.metrics : [])
+      .map((metric) => {
+        const owner = owners.get(normalizeKeywordText(metric?.text))
+        if (!owner || Number(metric?.avgMonthlySearches || 0) <= 0) return null
+        return {
+          ...owner,
+          avgMonthlySearches: Number(metric.avgMonthlySearches || 0),
+          competition: metric.competition || null,
+          competitionIndex: Number.isFinite(Number(metric.competitionIndex)) ? Number(metric.competitionIndex) : null,
+          lowTopOfPageBid: Number.isFinite(Number(metric.lowTopOfPageBid)) ? Number(metric.lowTopOfPageBid) : null,
+          highTopOfPageBid: Number.isFinite(Number(metric.highTopOfPageBid)) ? Number(metric.highTopOfPageBid) : null,
+          checkedAt
+        }
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.avgMonthlySearches - a.avgMonthlySearches)
+      .slice(0, 15)
+  } catch (error) {
+    logThrottled('keyword_planner_discovery_failed', 60 * 60 * 1000, 'keyword_planner_discovery_failed', {
+      error: error?.message || String(error)
+    })
+    return []
+  }
+}
+
+function keywordDiscoveryVariants(keyword) {
+  const value = String(keyword || '').trim()
+  const withoutAudience = value
+    .replace(/\bsmåföretag\b/gi, '')
+    .replace(/\bföretag\b/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return [...new Set([
+    value,
+    withoutAudience,
+    withoutAudience ? `${withoutAudience} stockholm` : '',
+    /\bföretag\b/i.test(value) ? value.replace(/\bföretag\b/gi, 'stockholm') : '',
+    /\bsmåföretag\b/i.test(value) ? value.replace(/\bsmåföretag\b/gi, 'stockholm') : ''
+  ].map((item) => String(item || '').trim()).filter(Boolean))]
 }
 
 function keywordPriorityWeight(priority) {

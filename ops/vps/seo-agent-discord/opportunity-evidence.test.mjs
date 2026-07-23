@@ -75,3 +75,23 @@ test('removes previously rejected targets from every evidence source', () => {
   assert.equal(filtered.crawlSignals.length, 0)
   assert.equal(filtered.counts.excludedTargets, 1)
 })
+
+test('verifies Keyword Planner demand for a mapped existing URL', () => {
+  const context = {
+    ...buildOpportunityEvidenceContext(batch),
+    keywordPlanner: [{
+      targetUrl: 'https://sebcastwall.se/tjanster/webbutveckling',
+      keyword: 'webbutveckling stockholm',
+      avgMonthlySearches: 170,
+      competition: 'LOW',
+      checkedAt: '2026-07-23T08:20:00.000Z'
+    }]
+  }
+  const result = validateOpportunityEvidence({
+    evidenceType: 'keyword_planner',
+    targetUrl: 'https://sebcastwall.se/tjanster/webbutveckling',
+    keyword: 'webbutveckling stockholm'
+  }, context)
+  assert.equal(result.ok, true)
+  assert.equal(result.evidence.avgMonthlySearches, 170)
+})
