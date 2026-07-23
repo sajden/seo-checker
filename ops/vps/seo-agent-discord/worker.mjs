@@ -6,6 +6,7 @@ import { createHash, createHmac } from 'node:crypto'
 import { agentRuntimeSnapshot } from './agent-brain.mjs'
 import { classifyGscIssue, groupGscReviewCandidates } from './gsc-issue-policy.mjs'
 import { buildGscExperimentSnapshot, evaluateExperimentMeasurement, nextExperimentPhase, nextMeasurementDate } from './seo-experiment-measurement.mjs'
+import { buildOpportunityEvidenceContext, validateOpportunityEvidence } from './opportunity-evidence.mjs'
 
 const env = loadEnv([
   '/home/deploy/.hermes/.env',
@@ -215,6 +216,18 @@ function currentAgentActivity(reviewQueue) {
       since: state.codeActionRunning.startedAt || null
     }
   }
+  const latestScout = Object.values(state.codexOpportunityScout || {})
+    .filter((item) => item?.at)
+    .sort((a, b) => Date.parse(b.at || 0) - Date.parse(a.at || 0))[0]
+  if (latestScout?.status === 'researching') {
+    return {
+      mode: 'researching',
+      label: 'Söker en verifierad SEO-möjlighet',
+      reason: 'Nuvarande kandidater klarade inte kvalitetsgrindarna, så agenten analyserar färsk GSC- och crawldata.',
+      nextAction: 'Ett dev-jobb skapas bara om signalen kan matchas mot en befintlig URL och verifieras i datan.',
+      since: latestScout.at
+    }
+  }
   const unavailableWorkspaces = Object.entries(state.workspaceReadiness || {})
     .filter(([, readiness]) => readiness?.batchAvailable === false)
     .map(([workspaceId]) => workspaceId)
@@ -228,10 +241,15 @@ function currentAgentActivity(reviewQueue) {
     }
   }
   const weekly = state.weeklyStrategyReviews?.[state.lastWeeklyStrategyKey] || null
+  const latestScoutReason = latestScout?.status === 'no_verified_opportunity'
+    ? `Senaste researchen hittade ingen verifierad möjlighet: ${latestScout.reason || 'underlaget var inte tillräckligt starkt'}.`
+    : latestScout?.status === 'rejected_unverified_evidence'
+      ? 'Senaste scoutförslaget stoppades eftersom dess evidens inte kunde verifieras mot färsk data.'
+      : null
   return {
     mode: 'monitoring',
     label: 'Bevakar och inväntar bättre evidens',
-    reason: weekly?.summary || 'Ingen tillräckligt stark, ny SEO-åtgärd finns efter kvalitetsgrindarna.',
+    reason: latestScoutReason || weekly?.summary || 'Ingen tillräckligt stark, ny SEO-åtgärd finns efter kvalitetsgrindarna.',
     nextAction: `Lätt teknikkontroll varje timme och full SEO-analys ${formatNextDailyRun()}.`,
     lastTechnicalCheckAt: state.lastTechnicalCheckAt || null,
     nextTechnicalCheckAt: nextIntervalAt(state.lastTechnicalCheckAt, technicalCheckEveryMs),
@@ -1850,7 +1868,6 @@ async function maybeQueueAutonomousCodeActions(workspaces) {
         candidateCount: runtimeCurrent.payload?.candidateCount ?? null,
         rejectedCount: runtimeCurrent.payload?.rejected?.length || 0
       })
-      continue
     }
     const candidate = await chooseAutonomousCodeAction(actions, workspace, targetChannelId, payload.workspacePolicy, payload)
     if (!candidate) {
@@ -2323,17 +2340,6 @@ function shouldSkipCodexOpportunityScoutForLiveRejections(pending, rejectionReas
   return rejected.every((item) => isWaitOrGuardRejectionReason(item?.reason))
 }
 
-function shouldSkipCodexOpportunityScoutForRecentNoCandidate(key, scoutMinIntervalMs) {
-  const recent = state.noAutonomousCandidate?.[key]
-  const recentAt = Date.parse(recent?.at || '')
-  const ageMs = Number.isFinite(recentAt) ? Date.now() - recentAt : Infinity
-  if (ageMs < 0 || ageMs >= scoutMinIntervalMs) return false
-  const reasons = Array.isArray(recent?.reasons) ? recent.reasons.filter(Boolean) : []
-  const pendingCount = Math.max(Number(recent?.pendingCount || 0), reasons.length)
-  if (!pendingCount || reasons.length < Math.min(pendingCount, 4)) return false
-  return reasons.every((item) => isWaitOrGuardRejectionReason(item?.reason))
-}
-
 function runtimeCurrentBlocksAutonomousCode(payload) {
   if (!payload || String(payload.selectedActionId || '')) return false
   if (Number(payload.acceptedCount ?? 0) !== 0) return false
@@ -2393,27 +2399,18 @@ async function syntheticAutonomousActionForWorkspace({ workspace, targetChannelI
     logThrottled(`synthetic_autonomous_skipped:${workspace?.id || workspace?.label}:live`, 30 * 60 * 1000, 'synthetic_autonomous_skipped', { workspace: workspace?.label || workspace?.id || null, reason: 'good_live_candidate_available', pendingCount: pending.length })
     return null
   }
-  if (shouldSkipCodexOpportunityScoutForLiveRejections(pending, rejectionReasons)) {
-    logThrottled(`synthetic_autonomous_skipped:${workspace?.id || workspace?.label}:live-rejections`, 30 * 60 * 1000, 'synthetic_autonomous_skipped', {
-      workspace: workspace?.label || workspace?.id || null,
-      reason: 'live_rejections_waiting_recheck_or_guard',
-      pendingCount: pending.length,
-      rejectedCount: rejectionReasons.length,
-      sampleReasons: rejectionReasons.slice(0, 6).map((item) => item?.reason || 'unknown')
-    })
-    return null
-  }
-  let rawAction = buildWorkspaceGoalGapAction(workspace, targetChannelId, sourcePayload)
-  if (!rawAction && shouldSkipCodexOpportunityScoutForLiveRejections(pending, rejectionReasons)) {
-    logThrottled(`codex_opportunity_skipped:${workspace?.id || workspace?.label}:live-rejections`, 60 * 60 * 1000, 'codex_opportunity_skipped', {
-      workspace: workspace?.label || workspace?.id || null,
-      reason: 'live_rejections_waiting_recheck_or_guard',
-      pendingCount: pending.length,
-      rejectedCount: rejectionReasons.length,
-      sampleReasons: rejectionReasons.slice(0, 6).map((item) => item?.reason || 'unknown')
-    })
-    return null
-  }
+  const allLiveCandidatesGuarded = shouldSkipCodexOpportunityScoutForLiveRejections(pending, rejectionReasons)
+  let rawAction = allLiveCandidatesGuarded
+    ? await buildCodexOpportunityAction(workspace, targetChannelId, {
+        pending,
+        rejectionReasons,
+        workspacePolicy,
+        sourcePayload
+      }).catch((error) => {
+        log('codex_opportunity_action_failed', { workspace: workspace?.label || workspace?.id || null, error: error?.message || String(error) })
+        return null
+      })
+    : buildWorkspaceGoalGapAction(workspace, targetChannelId, sourcePayload)
   rawAction = rawAction || await buildCodexOpportunityAction(workspace, targetChannelId, {
       pending,
       rejectionReasons,
@@ -2520,16 +2517,6 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
     })
     return null
   }
-  if (shouldSkipCodexOpportunityScoutForLiveRejections(context.pending || [], context.rejectionReasons || [])) {
-    logThrottled(`codex_opportunity_skipped:${workspaceProfileKey(workspace, targetChannelId)}:live-rejections`, 60 * 60 * 1000, 'codex_opportunity_skipped', {
-      workspace: workspace?.label || workspace?.id || null,
-      reason: 'live_rejections_waiting_recheck_or_guard',
-      pendingCount: Array.isArray(context.pending) ? context.pending.length : 0,
-      rejectedCount: Array.isArray(context.rejectionReasons) ? context.rejectionReasons.length : 0,
-      sampleReasons: (Array.isArray(context.rejectionReasons) ? context.rejectionReasons : []).slice(0, 6).map((item) => item?.reason || 'unknown')
-    })
-    return null
-  }
   const repoFullName = String(workspace?.repoFullName || '').trim()
   const repoName = repoFullName.split('/')[1]
   if (!repoName) return null
@@ -2547,16 +2534,6 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
       reason: previousScout.blockedReason || 'recent_invalid_scout',
       ageMinutes: Math.round(previousInvalidScoutAgeMs / 60000),
       minIntervalMinutes: Math.round(opportunityScoutInvalidCooldownMs / 60000)
-    })
-    return null
-  }
-  if (shouldSkipCodexOpportunityScoutForRecentNoCandidate(key, scoutMinIntervalMs)) {
-    const recentAt = Date.parse(state.noAutonomousCandidate?.[key]?.at || '')
-    logThrottled(`codex_opportunity_skipped:${key}:recent-no-candidate`, 60 * 60 * 1000, 'codex_opportunity_skipped', {
-      workspace: workspace?.label || workspace?.id || null,
-      reason: 'recent_no_autonomous_candidate_waiting_recheck_or_guard',
-      ageMinutes: Math.round((Date.now() - recentAt) / 60000),
-      minIntervalMinutes: Math.round(scoutMinIntervalMs / 60000)
     })
     return null
   }
@@ -2578,6 +2555,8 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
     .sort((a, b) => Date.parse(b.completedAt || 0) - Date.parse(a.completedAt || 0))
     .slice(0, 20)
   const recentCodeResults = recentCodeResultsForWorkspace(workspace, targetChannelId)
+  const batch = await fetchWorkspaceSeoBatch(workspace).catch(() => null)
+  const evidenceContext = buildOpportunityEvidenceContext(batch)
   const promptPath = join(stateDir, `codex-opportunity-${slugify(key).slice(0, 80)}.md`)
   const contextJson = {
     workspace: {
@@ -2599,6 +2578,7 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
     })),
     recentCodeResults,
     learningSummary,
+    verifiedEvidence: evidenceContext,
     rejectedLiveActions: (context.rejectionReasons || []).slice(0, 12),
     workspacePolicy: context.workspacePolicy || '',
     source: {
@@ -2608,11 +2588,15 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
   }
   const prompt = [
     'Du är SEO Agentens opportunity scout.',
-    'Inspektera repo-checkouten och skapa exakt EN låg-risk SEO-kodaction för en befintlig sida, eller returnera null om inget bra finns.',
+    'Hitta exakt EN evidensbaserad låg-risk SEO-kodaction för en befintlig sida, eller returnera null om inget verifierat behov finns.',
     '',
     'Regler:',
     '- Returnera ENDAST JSON.',
     '- Välj bara en befintlig sida/route som verkar finnas i repo.',
+    '- Ett förslag måste utgå från verifiedEvidence och ange evidenceType "gsc" eller "crawl". Repoanalys får bara verifiera route, nuläge och genomförbarhet.',
+    '- GSC-förslag måste använda exakt targetUrl och en query/fokusfras som kan matchas mot en rad med fler än 0 impressions i verifiedEvidence.',
+    '- Crawl-förslag måste använda en targetUrl som har ett uttryckligt crawlSignals-fel i verifiedEvidence.',
+    '- Uppfinn aldrig att en sida behöver förbättras enbart för att copy skulle kunna skrivas annorlunda. Om underlaget inte bevisar ett problem: action=null.',
     '- Skapa inte ny sida. Om bästa idén är en ny route, ny landningssida, dashboard/adminyta eller research/new-page: returnera action=null.',
     '- TargetUrl måste matcha en befintlig route från repo hints. Föreslå inte URL:er som inte redan finns.',
     '- Läs den tänkta målfilen innan du returnerar action. Om recommendedAction redan finns i filen: returnera action=null eller välj en annan befintlig sida.',
@@ -2624,7 +2608,7 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
     '- Workspace-profilen styr målgrupp och språk. Vägkollen får aldrig SMB/B2B/konsultspråk.',
     '',
     'JSON-format vid bra kandidat:',
-    '{"action":{"title":"kort titel","targetUrl":"https://...","keyword":"sökfras/fokus","priority":"high|medium","category":"content|internal-links","why":"varför detta är bästa nästa experimentet","recommendedAction":"exakt vad kodaren ska ändra i repo"}}',
+    '{"action":{"title":"kort titel","targetUrl":"https://...","keyword":"exakt verifierbar sökfras/fokus","evidenceType":"gsc|crawl","priority":"high|medium","category":"content|internal-links","why":"mätvärden och varför detta är bästa nästa experimentet","recommendedAction":"exakt vad kodaren ska ändra i repo"}}',
     '',
     'JSON-format om ingen kandidat finns:',
     '{"action":null,"reason":"kort varför"}',
@@ -2639,6 +2623,13 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
     await repoPageInventory(repoDir)
   ].join('\n')
   writeFileSync(promptPath, prompt)
+  state.codexOpportunityScout = state.codexOpportunityScout || {}
+  state.codexOpportunityScout[key] = {
+    at: new Date().toISOString(),
+    status: 'researching',
+    evidenceRunAt: evidenceContext.runAt || null
+  }
+  saveState()
   const result = await execCodexTracked({
     agent: 'seo-agent',
     purpose: 'opportunity_scout',
@@ -2647,11 +2638,12 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
     timeout: 4 * 60 * 1000,
     maxBuffer: 8 * 1024 * 1024
   })
-  state.codexOpportunityScout = state.codexOpportunityScout || {}
-  state.codexOpportunityScout[key] = { at: new Date().toISOString() }
+  state.codexOpportunityScout[key] = { at: new Date().toISOString(), status: 'completed' }
   const output = extractCodexExecText(result.stdout || '')
   const parsed = parseCodexOpportunity(output)
   if (!parsed?.action) {
+    state.codexOpportunityScout[key].status = 'no_verified_opportunity'
+    state.codexOpportunityScout[key].reason = parsed?.reason || 'no_action'
     log('codex_opportunity_no_action', { workspace: workspace?.label || workspace?.id || null, reason: parsed?.reason || 'no_action' })
     return null
   }
@@ -2659,6 +2651,22 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
   const targetUrl = String(parsed.action.targetUrl || '').trim()
   const keyword = String(parsed.action.keyword || parsed.action.focus || '').trim()
   if (!targetUrl || !keyword) return null
+  const evidenceCheck = validateOpportunityEvidence(parsed.action, evidenceContext)
+  if (!evidenceCheck.ok) {
+    state.codexOpportunityScout[key] = {
+      at: new Date().toISOString(),
+      status: 'rejected_unverified_evidence',
+      blockedReason: evidenceCheck.reason
+    }
+    log('codex_opportunity_unverified_evidence', {
+      workspace: workspace?.label || workspace?.id || null,
+      reason: evidenceCheck.reason,
+      title: parsed.action.title || null,
+      targetUrl,
+      keyword
+    })
+    return null
+  }
   const scoutSurface = codexOpportunitySurfaceCheck(parsed.action, targetUrl)
   if (!scoutSurface.ok) {
     state.codexOpportunityScout[key] = {
@@ -2674,6 +2682,13 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
     })
     return null
   }
+  state.codexOpportunityScout[key] = {
+    at: new Date().toISOString(),
+    status: 'verified_candidate',
+    targetUrl,
+    keyword,
+    evidence: evidenceCheck.evidence
+  }
   return {
     id: `seo_scout_${slugify(`${host}-${repoName}-${normalizeActionPath(targetUrl)}-${keyword}`).slice(0, 140)}`,
     status: 'pending',
@@ -2687,11 +2702,12 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
     targetUrl,
     url: targetUrl,
     keyword,
-    why: String(parsed.action.why || 'Codex scout hittade en låg-risk befintlig-sida-opportunity i repo när live-kön var svag.').slice(0, 900),
+    why: String(parsed.action.why || `Verifierad ${evidenceCheck.evidence.type}-signal visar ett mätbart förbättringstillfälle på en befintlig sida.`).slice(0, 900),
     recommendedAction: String(parsed.action.recommendedAction || '').slice(0, 1400),
-    evidenceSource: context.sourcePayload?.batchId ? 'fresh_seo_run_plus_codex_repo_scout' : 'codex_repo_scout',
+    evidence: [evidenceCheck.evidence],
+    evidenceSource: `fresh_${evidenceCheck.evidence.type}_plus_codex_repo_scout`,
     evidenceBatchId: context.sourcePayload?.batchId || null,
-    evidenceRunAt: context.sourcePayload?.runAt || context.sourcePayload?.lastRunAt || null
+    evidenceRunAt: evidenceCheck.evidence.runAt || null
   }
 }
 
@@ -2741,7 +2757,7 @@ function parseCodexOpportunity(text) {
 function opportunityScoutIntervalForWorkspace(profile, context = {}) {
   const rejected = Array.isArray(context.rejectionReasons) ? context.rejectionReasons : []
   const weakQueue = !rejected.length || rejected.length >= 4 || rejected.some((item) => /already_result|missing_target_url|not_code_action|guard:|recently/i.test(String(item?.reason || '')))
-  if (profile?.siteType === 'ai_consultancy' && weakQueue) return opportunityScoutGrowthMinIntervalMs
+  if (String(profile?.siteType || '').includes('consultancy') && weakQueue) return opportunityScoutGrowthMinIntervalMs
   return opportunityScoutMinIntervalMs
 }
 
