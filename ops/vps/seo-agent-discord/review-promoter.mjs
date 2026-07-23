@@ -26,8 +26,12 @@ if (!/^[0-9a-f]{7,40}$/i.test(expectedCommit)) throw new Error('Invalid review c
 
 const repoDir = join(workspaceRoot, repoName)
 if (!existsSync(join(repoDir, '.git'))) throw new Error(`Missing repo checkout: ${repoDir}`)
+const promotionCapacity = await acquirePromotionCapacity(input.actionId || expectedCommit)
 const lock = acquireRepoLock(repoName, input.actionId || expectedCommit)
-process.on('exit', lock.release)
+process.on('exit', () => {
+  lock.release()
+  promotionCapacity.release()
+})
 
 let pushed = false
 try {
@@ -85,6 +89,7 @@ try {
   process.exitCode = 1
 } finally {
   lock.release()
+  promotionCapacity.release()
 }
 
 function safeBranch(value) {
@@ -109,6 +114,44 @@ function acquireRepoLock(name, actionId) {
   }
   let released = false
   return { release() { if (released) return; released = true; try { const owner = JSON.parse(readFileSync(lockPath, 'utf8')); if (Number(owner.pid) === process.pid) unlinkSync(lockPath) } catch {} } }
+}
+
+async function acquirePromotionCapacity(actionId) {
+  const lockDir = join(workspaceRoot, '.locks')
+  const lockPath = join(lockDir, 'review-promotion-global.json')
+  const deadline = Date.now() + 50 * 60 * 1000
+  mkdirSync(lockDir, { recursive: true })
+  while (Date.now() < deadline) {
+    try {
+      writeFileSync(lockPath, JSON.stringify({
+        pid: process.pid,
+        actionId,
+        purpose: 'review_promotion_global',
+        startedAt: new Date().toISOString()
+      }), { flag: 'wx', mode: 0o600 })
+      let released = false
+      return {
+        release() {
+          if (released) return
+          released = true
+          try {
+            const owner = JSON.parse(readFileSync(lockPath, 'utf8'))
+            if (Number(owner.pid) === process.pid) unlinkSync(lockPath)
+          } catch {}
+        }
+      }
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error
+      let owner = null
+      try { owner = JSON.parse(readFileSync(lockPath, 'utf8')) } catch {}
+      if (!owner?.pid || !processIsAlive(Number(owner.pid))) {
+        rmSync(lockPath, { force: true })
+        continue
+      }
+      await new Promise((resolve) => setTimeout(resolve, 5_000))
+    }
+  }
+  throw new Error('Timed out waiting for another SEO review promotion to finish')
 }
 
 function processIsAlive(pid) {

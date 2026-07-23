@@ -4010,7 +4010,7 @@ async function promoteReviewReadyAction(actionId, result, action, options = {}) 
     const promoted = await exec('/usr/bin/node', ['/home/deploy/seo-agent-discord/review-promoter.mjs', inputPath], {
       cwd: '/home/deploy/seo-agent-discord',
       env: { ...process.env, PATH: `${process.env.HOME || '/home/deploy'}/.npm-global/bin:${process.env.HOME || '/home/deploy'}/.local/bin:${process.env.PATH || ''}` },
-      timeout: 25 * 60 * 1000,
+      timeout: 55 * 60 * 1000,
       maxBuffer: 20 * 1024 * 1024
     })
     const payload = JSON.parse(String(promoted.stdout || '').trim())
