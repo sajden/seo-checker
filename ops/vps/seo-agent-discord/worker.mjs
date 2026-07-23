@@ -2366,6 +2366,28 @@ function runtimeCurrentBlocksAutonomousCode(payload) {
   return rejected.every((item) => isWaitOrGuardRejectionReason(item?.reason))
 }
 
+function isWaitOrGuardRejectionReason(reason) {
+  const text = String(reason || '')
+  return (
+    /^already_result:/.test(text)
+    || text === 'already_queued'
+    || text === 'same_target_recent_experiment_limit'
+    || /^(?:already_completed|recently_(?:deprioritized|guarded|ignored|skipped|failed)|failed)_waiting_recheck$/.test(text)
+    || text === 'missing_target_url'
+    || text === 'new_page_needs_human_approval'
+    || text === 'legacy_route_not_seo_target'
+    || text === 'keyword_coverage_lacks_search_evidence'
+    || text === 'sebcastwall_synthetic_content_needs_observed_demand'
+    || text === 'indexing_or_gsc_check'
+    || text === 'integration_check_not_content_work'
+    || text === 'not_code_action'
+    || /^unsupported_kind:/.test(text)
+    || /^legal_or_policy_route/.test(text)
+    || /^guard:/.test(text)
+    || /^(?:review|codex):(Review|Skip|Deprioritize|Block|blocked)/i.test(text)
+  )
+}
+
 async function syntheticAutonomousActionForWorkspace({ workspace, targetChannelId, pending, rejectionReasons, workspacePolicy, sourcePayload = null }) {
   const profile = ensureWorkspaceProfile(workspace, targetChannelId)
   if (isSeoActionsMissingBatchPayload(sourcePayload)) {
