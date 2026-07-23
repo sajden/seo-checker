@@ -54,7 +54,7 @@ const automationEnabled = env.SEO_AGENT_AUTONOMY_ENABLED !== 'false'
 const codeAutomationEnabled = env.SEO_AGENT_CODE_AUTOMATION_ENABLED === 'true'
 const autonomousCodeEnabled = env.SEO_AGENT_AUTONOMOUS_CODE_ENABLED !== 'false'
 const autonomousCodePerWorkspacePerDay = Number(env.SEO_AGENT_AUTONOMOUS_CODE_PER_WORKSPACE_PER_DAY || '0')
-const maxPendingReviewsPerWorkspace = Math.max(1, Number(env.SEO_AGENT_MAX_PENDING_REVIEWS_PER_WORKSPACE || '3'))
+const maxPendingReviewsPerWorkspace = Math.max(1, Number(env.SEO_AGENT_MAX_PENDING_REVIEWS_PER_WORKSPACE || '5'))
 const opportunityScoutMinIntervalMs = Number(env.SEO_AGENT_OPPORTUNITY_SCOUT_MIN_INTERVAL_MS || String(90 * 60 * 1000))
 const opportunityScoutGrowthMinIntervalMs = Number(env.SEO_AGENT_OPPORTUNITY_SCOUT_GROWTH_MIN_INTERVAL_MS || String(60 * 60 * 1000))
 const opportunityScoutInvalidCooldownMs = Number(env.SEO_AGENT_OPPORTUNITY_SCOUT_INVALID_COOLDOWN_MS || String(3 * 60 * 60 * 1000))
