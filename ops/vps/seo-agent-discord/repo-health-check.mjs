@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFile } from 'node:child_process'
-import { existsSync, mkdirSync, appendFileSync } from 'node:fs'
+import { existsSync, mkdirSync, appendFileSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 
@@ -36,6 +36,17 @@ if (failed.length) process.exitCode = 1
 async function checkRepo(repo) {
   const dir = join(workspaceRoot, repo)
   if (!existsSync(join(dir, '.git'))) return { repo, ok: false, status: 'missing_checkout', dir }
+  const activePromotion = activePromotionLock(repo)
+  if (activePromotion) {
+    return {
+      repo,
+      ok: true,
+      status: 'busy_review_promotion',
+      dir,
+      actionId: activePromotion.actionId || null,
+      pid: activePromotion.pid
+    }
+  }
   const status = await run('git', ['status', '--porcelain'], dir)
   if (status.stdout.trim()) return { repo, ok: false, status: 'dirty_worktree', dir, details: status.stdout.slice(0, 800) }
   await run('git', ['fetch', 'origin', branch], dir)
@@ -43,6 +54,20 @@ async function checkRepo(repo) {
   await run('git', ['push', '--dry-run', 'origin', `HEAD:${branch}`], dir)
   const head = await run('git', ['rev-parse', '--short', 'HEAD'], dir)
   return { repo, ok: true, status: 'ready', dir, head: head.stdout.trim() }
+}
+
+function activePromotionLock(repo) {
+  const lockPath = join(workspaceRoot, '.locks', `${repo.replace(/[^a-z0-9-]/gi, '-').toLowerCase()}.json`)
+  if (!existsSync(lockPath)) return null
+  try {
+    const lock = JSON.parse(readFileSync(lockPath, 'utf8'))
+    const pid = Number(lock?.pid)
+    if (lock?.purpose !== 'review_promotion' || !Number.isInteger(pid) || pid <= 0) return null
+    process.kill(pid, 0)
+    return { ...lock, pid }
+  } catch {
+    return null
+  }
 }
 
 function run(cmd, args, cwd) {
