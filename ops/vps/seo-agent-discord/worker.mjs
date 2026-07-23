@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { Client, GatewayIntentBits, Partials } from 'discord.js'
+import { Client, GatewayIntentBits, MessageFlags, Partials } from 'discord.js'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createHash, createHmac } from 'node:crypto'
@@ -390,6 +390,10 @@ async function reconcileInterruptedPromotions(workspaces) {
   for (const [actionId, record] of interrupted) {
     const approvedAt = Date.parse(record?.operatorApprovedAt || record?.reviewReadyAt || '')
     if (approvedAt && Date.now() - approvedAt < 2 * 60 * 1000) continue
+    if (activeRepoRunnerLock(actionId)) {
+      logThrottled(`promotion_still_running:${actionId}`, 10 * 60 * 1000, 'promotion_still_running', { actionId })
+      continue
+    }
     const result = record?.result || {}
     const repoFullName = String(result.repoFullName || '').trim()
     const repoName = repoFullName.split('/')[1]
@@ -441,7 +445,7 @@ async function reconcileInterruptedPromotions(workspaces) {
     }
     if (!record.promotionRecoveryNotifiedAt && targetChannelId) {
       await sendDiscordMessage([
-        `Promotionen återställdes efter omstart för ${workspace.label || repoFullName}.`,
+        `Promotionens status återställdes efter ett avbrutet svar för ${workspace.label || repoFullName}.`,
         `Commit på main: ${commit}`,
         context.targetUrl ? `Mål-URL: ${context.targetUrl}` : '',
         'Statusen är återställd till klar och blockerar inte längre nästa SEO-jobb.'
@@ -4672,19 +4676,19 @@ function startDiscordInteractionClient() {
       const customId = String(interaction.customId || '')
       if (!customId.startsWith('seo-decision:') && !customId.startsWith('seo-review:') && !customId.startsWith('seo-gsc-ui:') && !customId.startsWith('seo-revert:') && !customId.startsWith('content-decision:')) return
       if (String(interaction.user?.id || '') !== allowedUserId) {
-        await interaction.reply({ content: 'Ignored: this Discord user is not allowed to control the SEO agent.', ephemeral: true })
+        await interaction.reply({ content: 'Ignored: this Discord user is not allowed to control the SEO agent.', flags: MessageFlags.Ephemeral })
         return
       }
 
       const actionId = state.messageToAction?.[interaction.message?.id] || extractActionIdFromDiscordMessage(interaction.message)
       if (!actionId) {
-        await interaction.reply({ content: 'Jag hittar inte action-id för den här knappen. Be mig posta om det aktiva kortet, så skickar jag en ny knapp.', ephemeral: true })
+        await interaction.reply({ content: 'Jag hittar inte action-id för den här knappen. Be mig posta om det aktiva kortet, så skickar jag en ny knapp.', flags: MessageFlags.Ephemeral })
         return
       }
       state.messageToAction = state.messageToAction || {}
       state.messageToAction[interaction.message.id] = actionId
       if (customId.startsWith('content-decision:')) {
-        await interaction.deferReply({ ephemeral: true })
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral })
         const decision = customId.slice('content-decision:'.length)
         const result = await decideContentReview(actionId, decision, interaction.user?.id)
         await interaction.editReply({ content: result.summary })
@@ -4692,13 +4696,13 @@ function startDiscordInteractionClient() {
         return
       }
       if (customId.startsWith('seo-gsc-ui:')) {
-        await interaction.deferReply({ ephemeral: true })
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral })
         const result = await handleGscUiButton(actionId, interaction.channelId)
         await interaction.editReply({ content: result })
         return
       }
       if (customId.startsWith('seo-revert:')) {
-        await interaction.deferReply({ ephemeral: true })
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral })
         const result = await revertCompletedCodeAction(actionId, interaction.channelId)
         await interaction.editReply({ content: result.summary })
         if (result.publicMessage) await sendDiscordMessage(result.publicMessage, interaction.channelId)
@@ -4706,8 +4710,11 @@ function startDiscordInteractionClient() {
         return
       }
       if (customId.startsWith('seo-review:')) {
-        await interaction.deferReply({ ephemeral: true })
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral })
         const decision = customId.slice('seo-review:'.length)
+        if (decision === 'approved') {
+          await interaction.editReply({ content: 'Godkännandet är mottaget. Jag bygger, pushar till main och kontrollerar den publicerade sidan nu.' })
+        }
         const result = await decideSeoReview(actionId, decision, interaction.channelId, interaction.user?.id)
         await interaction.editReply({ content: result.summary })
         if (result.publicMessage) await sendDiscordMessage(result.publicMessage, interaction.channelId)
@@ -4736,13 +4743,13 @@ function startDiscordInteractionClient() {
           clearActiveAction(actionId)
         } else clearActiveAction(actionId)
       }
-      await interaction.reply({ content: decision === 'approved' ? `Approve sparad för ${result?.decision?.actionId || actionId}. Jag startar kodautomation på nästa agent-tick och postar commit/diff här.` : `Sparat beslut: ${decision} för ${result?.decision?.actionId || actionId}.`, ephemeral: true })
+      await interaction.reply({ content: decision === 'approved' ? `Approve sparad för ${result?.decision?.actionId || actionId}. Jag startar kodautomation på nästa agent-tick och postar commit/diff här.` : `Sparat beslut: ${decision} för ${result?.decision?.actionId || actionId}.`, flags: MessageFlags.Ephemeral })
       await interaction.message.edit({ components: [] }).catch(() => null)
       log('button_decision_saved', { actionId, decision, discordMessageId: interaction.message.id })
     } catch (error) {
       log('button_decision_failed', { error: error?.message || String(error) })
       if (!interaction.replied && !interaction.deferred) {
-        await interaction.reply({ content: `Decision failed: ${error?.message || String(error)}`, ephemeral: true }).catch(() => null)
+        await interaction.reply({ content: `Decision failed: ${error?.message || String(error)}`, flags: MessageFlags.Ephemeral }).catch(() => null)
       }
     }
   })
