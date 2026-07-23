@@ -2557,7 +2557,7 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
   const keywordMap = ensureKeywordMap(workspace, targetChannelId)
   const learningSummary = buildWorkspaceLearningSummary(key)
   const experiments = Object.values(state.seoExperiments || {})
-    .filter((item) => item.workspaceKey === key)
+    .filter((item) => workspaceMatchesExperiment(workspace, item))
     .sort((a, b) => Date.parse(b.completedAt || 0) - Date.parse(a.completedAt || 0))
     .slice(0, 20)
   const recentCodeResults = recentCodeResultsForWorkspace(workspace, targetChannelId)
@@ -2569,7 +2569,10 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
     .map((item) => item?.targetUrl || item?.url)
     .filter(Boolean)
   for (const experiment of experiments) {
-    if (Date.parse(experiment.reviewAfter || '') > Date.now() && experiment.targetUrl) excludedTargets.push(experiment.targetUrl)
+    const completedAt = Date.parse(experiment.completedAt || '')
+    const reviewAfter = Date.parse(experiment.reviewAfter || '')
+    const inMeasurementWindow = Number.isFinite(completedAt) && Date.now() - completedAt < sameTargetAutonomousCooldownMs
+    if ((inMeasurementWindow || reviewAfter > Date.now()) && experiment.targetUrl) excludedTargets.push(experiment.targetUrl)
   }
   if (isSebcastwallWorkspace(workspace, profile)) {
     const integrationUrls = [
