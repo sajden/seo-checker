@@ -8270,9 +8270,18 @@ function ensureWorkspaceProfile(workspace, targetChannelId = null) {
   const key = workspaceProfileKey(workspace, targetChannelId)
   const existing = state.workspaceProfiles[key] || {}
   const defaults = defaultWorkspaceProfile(workspace)
+  const specializeStaleGenericProfile = existing.siteType === 'generic' && defaults.siteType !== 'generic'
   const profile = {
     ...defaults,
     ...existing,
+    ...(specializeStaleGenericProfile
+      ? {
+          label: defaults.label,
+          siteType: defaults.siteType,
+          audience: defaults.audience,
+          updatedAt: new Date().toISOString()
+        }
+      : {}),
     autonomy: 'autonomous_seo_review_branch',
     goals: [...new Set([...(existing.goals || []), ...(defaults.goals || [])])].slice(0, 20),
     prefer: [...new Set([...(existing.prefer || []), ...(defaults.prefer || [])])].slice(0, 30),
