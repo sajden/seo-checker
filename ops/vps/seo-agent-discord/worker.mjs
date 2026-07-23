@@ -53,6 +53,7 @@ const autoCreateWorkspaceChannels = env.SEO_AGENT_AUTO_CREATE_CHANNELS !== 'fals
 const automationEnabled = env.SEO_AGENT_AUTONOMY_ENABLED !== 'false'
 const codeAutomationEnabled = env.SEO_AGENT_CODE_AUTOMATION_ENABLED === 'true'
 const autonomousCodeEnabled = env.SEO_AGENT_AUTONOMOUS_CODE_ENABLED === 'true'
+const selfRepairEnabled = env.SEO_AGENT_SELF_REPAIR_ENABLED === 'true'
 const autonomousCodePerWorkspacePerDay = Number(env.SEO_AGENT_AUTONOMOUS_CODE_PER_WORKSPACE_PER_DAY || '0')
 const maxPendingReviewsPerWorkspace = Math.max(1, Number(env.SEO_AGENT_MAX_PENDING_REVIEWS_PER_WORKSPACE || '5'))
 const opportunityScoutMinIntervalMs = Number(env.SEO_AGENT_OPPORTUNITY_SCOUT_MIN_INTERVAL_MS || String(90 * 60 * 1000))
@@ -85,7 +86,7 @@ ensureAutonomousAgentState()
 let tickRunning = false
 const runtimeLiveActionsCache = new Map()
 
-log('starting', { channelId, allowedUserId, platformApiUrl, seoRuntimeUrl, pollMs, dailyHourUtc, runCheckEveryMs, workspaceChannelCount: Object.keys(workspaceChannels).length, automationEnabled, codeAutomationEnabled, autonomousCodeEnabled })
+log('starting', { channelId, allowedUserId, platformApiUrl, seoRuntimeUrl, pollMs, dailyHourUtc, runCheckEveryMs, workspaceChannelCount: Object.keys(workspaceChannels).length, automationEnabled, codeAutomationEnabled, autonomousCodeEnabled, selfRepairEnabled })
 startDiscordInteractionClient()
 recordStartup()
 
@@ -1691,7 +1692,7 @@ async function selfHealPlatformActionsFetch({ workspace, targetChannelId, error 
 
   const doctor = await platformEndpointProbe('/api/platform/integrations/gsc/status').catch((doctorError) => ({ ok: false, error: doctorError?.message || String(doctorError) }))
   let codeRepair = null
-  if (codeAutomationEnabled) {
+  if (codeAutomationEnabled && selfRepairEnabled) {
     codeRepair = await runSelfRepairCodex({
       id: incidentId,
       workspace: workspace?.label || workspace?.id || null,
@@ -2835,7 +2836,7 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
     agent: 'seo-agent',
     purpose: 'opportunity_scout',
     workspace: workspace?.label || workspace?.id || null,
-    command: `${codexCli} exec --json --cd ${repoDir} --dangerously-bypass-approvals-and-sandbox - < ${promptPath}`,
+    command: `${codexCli} exec --json --ephemeral --sandbox read-only --cd ${repoDir} - < ${promptPath}`,
     timeout: 4 * 60 * 1000,
     maxBuffer: 8 * 1024 * 1024
   })
@@ -5793,7 +5794,7 @@ async function runCodexOperatorIntent(context) {
     agent: 'seo-agent',
     purpose: 'operator_intent',
     workspace: context?.workspace?.label || context?.workspace?.id || null,
-    command: `${codexCli} exec --json --cd /home/deploy/seo-agent-discord --dangerously-bypass-approvals-and-sandbox - < ${promptPath}`,
+    command: `${codexCli} exec --json --ephemeral --sandbox read-only --cd /home/deploy/seo-agent-discord - < ${promptPath}`,
     timeout: 2 * 60 * 1000,
     maxBuffer: 4 * 1024 * 1024
   })
@@ -5863,7 +5864,7 @@ async function formatWorkspaceLlmChat({ workspace, payload, targetChannelId, gui
       repoFullName: workspace.repoFullName,
       branch: workspace.branch || 'main'
     } : null,
-    automation: { codeAutomationEnabled, codexChatEnabled, activeActionId: activeId },
+    automation: { codeAutomationEnabled, autonomousCodeEnabled, selfRepairEnabled, codexChatEnabled, activeActionId: activeId },
     workspaceGoals: payload.workspaceGoals || null,
     workspacePolicy: payload.workspacePolicy || null,
     savedGuidance: guidance || workspaceGuidanceFor(workspace, targetChannelId),
@@ -5906,8 +5907,9 @@ async function runCodexWorkspaceChat(context) {
     'Om användaren frågar om en redan skapad commit eller “vad hände”: använd recentCompletedCodeActions före att föreslå nya kommandon.',
     'Använd actionBoard när användaren frågar vad som ska göras nu, om kön, eller varför inget händer. Svara med klara kategorier: klart, gör nu, kandidater, blockerad, bortprioriterad.',
     'Om actionBoard.nextRecommended finns: gör den till tydligt nästa steg. Om den redan körs/är klar, säg det och gå till nästa relevanta item.',
-    'Säg inte att något väntar på användarens beslut som default. Agenten beslutar själv för låg-risk content/kod. Be bara om input vid hög risk, ny sida, oklar riktning, blockerad integration eller konflikt med workspace-mål.',
-    'Säg inte att du är i pilotläge. Kodautomation är aktiv om context.automation.codeAutomationEnabled är true.',
+    'Agenten får själv analysera, prioritera och formulera låg-riskförslag. Den får bara starta kod utan användarbeslut om context.automation.autonomousCodeEnabled är true.',
+    'Om autonomousCodeEnabled är false men codeAutomationEnabled är true ska du säga att kod startar först efter användarens godkännande.',
+    'Säg inte att du är i pilotläge.',
     'Du får inte låtsas att du har kört kod eller skickat mail.',
     'Nämn inte textkommandon som approve/skip/status/doctor/why. Om beslut behövs: säg att användaren kan trycka knappen eller skriva vanlig svenska som “kör den”, “hoppa över” eller “vänta med den”.',
     '',
@@ -5922,7 +5924,7 @@ async function runCodexWorkspaceChat(context) {
     agent: 'seo-agent',
     purpose: 'workspace_chat',
     workspace: context?.workspace?.label || context?.workspace?.id || null,
-    command: `${codexCli} exec --json --cd /home/deploy/seo-agent-discord --dangerously-bypass-approvals-and-sandbox - < ${promptPath}`,
+    command: `${codexCli} exec --json --ephemeral --sandbox read-only --cd /home/deploy/seo-agent-discord - < ${promptPath}`,
     timeout: 4 * 60 * 1000,
     maxBuffer: 8 * 1024 * 1024
   })
@@ -7687,6 +7689,8 @@ function formatAgentBrainStatus(workspace) {
     state,
     config: {
       codeAutomationEnabled,
+      autonomousCodeEnabled,
+      selfRepairEnabled,
       codexChatEnabled,
       smartOutboundGuardEnabled,
       automationEnabled,
@@ -7703,7 +7707,9 @@ function formatAgentBrainStatus(workspace) {
     '',
     `Workspace: ${workspaceLine}`,
     `Codex-chat: ${snapshot.config.codexChatEnabled ? 'på' : 'av'}`,
-    `Kodautomation: ${snapshot.config.codeAutomationEnabled ? 'på' : 'av'}`,
+    `Kod efter godkännande: ${snapshot.config.codeAutomationEnabled ? 'på' : 'av'}`,
+    `Autonom kod: ${snapshot.config.autonomousCodeEnabled ? 'på' : 'av'}`,
+    `Självreparation av agentkod: ${snapshot.config.selfRepairEnabled ? 'på' : 'av'}`,
     `Smart outbound guard: ${snapshot.config.smartOutboundGuardEnabled ? 'på' : 'av'}`,
     `Workspace-kanaler: ${snapshot.config.workspaceChannelCount}`,
     `Minne: ${snapshot.memory.savedGuidanceCount} guidance, ${snapshot.memory.outboundLessons} guard-lessons, ${snapshot.memory.outboundIncidents} incidents.`
@@ -9145,7 +9151,7 @@ async function runCodexActionCardBrief({ action, workspace, workspacePolicy, rev
     agent: 'seo-agent',
     purpose: 'action_card_brief',
     workspace: workspace?.label || workspace?.id || null,
-    command: `${codexCli} exec --json --cd /home/deploy/seo-agent-discord --dangerously-bypass-approvals-and-sandbox - < ${promptPath}`,
+    command: `${codexCli} exec --json --ephemeral --sandbox read-only --cd /home/deploy/seo-agent-discord - < ${promptPath}`,
     timeout: 3 * 60 * 1000,
     maxBuffer: 8 * 1024 * 1024
   })
@@ -9617,7 +9623,7 @@ async function smartReviewOutboundMessage(content, targetChannelId, components =
     agent: 'seo-agent',
     purpose: 'outbound_review',
     workspace: context?.workspace?.label || context?.workspace?.id || null,
-    command: `${codexCli} exec --json --cd /home/deploy/seo-agent-discord --dangerously-bypass-approvals-and-sandbox - < ${promptPath}`,
+    command: `${codexCli} exec --json --ephemeral --sandbox read-only --cd /home/deploy/seo-agent-discord - < ${promptPath}`,
     timeout: 3 * 60 * 1000,
     maxBuffer: 8 * 1024 * 1024
   })
@@ -9662,7 +9668,7 @@ async function blockOutboundAndRepair({ content, targetChannelId, issue, mode })
   }
   log('outbound_message_blocked', incident)
   let codeRepair = null
-  if (codeAutomationEnabled) {
+  if (codeAutomationEnabled && selfRepairEnabled) {
     codeRepair = await runSelfRepairCodex(incident).catch((error) => ({ ok: false, error: error?.message || String(error) }))
   }
   state.outboundMessageIncidents = state.outboundMessageIncidents || []
