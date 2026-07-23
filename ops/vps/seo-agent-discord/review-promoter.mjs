@@ -46,6 +46,7 @@ try {
   await runBestBuild(repoDir)
   await run('git', ['push', 'origin', `HEAD:${baseBranch}`], repoDir)
   pushed = true
+  await runConfiguredProductionDeploy(repoDir)
   await run('git', ['fetch', 'origin', baseBranch], repoDir)
   await run('git', ['merge-base', '--is-ancestor', reviewedCommit, `origin/${baseBranch}`], repoDir)
 
@@ -114,7 +115,21 @@ async function assertClean(cwd) {
 async function runBestBuild(repoDir) {
   const cwd = existsSync(join(repoDir, 'package.json')) ? repoDir : existsSync(join(repoDir, 'web', 'package.json')) ? join(repoDir, 'web') : null
   if (!cwd) throw new Error('No package.json found for production build')
+  const packageJson = JSON.parse(readFileSync(join(cwd, 'package.json'), 'utf8'))
+  if (packageJson.scripts?.['cf:build']) {
+    await run('pnpm', ['run', 'cf:build'], cwd, 25 * 60 * 1000)
+    return
+  }
   await run('npm', ['run', 'build'], cwd, 20 * 60 * 1000)
+}
+
+async function runConfiguredProductionDeploy(repoDir) {
+  const cwd = existsSync(join(repoDir, 'package.json')) ? repoDir : existsSync(join(repoDir, 'web', 'package.json')) ? join(repoDir, 'web') : null
+  if (!cwd) return
+  const packageJson = JSON.parse(readFileSync(join(cwd, 'package.json'), 'utf8'))
+  const hasCloudflareConfig = existsSync(join(cwd, 'wrangler.jsonc')) || existsSync(join(cwd, 'wrangler.toml'))
+  if (!packageJson.scripts?.deploy || !packageJson.scripts?.['cf:build'] || !hasCloudflareConfig) return
+  await run('pnpm', ['run', 'deploy'], cwd, 20 * 60 * 1000)
 }
 
 async function reviewFingerprints(cwd, base, delivery) {

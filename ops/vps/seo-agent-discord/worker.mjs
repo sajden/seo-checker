@@ -3790,6 +3790,39 @@ async function decideSeoReview(actionId, decision, targetChannelId, operatorId) 
       removeButtons: true
     }
   } catch (error) {
+    const promotionFailure = parsePromotionFailure(error)
+    if (promotionFailure?.pushedToMain) {
+      const failedAt = new Date().toISOString()
+      const failedResult = {
+        ...record.result,
+        branch: record.result?.baseBranch || 'main',
+        mergedToMain: true,
+        pushedToMain: true,
+        requiresReview: false,
+        deploymentFailed: true,
+        deploymentError: promotionFailure.error || error?.message || String(error)
+      }
+      state.codeActionResults[actionId] = {
+        ...record,
+        status: 'deployment_failed',
+        operatorApprovedAt: now,
+        operatorId: operatorId || null,
+        deploymentFailedAt: failedAt,
+        promotionError: failedResult.deploymentError,
+        result: failedResult
+      }
+      recordActionLedger(action, workspace, targetChannelId, 'deployment_failed', {
+        error: failedResult.deploymentError,
+        source: 'discord_review_deployment_failed_after_main_push'
+      })
+      clearActiveAction(actionId)
+      saveState()
+      return {
+        summary: 'Godkännandet är pushat till main, men production-deployen misslyckades. Agenten har markerat detta som deployment_failed i stället för att felaktigt lägga tillbaka review-kortet.',
+        publicMessage: `Main är uppdaterad för ${posted.title || actionId}, men production-deployen misslyckades och kräver åtgärd. Orsak: ${String(failedResult.deploymentError).slice(0, 900)}`,
+        removeButtons: true
+      }
+    }
     state.codeActionResults[actionId] = { ...record, status: 'review_ready', promotionFailedAt: new Date().toISOString(), promotionError: error?.message || String(error) }
     recordActionLedger(action, workspace, targetChannelId, 'review_ready', { error: error?.message || String(error), source: 'discord_review_promotion_failed' })
     saveState()
@@ -3799,6 +3832,22 @@ async function decideSeoReview(actionId, decision, targetChannelId, operatorId) 
       removeButtons: false
     }
   }
+}
+
+function parsePromotionFailure(error) {
+  const lines = [error?.stderr, error?.stdout]
+    .filter(Boolean)
+    .flatMap((value) => String(value).split('\n'))
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .reverse()
+  for (const line of lines) {
+    try {
+      const parsed = JSON.parse(line)
+      if (parsed && typeof parsed === 'object' && ('pushedToMain' in parsed || parsed.ok === false)) return parsed
+    } catch {}
+  }
+  return null
 }
 
 async function promoteReviewReadyAction(actionId, result, action, options = {}) {
