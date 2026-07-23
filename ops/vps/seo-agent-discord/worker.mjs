@@ -54,7 +54,7 @@ const automationEnabled = env.SEO_AGENT_AUTONOMY_ENABLED !== 'false'
 const codeAutomationEnabled = env.SEO_AGENT_CODE_AUTOMATION_ENABLED === 'true'
 const autonomousCodeEnabled = env.SEO_AGENT_AUTONOMOUS_CODE_ENABLED !== 'false'
 const autonomousCodePerWorkspacePerDay = Number(env.SEO_AGENT_AUTONOMOUS_CODE_PER_WORKSPACE_PER_DAY || '0')
-const opportunityScoutMinIntervalMs = Number(env.SEO_AGENT_OPPORTUNITY_SCOUT_MIN_INTERVAL_MS || String(3 * 60 * 60 * 1000))
+const opportunityScoutMinIntervalMs = Number(env.SEO_AGENT_OPPORTUNITY_SCOUT_MIN_INTERVAL_MS || String(90 * 60 * 1000))
 const opportunityScoutGrowthMinIntervalMs = Number(env.SEO_AGENT_OPPORTUNITY_SCOUT_GROWTH_MIN_INTERVAL_MS || String(60 * 60 * 1000))
 const opportunityScoutInvalidCooldownMs = Number(env.SEO_AGENT_OPPORTUNITY_SCOUT_INVALID_COOLDOWN_MS || String(3 * 60 * 60 * 1000))
 const sameTargetAutonomousCooldownMs = Number(env.SEO_AGENT_SAME_TARGET_AUTONOMOUS_COOLDOWN_MS || String(30 * 24 * 60 * 60 * 1000))
@@ -2366,43 +2366,6 @@ function runtimeCurrentBlocksAutonomousCode(payload) {
   return rejected.every((item) => isWaitOrGuardRejectionReason(item?.reason))
 }
 
-function shouldSkipCodexOpportunityScoutForLiveRejections(pending = [], rejectionReasons = []) {
-  const pendingCount = Array.isArray(pending) ? pending.length : 0
-  if (!pendingCount) return false
-  const rejected = Array.isArray(rejectionReasons) ? rejectionReasons.filter(Boolean) : []
-  if (rejected.length < Math.min(pendingCount, 4)) return false
-  return rejected.every((item) => isWaitOrGuardRejectionReason(item?.reason))
-}
-
-function isWaitOrGuardRejectionReason(reason) {
-  const text = String(reason || '')
-  return (
-    /^already_result:/.test(text)
-    || text === 'already_queued'
-    || text === 'same_target_recent_experiment_limit'
-    || text === 'already_completed_waiting_recheck'
-    || text === 'recently_deprioritized_waiting_recheck'
-    || text === 'recently_guarded_waiting_recheck'
-    || text === 'recently_ignored_waiting_recheck'
-    || text === 'recently_skipped_waiting_recheck'
-    || text === 'recently_failed_waiting_recheck'
-    || text === 'failed_waiting_recheck'
-    || text === 'missing_target_url'
-    || text === 'new_page_needs_human_approval'
-    || text === 'legacy_route_not_seo_target'
-    || text === 'keyword_coverage_lacks_search_evidence'
-    || text === 'sebcastwall_synthetic_content_needs_observed_demand'
-    || text === 'indexing_or_gsc_check'
-    || text === 'integration_check_not_content_work'
-    || text === 'not_code_action'
-    || /^unsupported_kind:/.test(text)
-    || /^legal_or_policy_route/.test(text)
-    || /^guard:/.test(text)
-    || /^review:(Review|Skip|Deprioritize|Block|blocked)/i.test(text)
-    || /^codex:(Review|Skip|Deprioritize|Block|blocked)/i.test(text)
-  )
-}
-
 async function syntheticAutonomousActionForWorkspace({ workspace, targetChannelId, pending, rejectionReasons, workspacePolicy, sourcePayload = null }) {
   const profile = ensureWorkspaceProfile(workspace, targetChannelId)
   if (isSeoActionsMissingBatchPayload(sourcePayload)) {
@@ -2422,16 +2385,6 @@ async function syntheticAutonomousActionForWorkspace({ workspace, targetChannelI
   const queueIsWeak = !pending.length || rejectionReasons.length >= Math.min(pending.length, 4)
   if (!queueIsWeak && hasGoodLiveCandidate) {
     logThrottled(`synthetic_autonomous_skipped:${workspace?.id || workspace?.label}:live`, 30 * 60 * 1000, 'synthetic_autonomous_skipped', { workspace: workspace?.label || workspace?.id || null, reason: 'good_live_candidate_available', pendingCount: pending.length })
-    return null
-  }
-  if (shouldSkipCodexOpportunityScoutForLiveRejections(pending, rejectionReasons)) {
-    logThrottled(`synthetic_autonomous_skipped:${workspace?.id || workspace?.label}:live-rejections`, 30 * 60 * 1000, 'synthetic_autonomous_skipped', {
-      workspace: workspace?.label || workspace?.id || null,
-      reason: 'live_rejections_waiting_recheck_or_guard',
-      pendingCount: pending.length,
-      rejectedCount: rejectionReasons.length,
-      sampleReasons: rejectionReasons.slice(0, 6).map((item) => item?.reason || 'unknown')
-    })
     return null
   }
   let rawAction = buildWorkspaceGoalGapAction(workspace, targetChannelId, sourcePayload)
@@ -2548,16 +2501,6 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
     logThrottled(`codex_opportunity_skipped:${workspaceProfileKey(workspace, targetChannelId)}:missing-batch`, 60 * 60 * 1000, 'codex_opportunity_skipped', {
       workspace: workspace?.label || workspace?.id || null,
       reason: 'seo_batch_not_found_waiting_for_fresh_run'
-    })
-    return null
-  }
-  if (shouldSkipCodexOpportunityScoutForLiveRejections(context.pending || [], context.rejectionReasons || [])) {
-    logThrottled(`codex_opportunity_skipped:${workspaceProfileKey(workspace, targetChannelId)}:live-rejections`, 60 * 60 * 1000, 'codex_opportunity_skipped', {
-      workspace: workspace?.label || workspace?.id || null,
-      reason: 'live_rejections_waiting_recheck_or_guard',
-      pendingCount: Array.isArray(context.pending) ? context.pending.length : 0,
-      rejectedCount: Array.isArray(context.rejectionReasons) ? context.rejectionReasons.length : 0,
-      sampleReasons: (Array.isArray(context.rejectionReasons) ? context.rejectionReasons : []).slice(0, 6).map((item) => item?.reason || 'unknown')
     })
     return null
   }
