@@ -2575,13 +2575,13 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
     if ((inMeasurementWindow || reviewAfter > Date.now()) && experiment.targetUrl) excludedTargets.push(experiment.targetUrl)
   }
   if (isSebcastwallWorkspace(workspace, profile)) {
-    const integrationUrls = [
+    const supportTrackUrls = [
       ...rawEvidenceContext.gscRows.map((item) => item.page),
       ...rawEvidenceContext.gscOpportunities.map((item) => item.page),
       ...rawEvidenceContext.pageOpportunities.map((item) => item.url),
       ...rawEvidenceContext.crawlSignals.map((item) => item.url)
-    ].filter((url) => /\/tjanster\/integrationer(?:\/|$)/i.test(String(url || '')))
-    excludedTargets.push(...integrationUrls)
+    ].filter((url) => /\/tjanster\/(?:integrationer|microsoft-365|m365-hardvara)(?:\/|$)/i.test(String(url || '')))
+    excludedTargets.push(...supportTrackUrls)
   }
   const evidenceContext = excludeOpportunityEvidenceTargets(rawEvidenceContext, excludedTargets)
   const promptPath = join(stateDir, `codex-opportunity-${slugify(key).slice(0, 80)}.md`)
