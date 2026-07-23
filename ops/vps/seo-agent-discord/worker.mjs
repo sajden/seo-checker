@@ -2320,6 +2320,35 @@ async function maybeReportVisualDesignFinding(action, workspace, targetChannelId
 
   const repoFullName = String(workspace?.repoFullName || action?.repoFullName || '').trim()
   const targetUrl = String(action?.targetUrl || action?.url || '').trim()
+  const requestedChange = String(action?.recommendedAction || '').trim()
+  const declaredRepo = requestedChange.match(/\brepo:\s*([^\s]+)/i)?.[1]?.toLowerCase() || ''
+  const expectedRepo = repoFullName.split('/').pop()?.toLowerCase() || ''
+  if (declaredRepo && expectedRepo && declaredRepo !== expectedRepo) {
+    log('visual_design_finding_rejected', {
+      actionId: action?.id || null,
+      reason: 'workspace_repo_mismatch',
+      declaredRepo,
+      expectedRepo
+    })
+    return false
+  }
+
+  const why = String(action?.why || '').trim()
+  const evidence = Array.isArray(action?.evidence)
+    ? action.evidence.filter(Boolean).map((item) => String(item)).slice(0, 5)
+    : []
+  const evidenceText = [why, ...evidence].join(' ').toLowerCase()
+  const hasVerifiedVisualEvidence = /\b(?:cls|lcp|inp|wcag|axe)\b|core web vitals?|pagespeed|lighthouse|layout shift|mobile usability|mobilproblem|överlapp|overlap|overflow|tap target|kontrast|contrast|skärmbild|screenshot|heatmap|session recording|rage click|visual regression|visuell regression/.test(evidenceText)
+  const hasMeasuredEngagementEvidence = /30s|30 s|scroll|cta|kontaktklick|kontakt-klick|engagement|l[aä]stid|time on page/.test(evidenceText)
+    && engagementEvidenceCheck(action).ok
+  if (!hasVerifiedVisualEvidence && !hasMeasuredEngagementEvidence) {
+    log('visual_design_finding_rejected', {
+      actionId: action?.id || null,
+      reason: 'missing_verified_visual_or_engagement_evidence'
+    })
+    return false
+  }
+
   const fingerprint = createHash('sha256')
     .update([repoFullName, targetUrl, action?.title, action?.recommendedAction].filter(Boolean).join('|'))
     .digest('hex')
@@ -2328,10 +2357,6 @@ async function maybeReportVisualDesignFinding(action, workspace, targetChannelId
   if (state.visualDesignFindings[fingerprint]) return false
 
   const title = String(action?.title || 'Visuell observation från SEO Agent').trim()
-  const why = String(action?.why || '').trim()
-  const evidence = Array.isArray(action?.evidence)
-    ? action.evidence.filter(Boolean).map((item) => String(item)).slice(0, 5)
-    : []
   const issueTitle = `[Designobservation] ${title}`.slice(0, 100)
   const issueSummary = [
     targetUrl ? `Berörd sida: ${targetUrl}` : '',
