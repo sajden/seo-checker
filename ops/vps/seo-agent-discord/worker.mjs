@@ -52,7 +52,7 @@ const guildId = env.DISCORD_GUILD_ID || ''
 const autoCreateWorkspaceChannels = env.SEO_AGENT_AUTO_CREATE_CHANNELS !== 'false'
 const automationEnabled = env.SEO_AGENT_AUTONOMY_ENABLED !== 'false'
 const codeAutomationEnabled = env.SEO_AGENT_CODE_AUTOMATION_ENABLED === 'true'
-const autonomousCodeEnabled = env.SEO_AGENT_AUTONOMOUS_CODE_ENABLED !== 'false'
+const autonomousCodeEnabled = env.SEO_AGENT_AUTONOMOUS_CODE_ENABLED === 'true'
 const autonomousCodePerWorkspacePerDay = Number(env.SEO_AGENT_AUTONOMOUS_CODE_PER_WORKSPACE_PER_DAY || '0')
 const maxPendingReviewsPerWorkspace = Math.max(1, Number(env.SEO_AGENT_MAX_PENDING_REVIEWS_PER_WORKSPACE || '5'))
 const opportunityScoutMinIntervalMs = Number(env.SEO_AGENT_OPPORTUNITY_SCOUT_MIN_INTERVAL_MS || String(90 * 60 * 1000))
@@ -85,7 +85,7 @@ ensureAutonomousAgentState()
 let tickRunning = false
 const runtimeLiveActionsCache = new Map()
 
-log('starting', { channelId, allowedUserId, platformApiUrl, seoRuntimeUrl, pollMs, dailyHourUtc, runCheckEveryMs, workspaceChannelCount: Object.keys(workspaceChannels).length, automationEnabled, codeAutomationEnabled })
+log('starting', { channelId, allowedUserId, platformApiUrl, seoRuntimeUrl, pollMs, dailyHourUtc, runCheckEveryMs, workspaceChannelCount: Object.keys(workspaceChannels).length, automationEnabled, codeAutomationEnabled, autonomousCodeEnabled })
 startDiscordInteractionClient()
 recordStartup()
 
