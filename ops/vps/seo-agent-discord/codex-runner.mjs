@@ -352,7 +352,8 @@ async function runQualityGate(repoDir, input) {
     const diffStat = await run('git', ['diff', '--stat'], repoDir)
     if (!diffStat.stdout.trim()) throw new Error('Codex made no changes')
     const diff = await run('git', ['diff', '--', '.'], repoDir)
-    const review = await reviewDiffWithCodex(repoDir, input, diffStat.stdout, diff.stdout, attempt)
+    const review = deterministicLanguageReview(input, diff.stdout)
+      || await reviewDiffWithCodex(repoDir, input, diffStat.stdout, diff.stdout, attempt)
     lastReview = review
     if (review.decision === 'allow') return { ok: true, attempts: attempt, review }
     if (review.decision === 'block') {
@@ -368,6 +369,37 @@ async function runQualityGate(repoDir, input) {
   }
   await rejectDirtyWorktree(repoDir, input, lastReview || { reason: 'quality_unknown' })
   throw new Error('SEO quality gate failed without approval')
+}
+
+function deterministicLanguageReview(input, diff) {
+  const keyword = normalizeComparableText(input.keyword || '')
+  if (!keyword || keyword.split(' ').length < 3) return null
+  const additions = String(diff || '')
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith('+') && !line.startsWith('+++'))
+    .join(' ')
+  const normalizedAdditions = normalizeComparableText(additions)
+  let exactMatches = 0
+  let offset = 0
+  while ((offset = normalizedAdditions.indexOf(keyword, offset)) !== -1) {
+    exactMatches += 1
+    offset += keyword.length
+  }
+  if (exactMatches < 3) return null
+  return {
+    decision: 'revise',
+    reason: `Exact-match-sökfrasen upprepas ${exactMatches} gånger i tillagd copy och riskerar keyword-stuffing.`,
+    requiredFix: 'Skriv om synlig copy till naturligt språk med korrekta prepositioner och böjningar. Behåll sökintentionen, men använd den exakta frasen högst sparsamt i metadata.',
+    confidence: 1
+  }
+}
+
+function normalizeComparableText(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9åäö]+/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
 }
 
 async function reviewDiffWithCodex(repoDir, input, diffStat, diff, attempt) {
