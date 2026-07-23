@@ -1815,7 +1815,7 @@ async function maybeQueueAutonomousCodeActions(workspaces) {
   if (!automationEnabled || !autonomousCodeEnabled || !codeAutomationEnabled || state.codeActionRunning) return
   const today = new Date().toISOString().slice(0, 10)
   state.autonomousCodeRuns = state.autonomousCodeRuns || {}
-  for (const workspace of workspaces) {
+  for (const workspace of autonomousWorkspaceOrder(workspaces)) {
     const targetChannelId = await channelForWorkspace(workspace)
     if (!targetChannelId || !workspace.repoFullName) continue
     const repoReady = await repoAutomationReady(workspace.repoFullName, workspace.branch || 'main')
@@ -1908,6 +1908,7 @@ async function maybeQueueAutonomousCodeActions(workspaces) {
       lastQueuedAt: new Date().toISOString(),
       reason: candidate.reason
     }
+    state.lastAutonomousQueuedWorkspaceKey = workspaceProfileKey(workspace, null)
     recordActionLedger(candidate.action, workspace, targetChannelId, 'approved', {
       source: 'autonomous_code',
       reason: candidate.reason,
@@ -1928,6 +1929,16 @@ async function maybeQueueAutonomousCodeActions(workspaces) {
     saveState()
     return
   }
+}
+
+function autonomousWorkspaceOrder(workspaces) {
+  const items = Array.isArray(workspaces) ? [...workspaces] : []
+  if (items.length < 2) return items
+  const lastKey = String(state.lastAutonomousQueuedWorkspaceKey || '')
+  const lastIndex = items.findIndex((workspace) => workspaceProfileKey(workspace, null) === lastKey)
+  if (lastIndex < 0) return items
+  const start = (lastIndex + 1) % items.length
+  return [...items.slice(start), ...items.slice(0, start)]
 }
 
 function autonomousCandidateAlreadyQueuedOrRunning(action, workspace, targetChannelId) {
