@@ -2332,25 +2332,20 @@ async function maybeReportVisualDesignFinding(action, workspace, targetChannelId
   const evidence = Array.isArray(action?.evidence)
     ? action.evidence.filter(Boolean).map((item) => String(item)).slice(0, 5)
     : []
-  const issueBody = [
-    '## Observation',
-    String(action?.recommendedAction || title).trim(),
+  const issueTitle = `[Designobservation] ${title}`.slice(0, 100)
+  const issueSummary = [
+    targetUrl ? `Berörd sida: ${targetUrl}` : '',
     '',
-    '## Varför detta kan vara viktigt',
-    why || 'SEO Agent saknar tillräckligt underlag för att motivera en designändring. Ingen kodändring har gjorts.',
-    '',
-    '## Underlag',
-    ...(evidence.length ? evidence.map((item) => `- ${item}`) : ['- Inget verifierat visuellt underlag bifogades.']),
-    '',
-    '## Berörd sida',
-    targetUrl || 'Ej angiven',
-    '',
-    '## Beslut',
-    'Visuell design är fryst. Förslaget kräver ett separat mänskligt produktbeslut och får inte implementeras av SEO Agent.'
-  ].join('\n')
-  const issueUrl = repoFullName
-    ? `https://github.com/${repoFullName}/issues/new?title=${encodeURIComponent(`[Designobservation] ${title}`)}&body=${encodeURIComponent(issueBody)}`
+    'SEO Agent har rapporterat observationen i Discord. Ingen kodändring har gjorts.'
+  ].filter(Boolean).join('\n').slice(0, 220)
+  const issueUrlCandidate = repoFullName
+    ? `https://github.com/${repoFullName}/issues/new?title=${encodeURIComponent(issueTitle)}&body=${encodeURIComponent(issueSummary)}`
     : ''
+  const issueUrl = issueUrlCandidate.length <= 500
+    ? issueUrlCandidate
+    : repoFullName
+      ? `https://github.com/${repoFullName}/issues/new?title=${encodeURIComponent(issueTitle.slice(0, 70))}`
+      : ''
 
   await sendDiscordMessage([
     `**Designobservation · ingen ändring gjord**`,

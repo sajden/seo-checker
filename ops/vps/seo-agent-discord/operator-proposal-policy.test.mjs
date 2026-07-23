@@ -23,4 +23,6 @@ test('allows metadata work without changing protected surfaces', () => {
 test('classifies a requested visual change separately', () => {
   assert.equal(requestsVisualChangeText('Ändra layout och bilder på sidan.'), true)
   assert.equal(requestsVisualChangeText('Ändra metadata men behåll layout och bilder.'), false)
+  assert.equal(requestsVisualChangeText('Lägg till H1 utan layoutändring.'), false)
+  assert.equal(requestsVisualChangeText('Lämna sidans visuella innehåll och CTA oförändrade.'), false)
 })
