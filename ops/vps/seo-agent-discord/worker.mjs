@@ -2410,6 +2410,17 @@ async function syntheticAutonomousActionForWorkspace({ workspace, targetChannelI
     return null
   }
   let rawAction = buildWorkspaceGoalGapAction(workspace, targetChannelId, sourcePayload)
+  if (rawAction) {
+    const backlogCheck = autonomousCodeCandidateCheck(rawAction, workspace, targetChannelId)
+    if (!backlogCheck.ok && shouldScoutAfterBlockedBacklog(backlogCheck.reason)) {
+      logThrottled(`synthetic_backlog_fallback_to_scout:${workspace?.id || workspace?.label}:${backlogCheck.reason}`, 30 * 60 * 1000, 'synthetic_backlog_fallback_to_scout', {
+        workspace: workspace?.label || workspace?.id || null,
+        actionId: rawAction.id || null,
+        reason: backlogCheck.reason
+      })
+      rawAction = null
+    }
+  }
   if (!rawAction) rawAction = await buildCodexOpportunityAction(workspace, targetChannelId, {
       pending,
       rejectionReasons,
@@ -2492,6 +2503,18 @@ async function syntheticAutonomousActionForWorkspace({ workspace, targetChannelI
     codexBrief,
     reason: codexBrief.why || syntheticEvidenceReason(action)
   }
+}
+
+function shouldScoutAfterBlockedBacklog(reason) {
+  const text = String(reason || '')
+  return (
+    text === 'operator_proposal_required'
+    || text === 'same_target_recent_experiment_limit'
+    || text === 'new_page_needs_human_approval'
+    || text === 'legacy_route_not_seo_target'
+    || /^already_result:/.test(text)
+    || /^legal_or_policy_route/.test(text)
+  )
 }
 
 function buildWorkspaceGoalGapAction(workspace, targetChannelId = null, sourcePayload = null) {
