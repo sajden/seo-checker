@@ -88,6 +88,7 @@ The agent should:
 - run autonomously until guards, learning, recheck windows, Codex review or build/quality gate say there is no safe next SEO experiment. There is no hard daily commit count by default; set `SEO_AGENT_AUTONOMOUS_CODE_PER_WORKSPACE_PER_DAY` only as an emergency cap,
 - create a Codex repo-scouted synthetic action when live SEO Monitor actions are weak, already completed, missing a target URL, or blocked by guards. Scout actions must target an existing page and still pass normal guards, Codex action review, and the pre-commit quality gate.
 - retry repo scouting after a short cooldown when a scout returns an invalid new-page/admin/legal idea. Invalid scout output should teach the agent and pause briefly, not block the whole workspace for days.
+- block autonomous work on the same URL for 30 days after a completed experiment, matching experiments by repo or site as well as the current workspace key so migrated history cannot bypass the cooldown.
 - run a faster growth scout for weak commercial SEO workspaces such as Sebcastwall when the live queue is weak. This should expand the AI-consulting/AI-education/internal-tools strategy on existing pages while still avoiding legal/admin pages and repeated page/keyword experiments.
 - capture the latest GSC run from before each deployed change, evaluate it after 14 and 30 days, and feed measured outcomes back into the next Codex scout. Historical changes without a real baseline stay explicitly unmeasured.
 - suppress repeated completed/ignored action clusters until recheck,

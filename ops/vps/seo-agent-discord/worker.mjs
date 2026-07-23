@@ -55,7 +55,7 @@ const autonomousCodePerWorkspacePerDay = Number(env.SEO_AGENT_AUTONOMOUS_CODE_PE
 const opportunityScoutMinIntervalMs = Number(env.SEO_AGENT_OPPORTUNITY_SCOUT_MIN_INTERVAL_MS || String(3 * 60 * 60 * 1000))
 const opportunityScoutGrowthMinIntervalMs = Number(env.SEO_AGENT_OPPORTUNITY_SCOUT_GROWTH_MIN_INTERVAL_MS || String(60 * 60 * 1000))
 const opportunityScoutInvalidCooldownMs = Number(env.SEO_AGENT_OPPORTUNITY_SCOUT_INVALID_COOLDOWN_MS || String(3 * 60 * 60 * 1000))
-const sameTargetAutonomousCooldownMs = Number(env.SEO_AGENT_SAME_TARGET_AUTONOMOUS_COOLDOWN_MS || String(14 * 24 * 60 * 60 * 1000))
+const sameTargetAutonomousCooldownMs = Number(env.SEO_AGENT_SAME_TARGET_AUTONOMOUS_COOLDOWN_MS || String(30 * 24 * 60 * 60 * 1000))
 const sameTargetAutonomousMaxRecent = Number(env.SEO_AGENT_SAME_TARGET_AUTONOMOUS_MAX_RECENT || '1')
 const engagementMinViews = Number(env.SEO_AGENT_ENGAGEMENT_MIN_VIEWS || '50')
 const completedTargetCooldownMs = Number(env.SEO_AGENT_COMPLETED_TARGET_COOLDOWN_MS || String(30 * 24 * 60 * 60 * 1000))
@@ -2299,10 +2299,9 @@ function sameTargetRecentExperimentCheck(action, workspace, targetChannelId) {
   if (!sameTargetAutonomousCooldownMs || sameTargetAutonomousMaxRecent <= 0) return { ok: true, reason: 'same_target_ok' }
   const targetUrl = String(action?.targetUrl || action?.url || '').trim()
   if (!targetUrl) return { ok: true, reason: 'same_target_ok' }
-  const workspaceKey = workspaceProfileKey(workspace, targetChannelId)
   const now = Date.now()
   const recent = Object.values(state.seoExperiments || {}).filter((experiment) => {
-    if (experiment?.workspaceKey !== workspaceKey) return false
+    if (!workspaceMatchesExperiment(workspace, experiment)) return false
     if (!experiment?.targetUrl || !sameSeoUrl(experiment.targetUrl, targetUrl)) return false
     const completedAt = Date.parse(experiment.completedAt || '')
     return Boolean(completedAt && now - completedAt < sameTargetAutonomousCooldownMs)
