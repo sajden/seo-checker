@@ -7,6 +7,7 @@ import { agentRuntimeSnapshot } from './agent-brain.mjs'
 import { classifyGscIssue, groupGscReviewCandidates } from './gsc-issue-policy.mjs'
 import { buildGscExperimentSnapshot, evaluateExperimentMeasurement, nextExperimentPhase, nextMeasurementDate } from './seo-experiment-measurement.mjs'
 import { buildOpportunityEvidenceContext, excludeOpportunityEvidenceTargets, validateOpportunityEvidence } from './opportunity-evidence.mjs'
+import { requiresOperatorProposalText } from './operator-proposal-policy.mjs'
 
 const env = loadEnv([
   '/home/deploy/.hermes/.env',
@@ -2286,8 +2287,7 @@ function hasFreshPositiveSearchEvidence(action, completedAtMs) {
 }
 
 function requiresOperatorProposal(action) {
-  const text = actionText(action)
-  return /design|layout|css|bild|image|navigation|navbar|formul[aä]r|cta|pris|pricing|route|redirect|positionering|kundcase|customer claim|ny sida|new page|landningssida/.test(text)
+  return requiresOperatorProposalText(actionText(action))
 }
 
 function hasPendingWorkspaceReview(workspace) {
