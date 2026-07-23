@@ -123,6 +123,28 @@ function sameTarget(left, right) {
   return Boolean(left && right && normalizeUrl(left) === normalizeUrl(right))
 }
 
+export function excludeOpportunityEvidenceTargets(evidenceContext, excludedTargets) {
+  const targets = (Array.isArray(excludedTargets) ? excludedTargets : [])
+    .map((item) => String(item || '').trim())
+    .filter(Boolean)
+  const allowed = (url) => !targets.some((target) => sameTarget(url, target))
+  const result = {
+    ...evidenceContext,
+    gscRows: (evidenceContext?.gscRows || []).filter((item) => allowed(item?.page)),
+    gscOpportunities: (evidenceContext?.gscOpportunities || []).filter((item) => allowed(item?.page)),
+    pageOpportunities: (evidenceContext?.pageOpportunities || []).filter((item) => allowed(item?.url)),
+    crawlSignals: (evidenceContext?.crawlSignals || []).filter((item) => allowed(item?.url))
+  }
+  result.counts = {
+    gscRows: result.gscRows.length,
+    gscOpportunities: result.gscOpportunities.length,
+    pageOpportunities: result.pageOpportunities.length,
+    crawlSignals: result.crawlSignals.length,
+    excludedTargets: targets.length
+  }
+  return result
+}
+
 function keywordMatches(left, right) {
   const a = normalizeText(left)
   const b = normalizeText(right)

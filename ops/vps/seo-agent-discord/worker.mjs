@@ -6,7 +6,7 @@ import { createHash, createHmac } from 'node:crypto'
 import { agentRuntimeSnapshot } from './agent-brain.mjs'
 import { classifyGscIssue, groupGscReviewCandidates } from './gsc-issue-policy.mjs'
 import { buildGscExperimentSnapshot, evaluateExperimentMeasurement, nextExperimentPhase, nextMeasurementDate } from './seo-experiment-measurement.mjs'
-import { buildOpportunityEvidenceContext, validateOpportunityEvidence } from './opportunity-evidence.mjs'
+import { buildOpportunityEvidenceContext, excludeOpportunityEvidenceTargets, validateOpportunityEvidence } from './opportunity-evidence.mjs'
 
 const env = loadEnv([
   '/home/deploy/.hermes/.env',
@@ -245,6 +245,8 @@ function currentAgentActivity(reviewQueue) {
     ? `Senaste researchen hittade ingen verifierad möjlighet: ${latestScout.reason || 'underlaget var inte tillräckligt starkt'}.`
     : latestScout?.status === 'rejected_unverified_evidence'
       ? 'Senaste scoutförslaget stoppades eftersom dess evidens inte kunde verifieras mot färsk data.'
+      : latestScout?.status === 'verified_but_policy_blocked'
+        ? `Senaste verifierade signalen stoppades av affärs- eller säkerhetspolicyn: ${latestScout.blockedReason || 'ej autonomt tillåten'}.`
       : null
   return {
     mode: 'monitoring',
@@ -2427,6 +2429,16 @@ async function syntheticAutonomousActionForWorkspace({ workspace, targetChannelI
   })
   const candidateCheck = autonomousCodeCandidateCheck(action, workspace, targetChannelId)
   if (!candidateCheck.ok) {
+    if (action.scout) {
+      state.codexOpportunityScout = state.codexOpportunityScout || {}
+      state.codexOpportunityScout[workspaceProfileKey(workspace, targetChannelId)] = {
+        at: new Date().toISOString(),
+        status: 'verified_but_policy_blocked',
+        targetUrl: action.targetUrl || null,
+        keyword: action.keyword || null,
+        blockedReason: candidateCheck.reason
+      }
+    }
     logThrottled(`synthetic_autonomous_skipped:${workspace?.id || workspace?.label}:${action.id}:candidate`, 30 * 60 * 1000, 'synthetic_autonomous_skipped', { workspace: workspace?.label || workspace?.id || null, actionId: action.id, reason: `candidate:${candidateCheck.reason}` })
     return null
   }
@@ -2548,7 +2560,25 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
     .slice(0, 20)
   const recentCodeResults = recentCodeResultsForWorkspace(workspace, targetChannelId)
   const batch = await fetchWorkspaceSeoBatch(workspace).catch(() => null)
-  const evidenceContext = buildOpportunityEvidenceContext(batch)
+  const rawEvidenceContext = buildOpportunityEvidenceContext(batch)
+  const rejectedIds = new Set((context.rejectionReasons || []).map((item) => String(item?.id || '')).filter(Boolean))
+  const excludedTargets = (context.pending || [])
+    .filter((item) => rejectedIds.has(String(item?.id || '')))
+    .map((item) => item?.targetUrl || item?.url)
+    .filter(Boolean)
+  for (const experiment of experiments) {
+    if (Date.parse(experiment.reviewAfter || '') > Date.now() && experiment.targetUrl) excludedTargets.push(experiment.targetUrl)
+  }
+  if (isSebcastwallWorkspace(workspace, profile)) {
+    const integrationUrls = [
+      ...rawEvidenceContext.gscRows.map((item) => item.page),
+      ...rawEvidenceContext.gscOpportunities.map((item) => item.page),
+      ...rawEvidenceContext.pageOpportunities.map((item) => item.url),
+      ...rawEvidenceContext.crawlSignals.map((item) => item.url)
+    ].filter((url) => /\/tjanster\/integrationer(?:\/|$)/i.test(String(url || '')))
+    excludedTargets.push(...integrationUrls)
+  }
+  const evidenceContext = excludeOpportunityEvidenceTargets(rawEvidenceContext, excludedTargets)
   const promptPath = join(stateDir, `codex-opportunity-${slugify(key).slice(0, 80)}.md`)
   const contextJson = {
     workspace: {
@@ -2571,6 +2601,7 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
     recentCodeResults,
     learningSummary,
     verifiedEvidence: evidenceContext,
+    excludedEvidenceTargets: [...new Set(excludedTargets)].slice(0, 30),
     rejectedLiveActions: (context.rejectionReasons || []).slice(0, 12),
     workspacePolicy: context.workspacePolicy || '',
     source: {

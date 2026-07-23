@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { buildOpportunityEvidenceContext, validateOpportunityEvidence } from './opportunity-evidence.mjs'
+import { buildOpportunityEvidenceContext, excludeOpportunityEvidenceTargets, validateOpportunityEvidence } from './opportunity-evidence.mjs'
 
 const batch = {
   lastRunAt: '2026-07-23T07:11:47.757Z',
@@ -64,4 +64,14 @@ test('verifies a crawl defect on the same URL', () => {
   }, context)
   assert.equal(result.ok, true)
   assert.deepEqual(result.evidence.issues, ['missing_title'])
+})
+
+test('removes previously rejected targets from every evidence source', () => {
+  const context = buildOpportunityEvidenceContext(batch)
+  const filtered = excludeOpportunityEvidenceTargets(context, [
+    'https://sebcastwall.se/tjanster/webbutveckling/'
+  ])
+  assert.equal(filtered.gscRows.length, 0)
+  assert.equal(filtered.crawlSignals.length, 0)
+  assert.equal(filtered.counts.excludedTargets, 1)
 })
