@@ -5,7 +5,11 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 
 const exec = promisify(execFile)
-const runnerEnv = { ...process.env, PATH: `/home/deploy/.npm-global/bin:/home/deploy/.local/bin:${process.env.PATH || ''}` }
+const node22Bin = '/home/deploy/.local/node22/node_modules/node/bin'
+const runnerEnv = {
+  ...process.env,
+  PATH: `${existsSync(node22Bin) ? `${node22Bin}:` : ''}/home/deploy/.npm-global/bin:/home/deploy/.local/bin:${process.env.PATH || ''}`
+}
 const workspaceRoot = '/home/deploy/seo-agent-workspaces'
 const input = JSON.parse(readFileSync(process.argv[2], 'utf8'))
 const repoFullName = String(input.repoFullName || '').trim()
