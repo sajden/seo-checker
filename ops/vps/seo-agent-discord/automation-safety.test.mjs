@@ -24,3 +24,7 @@ test('self-repair requires both approved code automation and self-repair opt-in'
   const guardedCalls = workerSource.match(/if \(codeAutomationEnabled && selfRepairEnabled\)/g) || []
   assert.equal(guardedCalls.length, 2)
 })
+
+test('startup reconciles stale transitional ledger statuses', () => {
+  assert.match(workerSource, /ensureAutonomousAgentState\(\)\s+reconcileTransitionalLedgerStatuses\(\)/)
+})

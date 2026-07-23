@@ -83,6 +83,7 @@ const processStartedAtMs = Date.now()
 if (!existsSync(stateDir)) mkdirSync(stateDir, { recursive: true })
 const state = loadState()
 ensureAutonomousAgentState()
+reconcileTransitionalLedgerStatuses()
 let tickRunning = false
 const runtimeLiveActionsCache = new Map()
 
@@ -2524,21 +2525,12 @@ async function syntheticAutonomousActionForWorkspace({ workspace, targetChannelI
   if (rawAction) {
     const backlogCheck = autonomousCodeCandidateCheck(rawAction, workspace, targetChannelId)
     if (!backlogCheck.ok) {
-      if (shouldScoutAfterBlockedBacklog(backlogCheck.reason)) {
-        logThrottled(`synthetic_backlog_fallback_to_scout:${workspace?.id || workspace?.label}:${backlogCheck.reason}`, 30 * 60 * 1000, 'synthetic_backlog_fallback_to_scout', {
-          workspace: workspace?.label || workspace?.id || null,
-          actionId: rawAction.id || null,
-          reason: backlogCheck.reason
-        })
-        rawAction = null
-      } else {
-        logThrottled(`synthetic_autonomous_skipped:${workspace?.id || workspace?.label}:${rawAction.id}:blocked-backlog`, 30 * 60 * 1000, 'synthetic_autonomous_skipped', {
-          workspace: workspace?.label || workspace?.id || null,
-          actionId: rawAction.id || null,
-          reason: `candidate:${backlogCheck.reason}`
-        })
-        return null
-      }
+      logThrottled(`synthetic_autonomous_skipped:${workspace?.id || workspace?.label}:${rawAction.id}:blocked-backlog`, 30 * 60 * 1000, 'synthetic_autonomous_skipped', {
+        workspace: workspace?.label || workspace?.id || null,
+        actionId: rawAction.id || null,
+        reason: `candidate:${backlogCheck.reason}`
+      })
+      return null
     }
   }
   if (!rawAction) rawAction = await buildCodexOpportunityAction(workspace, targetChannelId, {
@@ -2623,19 +2615,6 @@ async function syntheticAutonomousActionForWorkspace({ workspace, targetChannelI
     codexBrief,
     reason: codexBrief.why || syntheticEvidenceReason(action)
   }
-}
-
-function shouldScoutAfterBlockedBacklog(reason) {
-  const text = String(reason || '')
-  return (
-    text === 'operator_proposal_required'
-    || text === 'target_review_pending'
-    || text === 'same_target_recent_experiment_limit'
-    || text === 'new_page_needs_human_approval'
-    || text === 'legacy_route_not_seo_target'
-    || /^already_result:/.test(text)
-    || /^legal_or_policy_route/.test(text)
-  )
 }
 
 function buildWorkspaceGoalGapAction(workspace, targetChannelId = null, sourcePayload = null) {
@@ -7778,6 +7757,45 @@ function ensureAutonomousAgentState() {
   state.guardedActions = state.guardedActions || {}
   state.repoCommitSync = state.repoCommitSync || {}
   migrateExistingStateToActionLedger()
+}
+
+function reconcileTransitionalLedgerStatuses() {
+  const transitional = new Set(['approved', 'coding', 'review_ready', 'promotion_running'])
+  const queued = state.approvedCodeActionQueue || {}
+  const runningId = state.codeActionRunning?.actionId || ''
+  let changed = false
+  for (const ledger of Object.values(state.actionLedger || {})) {
+    const actionId = String(ledger?.actionId || '')
+    if (!actionId || queued[actionId] || actionId === runningId || !transitional.has(String(ledger.status || ''))) continue
+    const resultStatus = String(state.codeActionResults?.[actionId]?.status || '')
+    if (!resultStatus || resultStatus === ledger.status) continue
+    ledger.status = resultStatus
+    ledger.reconciledAt = new Date().toISOString()
+    changed = true
+  }
+  const reviewEntriesByAction = new Map()
+  for (const ledger of Object.values(state.actionLedger || {})) {
+    if (ledger?.status !== 'review_ready' || !ledger.actionId) continue
+    const entries = reviewEntriesByAction.get(ledger.actionId) || []
+    entries.push(ledger)
+    reviewEntriesByAction.set(ledger.actionId, entries)
+  }
+  for (const entries of reviewEntriesByAction.values()) {
+    if (entries.length < 2) continue
+    entries.sort((a, b) => ledgerReviewEvidenceScore(b) - ledgerReviewEvidenceScore(a))
+    for (const duplicate of entries.slice(1)) {
+      duplicate.status = 'archived_duplicate_review'
+      duplicate.reconciledAt = new Date().toISOString()
+      changed = true
+    }
+  }
+  if (changed) saveState()
+}
+
+function ledgerReviewEvidenceScore(ledger) {
+  const events = Array.isArray(ledger?.events) ? ledger.events : []
+  const commitEvidence = events.some((event) => event?.commit || event?.reviewUrl || event?.deliveryBranch) ? 1_000_000_000_000_000 : 0
+  return commitEvidence + (Date.parse(ledger?.lastEventAt || ledger?.firstSeenAt || '') || 0)
 }
 
 async function runDailyRankingReviews(workspaces) {
