@@ -7097,42 +7097,58 @@ async function recoverUncertainRuntimeApprovedQueue(uncertainty) {
     if (alreadyRecorded) continue
     const workspace = { label: entry.workspaceSlug || repoFullName, repoFullName, branch }
     const targetChannelId = entry.channelId || await channelForWorkspace(workspace).catch(() => null)
+    const deliveryBranch = (commit.remoteRefs || [])
+      .find((ref) => ref.startsWith('origin/seo-agent/'))
+      ?.replace(/^origin\//, '') || ''
+    const requiresReview = Boolean(deliveryBranch) && !(commit.remoteRefs || []).includes(`origin/${branch}`)
     const completedResult = {
       commit: commit.commit,
       fullCommit: commit.fullCommit || commit.commit,
       diffStat: commit.diffStat || '',
       repoFullName,
-      branch,
+      branch: requiresReview ? deliveryBranch : branch,
+      baseBranch: branch,
+      deliveryBranch: requiresReview ? deliveryBranch : null,
+      requiresReview,
+      reviewUrl: requiresReview
+        ? `https://github.com/${repoFullName}/compare/${encodeURIComponent(branch)}...${encodeURIComponent(deliveryBranch)}?expand=1`
+        : null,
       recovered: true
     }
     state.codeActionResults = state.codeActionResults || {}
     state.codeActionResults[entry.id] = {
-      status: 'completed',
-      completedAt: new Date().toISOString(),
+      status: requiresReview ? 'review_ready' : 'completed',
+      ...(requiresReview ? { reviewReadyAt: new Date().toISOString() } : { completedAt: new Date().toISOString() }),
       result: completedResult,
       recoveredFrom: 'runtime_fetch_failed_recent_commit'
     }
-    recordActionLedger(entry, workspace, targetChannelId, 'completed', {
+    recordActionLedger(entry, workspace, targetChannelId, requiresReview ? 'review_ready' : 'completed', {
       commit: completedResult.commit,
       diffStat: completedResult.diffStat,
       repoFullName,
+      deliveryBranch: completedResult.deliveryBranch,
       recoveredFrom: 'runtime_fetch_failed_recent_commit'
     })
-    recordSeoExperiment(entry, workspace, targetChannelId, completedResult, { source: 'runtime_uncertain_queue_recovery' })
+    if (!requiresReview) {
+      recordSeoExperiment(entry, workspace, targetChannelId, completedResult, { source: 'runtime_uncertain_queue_recovery' })
+    }
     delete state.approvedCodeActionQueue[entry.id]
     clearActiveAction(entry.id)
     if (targetChannelId) {
-      await markPostedActionHandled(entry.id, targetChannelId, 'code_action_completed')
+      await markPostedActionHandled(entry.id, targetChannelId, requiresReview ? 'code_action_review_ready' : 'code_action_completed')
       const commitUrl = githubCommitUrl(repoFullName, completedResult.commit)
       const posted = await sendDiscordMessage([
         `Kodaction var redan klar för ${workspace.label}: ${entry.title || entry.id}`,
         `Action ID: \`${entry.id}\``,
         `Commit: ${completedResult.commit}`,
         commitUrl ? `GitHub: ${commitUrl}` : '',
+        ...codeDeliveryLines(completedResult),
         completedResult.diffStat ? `Diff:\n\`\`\`\n${String(completedResult.diffStat).slice(0, 1200)}\n\`\`\`` : '',
         '',
-        'Jag fick ett osäkert runtime-svar, men hittade den färdiga SEO Agent-committen i repot och tog bort actionen från kön.'
-      ].filter(Boolean).join('\n'), targetChannelId, rollbackComponents(), { kind: 'code_result' })
+        requiresReview
+          ? 'Jag fick ett osäkert runtime-svar, men hittade den färdiga review-branchen. Main och production är orörda.'
+          : 'Jag fick ett osäkert runtime-svar, men hittade den färdiga SEO Agent-committen i repot och tog bort actionen från kön.'
+      ].filter(Boolean).join('\n'), targetChannelId, requiresReview ? reviewReadyComponents() : rollbackComponents(), { kind: 'code_result' })
       state.messageToAction = state.messageToAction || {}
       state.messageToAction[posted.id] = entry.id
     }
@@ -7222,12 +7238,20 @@ async function findSeoAgentCommitForAction(actionId, repoFullName, branch) {
     if (!body.includes(needle) && !record.includes(needle)) continue
     const shortResult = await exec('git', ['rev-parse', '--short', fullCommit], { cwd: repoDir, env: envWithPath, timeout: 60 * 1000, maxBuffer: 1024 * 1024 })
     const statResult = await exec('git', ['show', '--stat', '--oneline', '--format=', fullCommit], { cwd: repoDir, env: envWithPath, timeout: 60 * 1000, maxBuffer: 4 * 1024 * 1024 })
+    const refsResult = await exec('git', [
+      'for-each-ref',
+      '--contains',
+      fullCommit,
+      '--format=%(refname:short)',
+      'refs/remotes/origin'
+    ], { cwd: repoDir, env: envWithPath, timeout: 60 * 1000, maxBuffer: 2 * 1024 * 1024 })
     return {
       fullCommit,
       commit: String(shortResult.stdout || '').trim() || fullCommit.slice(0, 7),
       committedAt: ts ? new Date(Number(ts) * 1000).toISOString() : '',
       subject: subject || '',
-      diffStat: String(statResult.stdout || '').trim()
+      diffStat: String(statResult.stdout || '').trim(),
+      remoteRefs: String(refsResult.stdout || '').split('\n').map((ref) => ref.trim()).filter(Boolean)
     }
   }
   return null
