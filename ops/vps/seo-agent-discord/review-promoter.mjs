@@ -46,13 +46,14 @@ try {
 
   const fingerprints = await reviewFingerprints(repoDir, baseBranch, deliveryBranch)
   await run('git', ['checkout', '-B', baseBranch, `origin/${baseBranch}`], repoDir)
-  await run('git', ['merge', '--ff-only', `origin/${deliveryBranch}`], repoDir)
+  await run('git', ['cherry-pick', reviewedCommit], repoDir)
+  const promotedCommit = (await run('git', ['rev-parse', 'HEAD'], repoDir)).stdout.trim()
   await runBestBuild(repoDir)
   await run('git', ['push', 'origin', `HEAD:${baseBranch}`], repoDir)
   pushed = true
   await runConfiguredProductionDeploy(repoDir)
   await run('git', ['fetch', 'origin', baseBranch], repoDir)
-  await run('git', ['merge-base', '--is-ancestor', reviewedCommit, `origin/${baseBranch}`], repoDir)
+  await run('git', ['merge-base', '--is-ancestor', promotedCommit, `origin/${baseBranch}`], repoDir)
 
   const verification = targetUrl
     ? await verifyLiveTarget(targetUrl, fingerprints)
@@ -63,8 +64,10 @@ try {
     repoFullName,
     baseBranch,
     deliveryBranch,
-    commit: reviewedCommit.slice(0, 12),
+    commit: promotedCommit.slice(0, 12),
+    reviewCommit: reviewedCommit,
     reviewedCommit,
+    promotedCommit,
     diffStat: diff.stdout,
     targetUrl,
     verification,
@@ -75,6 +78,7 @@ try {
 } catch (error) {
   if (!pushed) {
     await run('git', ['merge', '--abort'], repoDir).catch(() => null)
+    await run('git', ['cherry-pick', '--abort'], repoDir).catch(() => null)
     await run('git', ['checkout', '-B', baseBranch, `origin/${baseBranch}`], repoDir).catch(() => null)
   }
   console.error(JSON.stringify({ ok: false, pushedToMain: pushed, error: error?.message || String(error) }))

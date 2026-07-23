@@ -54,6 +54,7 @@ const automationEnabled = env.SEO_AGENT_AUTONOMY_ENABLED !== 'false'
 const codeAutomationEnabled = env.SEO_AGENT_CODE_AUTOMATION_ENABLED === 'true'
 const autonomousCodeEnabled = env.SEO_AGENT_AUTONOMOUS_CODE_ENABLED !== 'false'
 const autonomousCodePerWorkspacePerDay = Number(env.SEO_AGENT_AUTONOMOUS_CODE_PER_WORKSPACE_PER_DAY || '0')
+const maxPendingReviewsPerWorkspace = Math.max(1, Number(env.SEO_AGENT_MAX_PENDING_REVIEWS_PER_WORKSPACE || '3'))
 const opportunityScoutMinIntervalMs = Number(env.SEO_AGENT_OPPORTUNITY_SCOUT_MIN_INTERVAL_MS || String(90 * 60 * 1000))
 const opportunityScoutGrowthMinIntervalMs = Number(env.SEO_AGENT_OPPORTUNITY_SCOUT_GROWTH_MIN_INTERVAL_MS || String(60 * 60 * 1000))
 const opportunityScoutInvalidCooldownMs = Number(env.SEO_AGENT_OPPORTUNITY_SCOUT_INVALID_COOLDOWN_MS || String(3 * 60 * 60 * 1000))
@@ -2207,9 +2208,8 @@ function isAutonomousCodeCandidate(action, workspace, targetChannelId) {
 
 function autonomousCodeCandidateCheck(action, workspace, targetChannelId) {
   if (!isCodeAction(action)) return { ok: false, reason: 'not_code_action' }
-  if (hasPendingWorkspaceReview(workspace)) {
-    return { ok: false, reason: 'workspace_review_pending' }
-  }
+  const pendingReviewCheck = pendingWorkspaceReviewCheck(action, workspace)
+  if (!pendingReviewCheck.ok) return pendingReviewCheck
   if (requiresOperatorProposal(action)) {
     return { ok: false, reason: 'operator_proposal_required' }
   }
@@ -2402,13 +2402,28 @@ async function maybeReportVisualDesignFinding(action, workspace, targetChannelId
   return true
 }
 
-function hasPendingWorkspaceReview(workspace) {
+function pendingWorkspaceReviewCheck(action, workspace) {
   const repoFullName = String(workspace?.repoFullName || '').trim()
-  if (!repoFullName) return false
-  return Object.values(state.codeActionResults || {}).some((record) => {
+  if (!repoFullName) return { ok: true, reason: 'workspace_without_repo' }
+  const pending = Object.entries(state.codeActionResults || {}).filter(([, record]) => {
     if (!['review_ready', 'operator_approved', 'promotion_running'].includes(String(record?.status || ''))) return false
     return String(record?.result?.repoFullName || '').trim() === repoFullName
   })
+  const targetUrl = String(action?.targetUrl || action?.url || '').trim()
+  if (targetUrl && pending.some(([actionId, record]) => {
+    const reviewTarget = String(record?.result?.reviewContext?.targetUrl || actionLedgerTargetUrl(actionId) || '').trim()
+    return reviewTarget && sameSeoUrl(reviewTarget, targetUrl)
+  })) {
+    return { ok: false, reason: 'target_review_pending', pendingCount: pending.length }
+  }
+  if (pending.length >= maxPendingReviewsPerWorkspace) {
+    return { ok: false, reason: 'workspace_review_limit', pendingCount: pending.length, limit: maxPendingReviewsPerWorkspace }
+  }
+  return { ok: true, reason: 'review_capacity_available', pendingCount: pending.length, limit: maxPendingReviewsPerWorkspace }
+}
+
+function actionLedgerTargetUrl(actionId) {
+  return Object.values(state.actionLedger || {}).find((record) => String(record?.actionId || '') === String(actionId || ''))?.targetUrl || ''
 }
 
 function isWeakExactKeywordCoverageAction(action) {
@@ -2464,6 +2479,8 @@ function isWaitOrGuardRejectionReason(reason) {
   return (
     /^already_result:/.test(text)
     || text === 'already_queued'
+    || text === 'target_review_pending'
+    || text === 'workspace_review_limit'
     || text === 'same_target_recent_experiment_limit'
     || /^(?:already_completed|recently_(?:deprioritized|guarded|ignored|skipped|failed)|failed)_waiting_recheck$/.test(text)
     || text === 'missing_target_url'
@@ -2602,6 +2619,7 @@ function shouldScoutAfterBlockedBacklog(reason) {
   const text = String(reason || '')
   return (
     text === 'operator_proposal_required'
+    || text === 'target_review_pending'
     || text === 'same_target_recent_experiment_limit'
     || text === 'new_page_needs_human_approval'
     || text === 'legacy_route_not_seo_target'
@@ -3844,7 +3862,7 @@ function reviewReadyComponents() {
 async function decideSeoReview(actionId, decision, targetChannelId, operatorId) {
   const record = state.codeActionResults?.[actionId]
   if (!record || !['review_ready', 'operator_approved'].includes(String(record.status || ''))) {
-    return { summary: 'Jag hittar ingen väntande dev-ändring för den här granskningen.' }
+    return { summary: 'Jag hittar ingen väntande review-ändring för den här granskningen.' }
   }
   const now = new Date().toISOString()
   const approved = decision === 'approved'
@@ -3870,7 +3888,7 @@ async function decideSeoReview(actionId, decision, targetChannelId, operatorId) 
     clearActiveAction(actionId)
     saveState()
     return {
-      summary: 'Dev-ändringen är avvisad och kommer inte att gå till produktion.',
+      summary: 'Review-ändringen är avvisad och kommer inte att gå till produktion.',
       publicMessage: `Avvisad: ${posted.title || actionId}. Branchen sparas som historik men kommer inte att publiceras.`,
       removeButtons: true
     }
