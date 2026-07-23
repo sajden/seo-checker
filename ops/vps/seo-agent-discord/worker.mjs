@@ -9,6 +9,7 @@ import { buildGscExperimentSnapshot, evaluateExperimentMeasurement, nextExperime
 import { buildOpportunityEvidenceContext, excludeOpportunityEvidenceTargets, validateOpportunityEvidence } from './opportunity-evidence.mjs'
 import { requestsVisualChangeText, requiresOperatorProposalText } from './operator-proposal-policy.mjs'
 import { isPlainObject, mergeJsonChanges } from './json-state-merge.mjs'
+import { canonicalRepoFullName, workspaceProfileKey } from './workspace-identity.mjs'
 
 const env = loadEnv([
   '/home/deploy/.hermes/.env',
@@ -8315,29 +8316,6 @@ function migrateExistingStateToActionLedger() {
   state.actionLedgerMigratedAt = now
 }
 
-function workspaceProfileKey(workspace, targetChannelId = null) {
-  const repoFullName = canonicalRepoFullName(workspace)
-  if (repoFullName) return `repo:${repoFullName}`
-  const gscProperty = String(workspace?.gscProperty || '').trim().toLowerCase()
-  if (gscProperty) return `gsc:${gscProperty}`
-  const workspaceId = String(workspace?.id || '').trim()
-  if (workspaceId) return `workspace:${workspaceId}`
-  return targetChannelId ? `channel:${targetChannelId}` : 'default'
-}
-
-function canonicalRepoFullName(workspace) {
-  const direct = String(workspace?.repoFullName || '').trim().toLowerCase()
-  if (/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/.test(direct)) return direct
-  const candidates = [workspace?.id, workspace?.label, workspace?.workspaceKey]
-    .map((value) => String(value || '').trim().toLowerCase())
-  for (const candidate of candidates) {
-    const embedded = candidate.match(/(?:^|__)([a-z0-9_.-]+\/[a-z0-9_.-]+)(?:__|$)/)
-    if (embedded?.[1]) return embedded[1]
-    if (/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/.test(candidate)) return candidate
-  }
-  return ''
-}
-
 function migrateWorkspaceIdentities(workspaces) {
   const aliases = new Map()
   for (const workspace of workspaces || []) {
@@ -8355,7 +8333,9 @@ function migrateWorkspaceIdentities(workspaces) {
   const canonicalFor = (value, record = null) => {
     const direct = aliases.get(String(value || ''))
     if (direct) return direct
-    const repo = canonicalRepoFullName(record || { id: value })
+    const repo =
+      canonicalRepoFullName(record || {}) ||
+      canonicalRepoFullName({ id: value, workspaceKey: value })
     return repo ? `repo:${repo}` : String(value || '')
   }
 

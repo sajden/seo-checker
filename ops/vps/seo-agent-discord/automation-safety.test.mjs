@@ -71,6 +71,6 @@ test('repo health requires exact local and remote sync', () => {
 })
 
 test('workspace identity prefers a canonical repository key', () => {
-  assert.match(workerSource, /return `repo:\$\{repoFullName\}`/)
+  assert.match(workerSource, /workspace-identity\.mjs/)
   assert.match(workerSource, /migrateWorkspaceIdentities\(workspaces\)/)
 })
