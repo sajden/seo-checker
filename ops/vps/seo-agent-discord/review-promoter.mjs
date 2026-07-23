@@ -128,7 +128,7 @@ async function runConfiguredProductionDeploy(repoDir) {
   if (!cwd) return
   const packageJson = JSON.parse(readFileSync(join(cwd, 'package.json'), 'utf8'))
   const hasCloudflareConfig = existsSync(join(cwd, 'wrangler.jsonc')) || existsSync(join(cwd, 'wrangler.toml'))
-  if (!packageJson.scripts?.deploy || !packageJson.scripts?.['cf:build'] || !hasCloudflareConfig) return
+  if (!packageJson.scripts?.deploy || !hasCloudflareConfig) return
   await run('pnpm', ['run', 'deploy'], cwd, 20 * 60 * 1000)
 }
 
