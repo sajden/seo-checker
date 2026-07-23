@@ -4063,6 +4063,18 @@ function classifyCodeActionFailure(error) {
       operatorSummary: 'Codex hittade ingen meningsfull ändring. Kortet bör inte loopas utan ny instruktion eller färsk SEO-data.'
     }
   }
+  if (text.includes('seo quality gate blocked commit') || text.includes('seo quality gate did not approve') || text.includes('seo quality gate failed without approval')) {
+    const reason = message.match(/SEO quality gate (?:blocked commit|did not approve after revision):\s*([^\n]+)/i)?.[1]?.trim()
+    return {
+      status: 'quality_rejected',
+      ledgerEvent: 'guarded',
+      category: 'quality_gate',
+      retryable: false,
+      operatorSummary: reason
+        ? `Kvalitetsgrinden stoppade ändringen: ${reason}`
+        : 'Kvalitetsgrinden stoppade ändringen innan commit. Main och production är orörda.'
+    }
+  }
   if (text.includes('npm err') || text.includes('pnpm') || text.includes('next build') || text.includes('failed to compile') || text.includes('type error')) {
     return {
       status: 'build_failed',
@@ -4082,6 +4094,13 @@ function classifyCodeActionFailure(error) {
 }
 
 function formatCodeActionFailureMessage(workspaceLabel, title, error, failure) {
+  if (failure.category === 'quality_gate') {
+    return [
+      `Kvalitetsgrinden stoppade SEO-förslaget för ${workspaceLabel}: ${title}`,
+      failure.operatorSummary,
+      'Ingen commit skapades och main samt production är orörda.'
+    ].join('\n').slice(0, 1900)
+  }
   const errorText = String(error?.message || error || '').slice(0, 1400)
   return [
     `Kodaction kunde inte slutföras för ${workspaceLabel}: ${title}`,

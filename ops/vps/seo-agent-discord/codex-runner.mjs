@@ -418,7 +418,8 @@ async function reviewDiffWithCodex(repoDir, input, diffStat, diff, attempt) {
     '- inte upprepar samma experiment utan ny evidens,',
     '- inte lägger SMB/B2B/konsult/SaaS-språk på konsumenttjänster,',
     '- använder naturlig, idiomatisk svenska i synlig copy; verifierad sökvolym tillåter inte ordagrann keyword-stuffing, utelämnade prepositioner eller sökfraser som låter som rå querydata,',
-    '- inte skickar in sajtens varumärke i en metadata-helper som redan lägger till varumärket; renderad title får aldrig dubblera sajtnamnet.',
+    '- inte skickar in sajtens varumärke i en metadata-helper som redan lägger till varumärket; renderad title får aldrig dubblera sajtnamnet,',
+    '- verifierar repots faktiska metadataflöde innan den flaggar varumärkesdubblering. Blockera inte en komplett title med varumärke om befintliga poster följer samma konvention och ingen helper eller template lägger till namnet igen.',
     ...(isSebcastwallAction(input, repoName) ? [
       '- för Sebcastwall lämnar godkänd design, CSS, bilder, navigation, komponentstruktur, formulär, CTA-beteende, priser och routes helt orörda,',
       '- för Sebcastwall använder aktuella canonical routes och skapar inte nya servicesidor utan operatörsbeslut.',
@@ -705,6 +706,7 @@ function buildPrompt(input) {
     '- If the keyword is broad, one-word, or weakly evidenced, make only a conservative improvement tied to the actual user intent of the site.',
     '- Verified demand supports the topic, not awkward phrasing. Visible Swedish copy must be idiomatic; never paste a raw search query into a sentence or omit natural prepositions to preserve exact match.',
     '- Respect the repository metadata helper. Do not include the site brand in a page title when the helper or root layout appends it, and never produce a duplicated brand in the rendered title.',
+    '- Inspect the actual metadata implementation before removing a brand suffix. If existing entries use complete titles and no helper/template appends the brand, preserve that repository convention.',
     '- Leave the repo buildable.',
     ...(isSebcastwallAction(input, repoName) ? [
       '- Sebcastwall design is approved and frozen. Do not redesign sections or change layout, CSS, images, navigation, shared components, forms, CTA behavior, prices, routes or public customer claims.',
