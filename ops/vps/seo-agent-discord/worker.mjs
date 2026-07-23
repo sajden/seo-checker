@@ -8309,7 +8309,7 @@ function isLegalOrPolicyRoute(value) {
 
 function isKeywordPlanAction(action) {
   const text = actionText(action)
-  return /keyword-plan|keywordmap|keyword-map|target-pages|target-sidor|lagg-in-foreslagen-keyword-plan|lagg-in-en-forsta-keyword-plan/.test(text)
+  return /keyword-plan(?!ner)|keywordmap|keyword-map|target-pages|target-sidor|lagg-in-foreslagen-keyword-plan|lagg-in-en-forsta-keyword-plan/.test(text)
 }
 
 function reviewActionForPosting(action, workspace, targetChannelId, workspacePolicy = '') {
