@@ -2392,6 +2392,7 @@ function isWaitOrGuardRejectionReason(reason) {
 }
 
 async function syntheticAutonomousActionForWorkspace({ workspace, targetChannelId, pending, rejectionReasons, workspacePolicy, sourcePayload = null }) {
+  const profile = ensureWorkspaceProfile(workspace, targetChannelId)
   if (isSeoActionsMissingBatchPayload(sourcePayload)) {
     logThrottled(`synthetic_autonomous_skipped:${workspace?.id || workspace?.label}:missing-batch`, 30 * 60 * 1000, 'synthetic_autonomous_skipped', {
       workspace: workspace?.label || workspace?.id || null,
