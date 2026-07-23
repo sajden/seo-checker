@@ -7199,10 +7199,10 @@ async function findSeoAgentCommitForAction(actionId, repoFullName, branch) {
   await exec('git', ['fetch', 'origin', branch], { cwd: repoDir, env: envWithPath, timeout: 2 * 60 * 1000, maxBuffer: 2 * 1024 * 1024 }).catch(() => null)
   const logResult = await exec('git', [
     'log',
+    '--all',
     '--author=SEO Agent',
     '--max-count=60',
     '--format=%H%x00%ct%x00%s%x00%B%x1e',
-    branch
   ], { cwd: repoDir, env: envWithPath, timeout: 2 * 60 * 1000, maxBuffer: 8 * 1024 * 1024 })
   const records = String(logResult.stdout || '').split('\u001e').map((item) => item.trim()).filter(Boolean)
   const needle = `SEO-action-id: ${id}`
