@@ -2287,7 +2287,14 @@ function hasFreshPositiveSearchEvidence(action, completedAtMs) {
 }
 
 function requiresOperatorProposal(action) {
-  return requiresOperatorProposalText(actionText(action))
+  return requiresOperatorProposalText([
+    action?.title,
+    action?.keyword,
+    action?.targetUrl,
+    action?.why,
+    action?.recommendedAction,
+    action?.category
+  ].filter(Boolean).join(' ').toLowerCase())
 }
 
 function hasPendingWorkspaceReview(workspace) {
