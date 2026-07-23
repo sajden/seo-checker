@@ -215,6 +215,18 @@ function currentAgentActivity(reviewQueue) {
       since: state.codeActionRunning.startedAt || null
     }
   }
+  const unavailableWorkspaces = Object.entries(state.workspaceReadiness || {})
+    .filter(([, readiness]) => readiness?.batchAvailable === false)
+    .map(([workspaceId]) => workspaceId)
+  if (unavailableWorkspaces.length > 0) {
+    return {
+      mode: 'blocked',
+      label: `SEO-data saknas för ${unavailableWorkspaces.length} workspace`,
+      reason: 'SEO Monitor saknar en läsbar batch och agenten kan därför inte bedöma eller föreslå ändringar.',
+      nextAction: 'Agenten försöker automatiskt starta om datainsamlingen och larmar om felet kvarstår.',
+      since: state.lastRunCheckAt || null
+    }
+  }
   const weekly = state.weeklyStrategyReviews?.[state.lastWeeklyStrategyKey] || null
   return {
     mode: 'monitoring',
@@ -819,9 +831,13 @@ async function ensureDailyRunsForWorkspaces(workspaces) {
       continue
     }
     if (readiness.lastRunDate === today) continue
-    if (state.workspaceRunDates?.[`${workspace.id}:${today}`]) continue
+    const runStateKey = `${workspace.id}:${today}`
+    const previousRun = state.workspaceRunDates?.[runStateKey]
+    const previousRunAt = Date.parse(previousRun?.at || '')
+    if (previousRun?.status === 'started' && previousRun.runId) continue
+    if (previousRun?.status === 'failed' && Number.isFinite(previousRunAt) && Date.now() - previousRunAt < 15 * 60 * 1000) continue
     try {
-      const run = await fetchPlatformJson('/api/platform/runs', {
+      const response = await fetchPlatformJson('/api/platform/runs', {
         method: 'POST',
         body: JSON.stringify({
           moduleKey: 'seo-monitor',
@@ -833,10 +849,14 @@ async function ensureDailyRunsForWorkspaces(workspaces) {
           label: workspace.label
         })
       })
-      state.workspaceRunDates = { ...(state.workspaceRunDates || {}), [`${workspace.id}:${today}`]: { status: 'started', runId: run.runId || run.id || null, at: now.toISOString() } }
-      log('workspace_seo_run_started', { workspace: workspace.label, runId: run.runId || run.id || null })
+      const run = response?.run || response
+      const runId = run?.id || run?.runId || null
+      if (!runId) throw new Error('platform_run_missing_id')
+      if (run?.status === 'failed') throw new Error(run?.error || 'platform_run_failed')
+      state.workspaceRunDates = { ...(state.workspaceRunDates || {}), [runStateKey]: { status: 'started', runId, at: now.toISOString() } }
+      log('workspace_seo_run_started', { workspace: workspace.label, runId })
     } catch (error) {
-      state.workspaceRunDates = { ...(state.workspaceRunDates || {}), [`${workspace.id}:${today}`]: { status: 'failed', error: error?.message || String(error), at: now.toISOString() } }
+      state.workspaceRunDates = { ...(state.workspaceRunDates || {}), [runStateKey]: { status: 'failed', error: error?.message || String(error), at: now.toISOString() } }
       log('workspace_seo_run_failed', { workspace: workspace.label, error: error?.message || String(error) })
       if (notifyInternalFailures) {
         await sendOncePerDay(`workspace-run-failed:${workspace.id}:${today}`, targetChannelId, `Kunde inte starta dagens SEO-run för ${workspace.label}: ${error?.message || String(error)}\nFelsökningsloop: kontrollera Platform API, SEO Monitor batch och GSC/repo-mappning.`)
