@@ -2228,7 +2228,7 @@ function autonomousCodeCandidateCheck(action, workspace, targetChannelId) {
 }
 
 function engagementEvidenceCheck(action) {
-  const raw = [action?.title, action?.why, action?.recommendedAction, ...(Array.isArray(action?.evidence) ? action.evidence : [])]
+  const raw = [action?.why, ...(Array.isArray(action?.evidence) ? action.evidence : [])]
     .filter(Boolean)
     .join(' ')
     .toLowerCase()
@@ -2289,9 +2289,6 @@ function hasFreshPositiveSearchEvidence(action, completedAtMs) {
 function requiresOperatorProposal(action) {
   return requiresOperatorProposalText([
     action?.title,
-    action?.keyword,
-    action?.targetUrl,
-    action?.why,
     action?.recommendedAction,
     action?.category
   ].filter(Boolean).join(' ').toLowerCase())
