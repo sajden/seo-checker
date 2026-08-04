@@ -50,9 +50,23 @@ async function checkRepo(repo) {
   }
   const status = await run('git', ['status', '--porcelain'], dir)
   if (status.stdout.trim()) return { repo, ok: false, status: 'dirty_worktree', dir, details: status.stdout.slice(0, 800) }
-  await run('git', ['fetch', 'origin', branch], dir)
-  await run('git', ['merge', '--ff-only', 'FETCH_HEAD'], dir)
-  const divergence = await run('git', ['rev-list', '--left-right', '--count', `HEAD...origin/${branch}`], dir)
+  const currentBranch = (await run('git', ['branch', '--show-current'], dir)).stdout.trim()
+  if (!currentBranch) return { repo, ok: false, status: 'detached_head', dir }
+  const remoteBranch = currentBranch === branch ? branch : currentBranch
+  try {
+    await run('git', ['fetch', 'origin', remoteBranch], dir)
+  } catch (error) {
+    return {
+      repo,
+      ok: false,
+      status: currentBranch === branch ? 'fetch_failed' : 'unpushed_review_branch',
+      dir,
+      branch: currentBranch,
+      error: String(error?.stderr || error?.message || error).slice(0, 800)
+    }
+  }
+  if (currentBranch === branch) await run('git', ['merge', '--ff-only', 'FETCH_HEAD'], dir)
+  const divergence = await run('git', ['rev-list', '--left-right', '--count', `HEAD...origin/${remoteBranch}`], dir)
   const [ahead, behind] = divergence.stdout.trim().split(/\s+/).map(Number)
   if (ahead || behind) {
     return {
@@ -60,12 +74,20 @@ async function checkRepo(repo) {
       ok: false,
       status: ahead ? 'unpushed_commits' : 'behind_remote',
       dir,
+      branch: currentBranch,
       ahead: ahead || 0,
       behind: behind || 0
     }
   }
   const head = await run('git', ['rev-parse', '--short', 'HEAD'], dir)
-  return { repo, ok: true, status: 'ready', dir, head: head.stdout.trim() }
+  return {
+    repo,
+    ok: true,
+    status: currentBranch === branch ? 'ready' : 'review_branch_ready',
+    dir,
+    branch: currentBranch,
+    head: head.stdout.trim()
+  }
 }
 
 function activeRepoWorkLock(repo) {
