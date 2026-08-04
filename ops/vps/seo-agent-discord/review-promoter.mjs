@@ -170,7 +170,7 @@ function hasConfiguredProductionDeploy(repoDir) {
   if (!cwd) return false
   const packageJson = JSON.parse(readFileSync(join(cwd, 'package.json'), 'utf8'))
   const hasCloudflareConfig = existsSync(join(cwd, 'wrangler.jsonc')) || existsSync(join(cwd, 'wrangler.toml'))
-  return Boolean(packageJson.scripts?.deploy && hasCloudflareConfig)
+  return Boolean(process.env.CLOUDFLARE_API_TOKEN && packageJson.scripts?.deploy && hasCloudflareConfig)
 }
 
 async function restoreProductionFromMain(repoDir, baseBranch) {

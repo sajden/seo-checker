@@ -80,6 +80,14 @@ test('configured production deploy is verified before main is pushed', () => {
   assert.ok(deployIndex >= 0)
   assert.ok(pushIndex > deployIndex)
   assert.match(promoterSource, /restoreProductionFromMain/)
+  assert.match(promoterSource, /process\.env\.CLOUDFLARE_API_TOKEN/)
+})
+
+test('an interrupted approved promotion is retried without asking for approval again', () => {
+  assert.match(workerSource, /\['promotion_running', 'operator_approved'\]/)
+  assert.match(workerSource, /status: 'operator_approved'/)
+  assert.match(workerSource, /interrupted_promotion_retry_failed/)
+  assert.match(workerSource, /!record\?\.operatorApprovedAt/)
 })
 
 test('repo health requires exact local and remote sync', () => {

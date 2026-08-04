@@ -399,7 +399,7 @@ async function tick() {
 
 async function reconcileInterruptedPromotions(workspaces) {
   const interrupted = Object.entries(state.codeActionResults || {})
-    .filter(([, record]) => record?.status === 'promotion_running')
+    .filter(([, record]) => ['promotion_running', 'operator_approved'].includes(String(record?.status || '')))
   if (!interrupted.length) return
   const { execFile } = await import('node:child_process')
   const { promisify } = await import('node:util')
@@ -425,17 +425,6 @@ async function reconcileInterruptedPromotions(workspaces) {
       await exec('git', ['merge-base', '--is-ancestor', commit, `origin/${baseBranch}`], { cwd: repoDir, timeout: 60 * 1000, maxBuffer: 2 * 1024 * 1024 })
       mergedToMain = true
     } catch {}
-    if (!mergedToMain) {
-      state.codeActionResults[actionId] = {
-        ...record,
-        status: 'review_ready',
-        promotionInterruptedAt: new Date().toISOString(),
-        promotionError: 'Worker restarted before promotion completion; reviewed commit is not on main.'
-      }
-      log('interrupted_promotion_restored_to_review', { actionId, repoFullName, commit })
-      continue
-    }
-    const completedAt = new Date().toISOString()
     const context = result.reviewContext || {}
     const action = {
       id: actionId,
@@ -443,7 +432,23 @@ async function reconcileInterruptedPromotions(workspaces) {
       targetUrl: context.targetUrl || '',
       keyword: context.keyword || ''
     }
-    const completedResult = { ...result, branch: baseBranch, mergedToMain: true, requiresReview: false, recoveredPromotion: true }
+    let completedResult = { ...result, branch: baseBranch, mergedToMain: true, requiresReview: false, recoveredPromotion: true }
+    if (!mergedToMain) {
+      try {
+        const promotion = await promoteReviewReadyAction(actionId, result, action)
+        completedResult = { ...result, ...promotion, mergedToMain: true, requiresReview: false, recoveredPromotion: true }
+      } catch (error) {
+        state.codeActionResults[actionId] = {
+          ...record,
+          status: 'operator_approved',
+          promotionInterruptedAt: new Date().toISOString(),
+          promotionError: error?.message || String(error)
+        }
+        log('interrupted_promotion_retry_failed', { actionId, repoFullName, commit, error: error?.message || String(error) })
+        continue
+      }
+    }
+    const completedAt = new Date().toISOString()
     state.codeActionResults[actionId] = { ...record, status: 'completed', completedAt, result: completedResult }
     recordActionLedger(action, workspace, await channelForWorkspace(workspace), 'completed', {
       commit,
@@ -2445,6 +2450,7 @@ async function remindPendingCodeReviews(workspaces) {
   if (lastGlobalReminderAt && Date.now() - lastGlobalReminderAt < reviewReminderSpacingMs) return false
   const due = Object.entries(state.codeActionResults || {})
     .filter(([, record]) => String(record?.status || '') === 'review_ready')
+    .filter(([, record]) => !record?.operatorApprovedAt)
     .filter(([, record]) => {
       const lastNoticeAt = Date.parse(record.lastReminderAt || record.reviewReadyAt || '')
       return !lastNoticeAt || Date.now() - lastNoticeAt >= reviewReminderMs
@@ -4055,13 +4061,13 @@ async function decideSeoReview(actionId, decision, targetChannelId, operatorId) 
         removeButtons: true
       }
     }
-    state.codeActionResults[actionId] = { ...record, status: 'review_ready', promotionFailedAt: new Date().toISOString(), promotionError: error?.message || String(error) }
-    recordActionLedger(action, workspace, targetChannelId, 'review_ready', { error: error?.message || String(error), source: 'discord_review_promotion_failed' })
+    state.codeActionResults[actionId] = { ...record, status: 'operator_approved', operatorApprovedAt: now, operatorId: operatorId || null, promotionFailedAt: new Date().toISOString(), promotionError: error?.message || String(error) }
+    recordActionLedger(action, workspace, targetChannelId, 'operator_approved', { error: error?.message || String(error), source: 'discord_review_promotion_retry_pending' })
     saveState()
     return {
-      summary: `Godkännandet sparades inte som klart eftersom produktionen stoppades: ${String(error?.message || error).slice(0, 1200)}`,
-      publicMessage: `Produktionssteget stoppades för ${posted.title || actionId}. Main markeras inte som klar. Orsak: ${String(error?.message || error).slice(0, 900)}`,
-      removeButtons: false
+      summary: `Godkännandet är sparat, men produktionen stoppades och kommer att återförsökas automatiskt: ${String(error?.message || error).slice(0, 1200)}`,
+      publicMessage: `Godkännandet är sparat för ${posted.title || actionId}. Main är ännu inte ändrad. Agenten återförsöker publiceringen automatiskt. Orsak: ${String(error?.message || error).slice(0, 900)}`,
+      removeButtons: true
     }
   }
 }
