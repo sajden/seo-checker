@@ -540,6 +540,7 @@ async function rejectDirtyWorktree(repoDir, input, review) {
     diff.stdout || ''
   ].join('\n'))
   await run('git', ['reset', '--hard'], repoDir)
+  await returnRejectedReviewBranchToBase(repoDir)
   recordCodexUsage({
     agent: 'seo-agent',
     purpose: 'code_quality_rejected',
@@ -549,6 +550,15 @@ async function rejectDirtyWorktree(repoDir, input, review) {
     actionId: input.id,
     note: `Rejected dirty worktree saved to ${patchPath}. Reason: ${review?.reason || 'quality_blocked'}`
   })
+}
+
+async function returnRejectedReviewBranchToBase(repoDir) {
+  if (!requiresReview) return
+  const current = (await run('git', ['branch', '--show-current'], repoDir)).stdout.trim()
+  if (!current || current === baseBranch) return
+  const head = (await run('git', ['rev-parse', 'HEAD'], repoDir)).stdout.trim()
+  const baseHead = (await run('git', ['rev-parse', `origin/${baseBranch}`], repoDir)).stdout.trim()
+  if (head === baseHead) await run('git', ['checkout', baseBranch], repoDir)
 }
 
 async function runWorkspaceSafetyGate(repoDir, input) {
