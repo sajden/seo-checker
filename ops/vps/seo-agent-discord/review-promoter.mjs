@@ -149,6 +149,9 @@ async function runBestBuild(repoDir) {
   const cwd = existsSync(join(repoDir, 'package.json')) ? repoDir : existsSync(join(repoDir, 'web', 'package.json')) ? join(repoDir, 'web') : null
   if (!cwd) throw new Error('No package.json found for production build')
   const packageJson = JSON.parse(readFileSync(join(cwd, 'package.json'), 'utf8'))
+  if (packageJson.scripts?.test) {
+    await run('npm', ['test'], cwd, 15 * 60 * 1000)
+  }
   if (packageJson.scripts?.['cf:build']) {
     await run('pnpm', ['run', 'cf:build'], cwd, 25 * 60 * 1000)
     return

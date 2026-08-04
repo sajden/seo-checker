@@ -83,6 +83,13 @@ test('configured production deploy is verified before main is pushed', () => {
   assert.match(promoterSource, /process\.env\.CLOUDFLARE_API_TOKEN/)
 })
 
+test('repository tests run before an approved SEO branch is built', () => {
+  const testIndex = promoterSource.indexOf("await run('npm', ['test']")
+  const buildIndex = promoterSource.indexOf("await run('npm', ['run', 'build']")
+  assert.ok(testIndex >= 0)
+  assert.ok(buildIndex > testIndex)
+})
+
 test('an interrupted approved promotion is retried without asking for approval again', () => {
   assert.match(workerSource, /\['promotion_running', 'operator_approved'\]/)
   assert.match(workerSource, /status: 'operator_approved'/)
