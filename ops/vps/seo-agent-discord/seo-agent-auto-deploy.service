@@ -1,0 +1,10 @@
+[Unit]
+Description=Deploy tested SEO Agent releases from GitHub
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/ai-dashboard/deploy
+ExecStart=/opt/ai-dashboard/deploy/seo-agent-auto-deploy.sh
+TimeoutStartSec=30min
+

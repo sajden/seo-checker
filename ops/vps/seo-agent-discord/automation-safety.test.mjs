@@ -7,6 +7,9 @@ const runtimeSource = readFileSync(new URL('../seo-runtime/src/server.mjs', impo
 const runnerSource = readFileSync(new URL('./codex-runner.mjs', import.meta.url), 'utf8')
 const promoterSource = readFileSync(new URL('./review-promoter.mjs', import.meta.url), 'utf8')
 const repoHealthSource = readFileSync(new URL('./repo-health-check.mjs', import.meta.url), 'utf8')
+const watchdogSource = readFileSync(new URL('./chain-health-watchdog.mjs', import.meta.url), 'utf8')
+const deploySource = readFileSync(new URL('./deploy-release.sh', import.meta.url), 'utf8')
+const autoDeploySource = readFileSync(new URL('./auto-deploy.sh', import.meta.url), 'utf8')
 
 test('autonomous code and self-repair require explicit opt-in', () => {
   assert.match(
@@ -108,4 +111,22 @@ test('pending review branches are reminded in Discord', () => {
 test('Codex rewrites must provide a final target URL', () => {
   assert.match(workerSource, /codexBrief\.decision === 'rewrite'/)
   assert.match(workerSource, /targetUrl.*slutlig https-URL/)
+})
+
+test('production releases are tested, health checked and rollback capable', () => {
+  assert.match(deploySource, /node --test/)
+  assert.match(deploySource, /rollback\(\)/)
+  assert.match(deploySource, /healthz/)
+  assert.match(deploySource, /\.release\.json/)
+  assert.match(deploySource, /sha256/)
+})
+
+test('automatic deploys use immutable commit checkouts and drift monitoring', () => {
+  assert.match(autoDeploySource, /CHECKOUT="\$SOURCE_ROOT\/\$TARGET"/)
+  assert.match(autoDeploySource, /checkout --quiet --detach/)
+  assert.doesNotMatch(autoDeploySource, /reset --hard/)
+  assert.match(autoDeploySource, /crypto\.createHash\("sha256"\)/)
+  assert.match(watchdogSource, /checkReleaseIntegrity/)
+  assert.match(watchdogSource, /release-code-drift/)
+  assert.match(watchdogSource, /seo-agent-auto-deploy\.service/)
 })

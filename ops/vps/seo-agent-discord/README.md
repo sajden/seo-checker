@@ -58,6 +58,18 @@ The container should run with Docker restart policy `unless-stopped`. The direct
 
 ## Deploy
 
+Production använder normalt den versionsstyrda `seo-agent-auto-deploy.timer`. Den läser `master` från `sajden/seo-checker`, checkar ut varje commit i en separat immutable katalog, kör tester och installerar releasen med rollback och checksumkontroll. Manuella hotfixar i livekatalogen är inte en giltig deploymetod och rapporteras som `release-code-drift` av watchdog.
+
+Releaseinformation finns i `/opt/ai-dashboard/apps/seo-agent-discord/.release.json`. Den innehåller Git-commit, deploytid och SHA-256 för samtliga installerade runtimefiler.
+
+Automatisk deploy vägrar paketändringar. En ändring av `package.json` kräver en separat granskad dependency-release så att installerade moduler och rollback förblir reproducerbara.
+
+För en manuell men reproducerbar release från ett rent checkout:
+
+```bash
+ops/vps/seo-agent-discord/deploy-release.sh "$(git rev-parse --show-toplevel)"
+```
+
 After editing this snapshot, deploy with:
 
 ```bash

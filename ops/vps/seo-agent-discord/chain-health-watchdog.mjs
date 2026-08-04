@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { execFile } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { promisify } from 'node:util'
@@ -11,6 +12,7 @@ const discordChannelId = env.SEO_AGENT_ALERT_CHANNEL_ID || env.DISCORD_CHANNEL_I
 const workerStatePath = env.SEO_AGENT_STATE_PATH || '/opt/ai-dashboard/apps/seo-agent-discord/state/state.json'
 const alertStatePath = env.SEO_AGENT_CHAIN_HEALTH_STATE_PATH || '/opt/ai-dashboard/apps/seo-agent-discord/state/chain-health-alerts.json'
 const repoHealthLog = env.SEO_AGENT_REPO_HEALTH_LOG || '/mnt/HC_Volume_105954589/deploy-storage/logs/seo-agent-repo-health.jsonl'
+const releaseManifestPath = env.SEO_AGENT_RELEASE_MANIFEST || '/opt/ai-dashboard/apps/seo-agent-discord/.release.json'
 const runtimeUrl = (env.SEO_RUNTIME_URL || 'http://127.0.0.1:1460').replace(/\/$/, '')
 const workerStaleMs = Number(env.SEO_AGENT_CHAIN_WORKER_STALE_MS || 15 * 60 * 1000)
 const repoHealthStaleMs = Number(env.SEO_AGENT_CHAIN_REPO_HEALTH_STALE_MS || 45 * 60 * 1000)
@@ -22,7 +24,9 @@ const issues = []
 
 await checkService('seo-agent-discord.service', 'discord-worker')
 await checkService('seo-runtime.service', 'seo-runtime-service')
+await checkOneshotService('seo-agent-auto-deploy.service', 'seo-auto-deploy')
 await checkRuntimeHealth()
+checkReleaseIntegrity()
 checkWorkerState()
 checkRepoHealth()
 checkStaleCodeWork()
@@ -71,6 +75,37 @@ async function checkService(unit, id) {
   } catch (error) {
     addIssue(id, unit, `systemd-tjänsten är inte aktiv (${commandError(error)}).`)
   }
+}
+
+async function checkOneshotService(unit, id) {
+  try {
+    const result = await exec('systemctl', ['--user', 'show', unit, '-p', 'LoadState', '-p', 'Result'], { timeout: 10_000 })
+    const properties = Object.fromEntries(result.stdout.trim().split(/\r?\n/).map((line) => line.split(/=(.*)/s).slice(0, 2)))
+    const loadState = properties.LoadState || ''
+    const serviceResult = properties.Result || ''
+    if (loadState !== 'loaded') addIssue(id, unit, 'systemd-enheten är inte installerad.')
+    else if (serviceResult && serviceResult !== 'success') addIssue(id, unit, `senaste deployförsöket slutade med ${serviceResult}.`)
+  } catch (error) {
+    addIssue(id, unit, `deploystatus kunde inte läsas (${commandError(error)}).`)
+  }
+}
+
+function checkReleaseIntegrity() {
+  const release = readJson(releaseManifestPath, null)
+  if (!release?.commit || !release?.files || typeof release.files !== 'object') {
+    addIssue('release-manifest-missing', 'SEO-release', 'release-manifest saknas eller är ogiltigt.')
+    return
+  }
+  const drift = []
+  for (const [path, expected] of Object.entries(release.files)) {
+    if (!existsSync(path)) {
+      drift.push(`${path}: saknas`)
+      continue
+    }
+    const actual = createHash('sha256').update(readFileSync(path)).digest('hex')
+    if (actual !== expected) drift.push(`${path}: checksum skiljer sig`)
+  }
+  if (drift.length) addIssue('release-code-drift', 'SEO-release', `Installerad kod avviker från ${String(release.commit).slice(0, 12)}: ${drift.slice(0, 5).join('; ')}`)
 }
 
 async function checkRuntimeHealth() {
