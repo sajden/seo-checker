@@ -4237,6 +4237,27 @@ function classifyCodeActionFailure(error) {
         : 'Kvalitetsgrinden stoppade ändringen innan commit. Main och production är orörda.'
     }
   }
+  if (text.includes('seo safety gate blocked visual/system files')) {
+    const files = message.match(/SEO safety gate blocked visual\/system files:\s*([^\n]+)/i)?.[1]?.trim()
+    return {
+      status: 'safety_rejected',
+      ledgerEvent: 'guarded',
+      category: 'safety_gate',
+      retryable: false,
+      operatorSummary: files
+        ? `Säkerhetsgrinden stoppade ändringen eftersom den ville röra frysta design- eller systemfiler: ${files}`
+        : 'Säkerhetsgrinden stoppade ändringen eftersom den ville röra frysta design- eller systemfiler.'
+    }
+  }
+  if (text.includes('sebcastwall seo safety gate blocks pricing changes')) {
+    return {
+      status: 'safety_rejected',
+      ledgerEvent: 'guarded',
+      category: 'safety_gate',
+      retryable: false,
+      operatorSummary: 'Säkerhetsgrinden stoppade en prisändring. SEO-agenten får inte ändra priser autonomt.'
+    }
+  }
   if (text.includes('npm err') || text.includes('pnpm') || text.includes('next build') || text.includes('failed to compile') || text.includes('type error')) {
     return {
       status: 'build_failed',
@@ -4256,9 +4277,9 @@ function classifyCodeActionFailure(error) {
 }
 
 function formatCodeActionFailureMessage(workspaceLabel, title, error, failure) {
-  if (failure.category === 'quality_gate') {
+  if (failure.category === 'quality_gate' || failure.category === 'safety_gate') {
     return [
-      `Kvalitetsgrinden stoppade SEO-förslaget för ${workspaceLabel}: ${title}`,
+      `${failure.category === 'safety_gate' ? 'Säkerhetsgrinden' : 'Kvalitetsgrinden'} stoppade SEO-förslaget för ${workspaceLabel}: ${title}`,
       failure.operatorSummary,
       'Ingen commit skapades och main samt production är orörda.'
     ].join('\n').slice(0, 1900)
