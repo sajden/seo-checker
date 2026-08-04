@@ -7,8 +7,11 @@ import { agentRuntimeSnapshot } from './agent-brain.mjs'
 import { classifyGscIssue, groupGscReviewCandidates } from './gsc-issue-policy.mjs'
 import { buildGscExperimentSnapshot, evaluateExperimentMeasurement, nextExperimentPhase, nextMeasurementDate } from './seo-experiment-measurement.mjs'
 import { buildOpportunityEvidenceContext, excludeOpportunityEvidenceTargets, validateOpportunityEvidence } from './opportunity-evidence.mjs'
+import { applyCodexBriefRewrite } from './codex-rewrite-policy.mjs'
+import { validateActionAgainstLivePage } from './live-page-signal-policy.mjs'
 import { requestsVisualChangeText, requiresOperatorProposalText } from './operator-proposal-policy.mjs'
 import { isPlainObject, mergeJsonChanges } from './json-state-merge.mjs'
+import { reviewCapacityCheck } from './review-capacity-policy.mjs'
 import { canonicalRepoFullName, workspaceProfileKey } from './workspace-identity.mjs'
 
 const env = loadEnv([
@@ -47,6 +50,8 @@ const activeActionReminderMs = Number(env.SEO_AGENT_ACTIVE_ACTION_REMINDER_MS ||
 const staleRunningMs = Number(env.SEO_AGENT_STALE_RUNNING_MS || String(2 * 60 * 60 * 1000))
 const staleQueuedApprovedMs = Number(env.SEO_AGENT_STALE_APPROVED_QUEUE_MS || String(36 * 60 * 60 * 1000))
 const staleReviewReadyMs = Number(env.SEO_AGENT_STALE_REVIEW_READY_MS || String(21 * 24 * 60 * 60 * 1000))
+const reviewReminderMs = Number(env.SEO_AGENT_REVIEW_REMINDER_MS || String(24 * 60 * 60 * 1000))
+const reviewReminderSpacingMs = Number(env.SEO_AGENT_REVIEW_REMINDER_SPACING_MS || String(30 * 60 * 1000))
 const staleActiveActionMs = Number(env.SEO_AGENT_STALE_ACTIVE_ACTION_MS || String(2 * 60 * 60 * 1000))
 const autonomousActiveBlockMs = Number(env.SEO_AGENT_AUTONOMOUS_ACTIVE_BLOCK_MS || String(24 * 60 * 60 * 1000))
 const stalePlatformIncidentMs = Number(env.SEO_AGENT_STALE_PLATFORM_INCIDENT_MS || String(48 * 60 * 60 * 1000))
@@ -58,8 +63,8 @@ const automationEnabled = env.SEO_AGENT_AUTONOMY_ENABLED !== 'false'
 const codeAutomationEnabled = env.SEO_AGENT_CODE_AUTOMATION_ENABLED === 'true'
 const autonomousCodeEnabled = env.SEO_AGENT_AUTONOMOUS_CODE_ENABLED === 'true'
 const selfRepairEnabled = env.SEO_AGENT_SELF_REPAIR_ENABLED === 'true'
-const autonomousCodePerWorkspacePerDay = Number(env.SEO_AGENT_AUTONOMOUS_CODE_PER_WORKSPACE_PER_DAY || '0')
-const maxPendingReviewsPerWorkspace = Math.max(1, Number(env.SEO_AGENT_MAX_PENDING_REVIEWS_PER_WORKSPACE || '5'))
+const autonomousCodePerWorkspacePerDay = Math.max(0, Number(env.SEO_AGENT_AUTONOMOUS_CODE_PER_WORKSPACE_PER_DAY || '1'))
+const maxPendingReviewsPerWorkspace = Math.max(1, Number(env.SEO_AGENT_MAX_PENDING_REVIEWS_PER_WORKSPACE || '3'))
 const opportunityScoutMinIntervalMs = Number(env.SEO_AGENT_OPPORTUNITY_SCOUT_MIN_INTERVAL_MS || String(90 * 60 * 1000))
 const opportunityScoutGrowthMinIntervalMs = Number(env.SEO_AGENT_OPPORTUNITY_SCOUT_GROWTH_MIN_INTERVAL_MS || String(60 * 60 * 1000))
 const opportunityScoutInvalidCooldownMs = Number(env.SEO_AGENT_OPPORTUNITY_SCOUT_INVALID_COOLDOWN_MS || String(3 * 60 * 60 * 1000))
@@ -373,6 +378,7 @@ async function tick() {
     return
   }
   migrateWorkspaceIdentities(workspaces)
+  reconcileTransitionalLedgerStatuses()
   await runTickStep('reconcile_interrupted_promotions', () => reconcileInterruptedPromotions(workspaces))
   if (steps.syncWorkspaceRepoCommits !== false) await runTickStep('sync_workspace_repo_commits', () => syncWorkspaceRepoCommits(workspaces))
   await runTickStep('hourly_technical_checks', () => maybeRunHourlyTechnicalChecks(workspaces))
@@ -384,6 +390,7 @@ async function tick() {
   if (steps.checkGscIssuesForWorkspaces !== false) await runTickStep('check_gsc_issues_for_workspaces', () => checkGscIssuesForWorkspaces(workspaces))
   if (steps.postPendingActionsForWorkspaces !== false) await runTickStep('post_pending_actions_for_workspaces', () => postPendingActionsForWorkspaces(workspaces))
   await runTickStep('sync_content_review_queue', () => syncContentReviewQueue())
+  await runTickStep('remind_pending_code_reviews', () => remindPendingCodeReviews(workspaces))
   if (steps.prepareAutonomousCodeWork !== false) await runTickStep('prepare_autonomous_code_work', () => maybePrepareAutonomousCodeWork(workspaces))
   if (steps.runIntegrationDoctor !== false) await runTickStep('run_integration_doctor', () => maybeRunIntegrationDoctor(workspaces))
   if (steps.askForGscApiOauth !== false) await runTickStep('ask_for_gsc_api_oauth', () => maybeAskForGscApiOAuth())
@@ -1827,6 +1834,7 @@ async function maybePrepareAutonomousCodeWork(workspaces) {
 
 async function maybeQueueAutonomousCodeActions(workspaces) {
   if (!automationEnabled || !autonomousCodeEnabled || !codeAutomationEnabled || state.codeActionRunning) return
+  if (autonomousCodePerWorkspacePerDay <= 0) return
   const today = new Date().toISOString().slice(0, 10)
   state.autonomousCodeRuns = state.autonomousCodeRuns || {}
   for (const workspace of autonomousWorkspaceOrder(workspaces)) {
@@ -1843,7 +1851,7 @@ async function maybeQueueAutonomousCodeActions(workspaces) {
     }
     const runKey = `${workspace.id || workspace.label || workspace.repoFullName}:${today}`
     const usedToday = Number(state.autonomousCodeRuns[runKey]?.count || 0)
-    if (autonomousCodePerWorkspacePerDay > 0 && usedToday >= autonomousCodePerWorkspacePerDay) {
+    if (usedToday >= autonomousCodePerWorkspacePerDay) {
       logThrottled(`autonomous_daily_limit:${runKey}`, 30 * 60 * 1000, 'autonomous_daily_limit', {
         workspace: workspace.label || workspace.id || null,
         usedToday,
@@ -1988,19 +1996,9 @@ function codeActionResultBlocks(action, workspace, targetChannelId) {
   if (!result) return false
   const status = String(result.status || '')
   if (status === 'archived_failed') return false
-  if (['review_ready', 'operator_approved', 'promotion_running'].includes(status)) return true
-
-  const terminalAt = result.completedAt || result.failedAt || result.archivedAt || ''
-  const terminalMs = Date.parse(terminalAt)
-  if (!terminalMs) return true
-  const waitMs = status === 'completed'
-    ? 14 * 24 * 60 * 60 * 1000
-    : 7 * 24 * 60 * 60 * 1000
-  if (Date.now() - terminalMs < waitMs) return true
-
-  const ledger = state.actionLedger?.[actionLearningKey(action, workspace, targetChannelId)]
-  if (ledger?.recheckAfter) return !isLedgerRecheckDue(ledger)
-  return false
+  // An action id identifies one immutable proposal. A recheck must create a
+  // fresh id; otherwise old commits are rediscovered and the queue loops.
+  return true
 }
 
 function codeActionLedgerCooldownBlocks(action, cooldownMs = 24 * 60 * 60 * 1000) {
@@ -2162,6 +2160,17 @@ async function chooseAutonomousCodeAction(actions, workspace, targetChannelId, w
       rejectionReasons.push({ id: enrichedAction.id, title: enrichedAction.title || enrichedAction.id, reason: candidateCheck.reason })
       continue
     }
+    const liveSignalCheck = await validateActionAgainstLivePage(enrichedAction)
+    if (!liveSignalCheck.ok) {
+      rejectionReasons.push({ id: enrichedAction.id, title: enrichedAction.title || enrichedAction.id, reason: liveSignalCheck.reason })
+      logThrottled(`autonomous_live_signal_block:${enrichedAction.id}`, 30 * 60 * 1000, 'autonomous_live_signal_block', {
+        actionId: enrichedAction.id,
+        workspace: workspace?.label || workspace?.id || null,
+        reason: liveSignalCheck.reason,
+        targetUrl: liveSignalCheck.targetUrl || null
+      })
+      continue
+    }
     const guard = shouldPostActionCard(enrichedAction, workspace, targetChannelId)
     if (!guard.ok) {
       rejectionReasons.push({ id: enrichedAction.id, title: enrichedAction.title || enrichedAction.id, reason: `guard:${guard.reason}` })
@@ -2191,8 +2200,19 @@ async function chooseAutonomousCodeAction(actions, workspace, targetChannelId, w
       rememberCodexRejectedAction(enrichedAction, workspace, targetChannelId, codexBrief, 'autonomous_live_candidate')
       continue
     }
+    const executableAction = applyCodexBriefToAction(enrichedAction, codexBrief, workspace)
+    if (!executableAction) {
+      rejectionReasons.push({ id: enrichedAction.id, title: enrichedAction.title || enrichedAction.id, reason: 'codex_rewrite_missing_or_invalid_target_url' })
+      rememberCodexRejectedAction(enrichedAction, workspace, targetChannelId, codexBrief, 'autonomous_invalid_rewrite')
+      continue
+    }
+    const rewrittenCheck = autonomousCodeCandidateCheck(executableAction, workspace, targetChannelId)
+    if (!rewrittenCheck.ok) {
+      rejectionReasons.push({ id: executableAction.id, title: executableAction.title || executableAction.id, reason: `rewritten:${rewrittenCheck.reason}` })
+      continue
+    }
     return {
-      action: enrichedAction,
+      action: executableAction,
       review,
       codexBrief,
       reason: codexBrief?.why || review.why || 'Codex och agentens guard bedömde detta som en konkret låg-risk förbättring.'
@@ -2412,27 +2432,50 @@ async function maybeReportVisualDesignFinding(action, workspace, targetChannelId
 }
 
 function pendingWorkspaceReviewCheck(action, workspace) {
-  const repoFullName = String(workspace?.repoFullName || '').trim()
-  if (!repoFullName) return { ok: true, reason: 'workspace_without_repo' }
-  const pending = Object.entries(state.codeActionResults || {}).filter(([, record]) => {
-    if (!['review_ready', 'operator_approved', 'promotion_running'].includes(String(record?.status || ''))) return false
-    return String(record?.result?.repoFullName || '').trim() === repoFullName
+  return reviewCapacityCheck({
+    state,
+    workspace,
+    action,
+    maxPendingReviews: maxPendingReviewsPerWorkspace
   })
-  const targetUrl = String(action?.targetUrl || action?.url || '').trim()
-  if (targetUrl && pending.some(([actionId, record]) => {
-    const reviewTarget = String(record?.result?.reviewContext?.targetUrl || actionLedgerTargetUrl(actionId) || '').trim()
-    return reviewTarget && sameSeoUrl(reviewTarget, targetUrl)
-  })) {
-    return { ok: false, reason: 'target_review_pending', pendingCount: pending.length }
-  }
-  if (pending.length >= maxPendingReviewsPerWorkspace) {
-    return { ok: false, reason: 'workspace_review_limit', pendingCount: pending.length, limit: maxPendingReviewsPerWorkspace }
-  }
-  return { ok: true, reason: 'review_capacity_available', pendingCount: pending.length, limit: maxPendingReviewsPerWorkspace }
 }
 
-function actionLedgerTargetUrl(actionId) {
-  return Object.values(state.actionLedger || {}).find((record) => String(record?.actionId || '') === String(actionId || ''))?.targetUrl || ''
+async function remindPendingCodeReviews(workspaces) {
+  const lastGlobalReminderAt = Date.parse(state.lastCodeReviewReminderAt || '')
+  if (lastGlobalReminderAt && Date.now() - lastGlobalReminderAt < reviewReminderSpacingMs) return false
+  const due = Object.entries(state.codeActionResults || {})
+    .filter(([, record]) => String(record?.status || '') === 'review_ready')
+    .filter(([, record]) => {
+      const lastNoticeAt = Date.parse(record.lastReminderAt || record.reviewReadyAt || '')
+      return !lastNoticeAt || Date.now() - lastNoticeAt >= reviewReminderMs
+    })
+    .sort((a, b) => Date.parse(a[1].lastReminderAt || a[1].reviewReadyAt || 0) - Date.parse(b[1].lastReminderAt || b[1].reviewReadyAt || 0))
+  const [actionId, record] = due[0] || []
+  if (!actionId || !record) return false
+  const result = record.result || {}
+  const workspace = workspaces.find((item) => String(item?.repoFullName || '') === String(result.repoFullName || ''))
+    || { label: result.repoFullName || 'workspace', repoFullName: result.repoFullName || '' }
+  const postedAction = state.postedActionIds?.[actionId] || {}
+  const targetChannelId = postedAction.channelId || await channelForWorkspace(workspace)
+  if (!targetChannelId) return false
+  const commitUrl = result.commit ? githubCommitUrl(result.repoFullName || workspace.repoFullName, result.commit) : ''
+  const posted = await sendDiscordMessage([
+    `Påminnelse: en SEO-ändring väntar på granskning för ${workspace.label || workspace.repoFullName}.`,
+    `Action ID: \`${actionId}\``,
+    postedAction.title ? `Kort: ${postedAction.title}` : '',
+    result.commit ? `Commit: ${result.commit}` : '',
+    commitUrl ? `GitHub: ${commitUrl}` : '',
+    ...codeDeliveryLines(result),
+    '',
+    'Branchen är färdig och inget har ändrats på main eller production. Godkänn eller avvisa den här diffen så att agenten kan fortsätta.'
+  ].filter(Boolean).join('\n').slice(0, 1900), targetChannelId, reviewReadyComponents(), { kind: 'code_result' })
+  state.messageToAction = state.messageToAction || {}
+  state.messageToAction[posted.id] = actionId
+  state.codeActionResults[actionId] = { ...record, lastReminderAt: new Date().toISOString(), lastReminderMessageId: posted.id }
+  state.lastCodeReviewReminderAt = new Date().toISOString()
+  log('pending_code_review_reminded', { actionId, repoFullName: result.repoFullName || null, messageId: posted.id })
+  saveState()
+  return true
 }
 
 function isWeakExactKeywordCoverageAction(action) {
@@ -2610,6 +2653,20 @@ async function syntheticAutonomousActionForWorkspace({ workspace, targetChannelI
     rememberCodexRejectedAction(action, workspace, targetChannelId, codexBrief, 'synthetic_autonomous_candidate')
     return null
   }
+  const executableAction = applyCodexBriefToAction(action, codexBrief, workspace)
+  if (!executableAction) {
+    rememberCodexRejectedAction(action, workspace, targetChannelId, codexBrief, 'synthetic_invalid_rewrite')
+    return null
+  }
+  const rewrittenCheck = autonomousCodeCandidateCheck(executableAction, workspace, targetChannelId)
+  if (!rewrittenCheck.ok) {
+    logThrottled(`synthetic_autonomous_skipped:${workspace?.id || workspace?.label}:${action.id}:rewrite`, 30 * 60 * 1000, 'synthetic_autonomous_skipped', {
+      workspace: workspace?.label || workspace?.id || null,
+      actionId: action.id,
+      reason: `rewritten:${rewrittenCheck.reason}`
+    })
+    return null
+  }
   log('synthetic_autonomous_action_selected', {
     workspace: workspace?.label || workspace?.id || null,
     actionId: action.id,
@@ -2617,7 +2674,7 @@ async function syntheticAutonomousActionForWorkspace({ workspace, targetChannelI
   })
   rememberAgentLesson(`Created synthetic ${profile.siteType || 'workspace'} goal-gap action because live queue did not provide a better low-risk code action.`)
   return {
-    action,
+    action: executableAction,
     review,
     codexBrief,
     reason: codexBrief.why || syntheticEvidenceReason(action)
@@ -3288,9 +3345,14 @@ function isAutonomousReviewSafe(review) {
 function isAutonomousCodexSafe(codexBrief) {
   if (!codexBrief) return false
   if (!['allow', 'rewrite'].includes(codexBrief.decision)) return false
+  if (codexBrief.decision === 'rewrite' && !/^https:\/\//i.test(String(codexBrief.targetUrl || ''))) return false
   if (codexBrief.recommendation && codexBrief.recommendation !== 'Approve') return false
   if (codexBrief.risk && !/^låg\b/i.test(String(codexBrief.risk))) return false
   return true
+}
+
+function applyCodexBriefToAction(action, codexBrief, workspace) {
+  return applyCodexBriefRewrite(action, codexBrief, workspaceHost(workspace))
 }
 
 async function maybeRunIntegrationDoctor(workspaces) {
@@ -3635,8 +3697,13 @@ async function processQueuedApprovedCodeAction(workspaces) {
       || { label: entry.workspaceSlug || entry.repoFullName || 'workspace', repoFullName: entry.repoFullName, branch: entry.branch || 'main' }
     const targetChannelId = entry.channelId || await channelForWorkspace(workspace)
     if (codeActionResultBlocks(entry, workspace, targetChannelId)) {
+      const existingStatus = String(state.codeActionResults?.[entry.id]?.status || 'deprioritized')
+      recordActionLedger(entry, workspace, targetChannelId, existingStatus, {
+        source: 'approved_queue_existing_result',
+        reason: `existing_code_result:${existingStatus}`
+      })
       delete state.approvedCodeActionQueue[entry.id]
-      log('approved_queue_item_blocked_by_existing_result', { actionId: entry.id, workspace: workspace?.label || workspace?.repoFullName || null })
+      log('approved_queue_item_blocked_by_existing_result', { actionId: entry.id, workspace: workspace?.label || workspace?.repoFullName || null, existingStatus })
       saveState()
       continue
     }
@@ -7767,7 +7834,7 @@ function ensureAutonomousAgentState() {
 }
 
 function reconcileTransitionalLedgerStatuses() {
-  const transitional = new Set(['approved', 'coding', 'review_ready', 'promotion_running'])
+  const transitional = new Set(['approved', 'coding', 'coding_started', 'review_ready', 'operator_approved', 'promotion_running'])
   const queued = state.approvedCodeActionQueue || {}
   const runningId = state.codeActionRunning?.actionId || ''
   let changed = false
@@ -9201,10 +9268,27 @@ function ensureTrailingSlash(value) {
 async function buildActionCardMessage(action, workspacePolicy, workspace, review = null, targetChannelId = null) {
   if (codeActionResultBlocks(action, workspace, targetChannelId)) return null
   if (await recoverActionAlreadyCommittedBeforeCard(action, workspace, targetChannelId)) return null
+  const liveSignalCheck = await validateActionAgainstLivePage(action)
+  if (!liveSignalCheck.ok) {
+    logThrottled(`action_card_live_signal_block:${action?.id || 'unknown'}`, 30 * 60 * 1000, 'action_card_live_signal_block', {
+      actionId: action?.id || null,
+      workspace: workspace?.label || workspace?.id || null,
+      reason: liveSignalCheck.reason,
+      targetUrl: liveSignalCheck.targetUrl || null
+    })
+    return null
+  }
   const codexBrief = await runCodexActionCardBrief({ action, workspace, workspacePolicy, review, targetChannelId }).catch((error) => {
     log('codex_action_card_brief_failed', { actionId: action?.id || null, workspace: workspace?.label || workspace?.id || null, error: error?.message || String(error) })
     return null
   })
+  if (codexChatEnabled && !codexBrief) {
+    logThrottled(`action_card_codex_fail_closed:${action?.id || 'unknown'}`, 30 * 60 * 1000, 'action_card_codex_fail_closed', {
+      actionId: action?.id || null,
+      workspace: workspace?.label || workspace?.id || null
+    })
+    return null
+  }
   if (codexBrief?.decision === 'block') {
     rememberCodexRejectedAction(action, workspace, targetChannelId, codexBrief, 'posted_action_card_brief')
     log('codex_action_card_blocked', {
@@ -9213,6 +9297,14 @@ async function buildActionCardMessage(action, workspacePolicy, workspace, review
       reason: codexBrief.reason || codexBrief.why || 'unclear_action'
     })
     return null
+  }
+  if (codexBrief?.decision === 'rewrite') {
+    const rewrittenAction = applyCodexBriefToAction(action, codexBrief, workspace)
+    if (!rewrittenAction) {
+      rememberCodexRejectedAction(action, workspace, targetChannelId, codexBrief, 'posted_action_invalid_rewrite')
+      return null
+    }
+    Object.assign(action, rewrittenAction)
   }
   return formatActionMessage(action, workspacePolicy, workspace, {
     ...review,
@@ -9279,7 +9371,7 @@ async function runCodexActionCardBrief({ action, workspace, workspacePolicy, rev
     'Var smart: om det är en konsumenttjänst ska du inte använda B2B/SMB/konsultspråk. Om det är en katalog/tjänst/produkt ska åtgärden passa den typen.',
     'Om actionen verkar fel workspace, generisk, repetitiv eller otydlig: decision=block eller rewrite med tydlig förklaring.',
     'Returnera ENDAST JSON:',
-    '{"decision":"allow|rewrite|block","title":"kort konkret svensk titel","doThis":"en konkret mening om exakt vad som ska göras","why":"kort varför detta är rätt för just detta workspace","risk":"låg|medium + kort orsak","expectedWork":"vad agenten gör automatiskt om det är låg risk, annars vad den behöver fråga om","recommendation":"Approve|Review|Deprioritize|Skip","reason":"kort intern orsak"}',
+    '{"decision":"allow|rewrite|block","targetUrl":"slutlig https-URL som åtgärden gäller","title":"kort konkret svensk titel","doThis":"en konkret mening om exakt vad som ska göras","why":"kort varför detta är rätt för just detta workspace","risk":"låg|medium + kort orsak","expectedWork":"vad agenten gör automatiskt om det är låg risk, annars vad den behöver fråga om","recommendation":"Approve|Review|Deprioritize|Skip","reason":"kort intern orsak"}',
     '',
     'Regler:',
     '- Skriv på svenska.',
@@ -9288,6 +9380,8 @@ async function runCodexActionCardBrief({ action, workspace, workspacePolicy, rev
     '- Var ärlig om evidens: om evidenceSource är workspace_goal_backlog eller Keyword Planner saknar metrics, säg inte att åtgärden bygger på färsk GSC/Keyword Planner-data.',
     '- Om evidenceSource är fresh_seo_run_plus_workspace_backlog: säg att åtgärden är validerad mot färsk SEO Monitor-batch men inte nödvändigtvis en exakt färsk GSC-query.',
     '- Om Keyword Planner har volym/CPC/competition, använd det konkret i why/reason.',
+    '- targetUrl måste alltid vara den slutliga befintliga sidan som ska ändras. Vid decision=rewrite är fältet obligatoriskt och måste korrigera en felaktig original-URL.',
+    '- Byt aldrig domän i targetUrl.',
     '- Ingen rå JSON/tool-output i fälten.',
     '- Låtsas inte att kod redan körts.',
     '',
@@ -9302,7 +9396,7 @@ async function runCodexActionCardBrief({ action, workspace, workspacePolicy, rev
     agent: 'seo-agent',
     purpose: 'action_card_brief',
     workspace: workspace?.label || workspace?.id || null,
-    command: `${codexCli} exec --json --ephemeral --sandbox read-only --cd /home/deploy/seo-agent-discord - < ${promptPath}`,
+    command: `${codexCli} exec --json --ephemeral --sandbox read-only --skip-git-repo-check --cd /home/deploy/seo-agent-discord - < ${promptPath}`,
     timeout: 3 * 60 * 1000,
     maxBuffer: 8 * 1024 * 1024
   })
@@ -9372,6 +9466,7 @@ function normalizeActionCardBrief(text) {
   const recommendation = ['Approve', 'Review', 'Deprioritize', 'Skip'].includes(parsed.recommendation) ? parsed.recommendation : ''
   return {
     decision,
+    targetUrl: typeof parsed.targetUrl === 'string' ? parsed.targetUrl.slice(0, 500) : '',
     title: typeof parsed.title === 'string' ? parsed.title.slice(0, 220) : '',
     doThis: typeof parsed.doThis === 'string' ? parsed.doThis.slice(0, 520) : '',
     why: typeof parsed.why === 'string' ? parsed.why.slice(0, 420) : '',

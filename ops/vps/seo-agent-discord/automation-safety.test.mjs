@@ -19,6 +19,11 @@ test('autonomous code and self-repair require explicit opt-in', () => {
   )
 })
 
+test('an autonomous daily limit of zero disables queueing instead of becoming unlimited', () => {
+  assert.match(workerSource, /if \(autonomousCodePerWorkspacePerDay <= 0\) return/)
+  assert.doesNotMatch(workerSource, /autonomousCodePerWorkspacePerDay > 0 && usedToday/)
+})
+
 test('worker analysis calls cannot bypass the sandbox', () => {
   assert.doesNotMatch(workerSource, /dangerously-bypass-approvals-and-sandbox/)
   assert.match(workerSource, /--sandbox read-only/)
@@ -31,6 +36,8 @@ test('self-repair requires both approved code automation and self-repair opt-in'
 
 test('startup reconciles stale transitional ledger statuses', () => {
   assert.match(workerSource, /ensureAutonomousAgentState\(\)\s+reconcileTransitionalLedgerStatuses\(\)/)
+  assert.match(workerSource, /migrateWorkspaceIdentities\(workspaces\)\s+reconcileTransitionalLedgerStatuses\(\)/)
+  assert.match(workerSource, /coding_started/)
 })
 
 test('blocked backlog actions do not fall back to opportunity scout', () => {
@@ -73,4 +80,25 @@ test('repo health requires exact local and remote sync', () => {
 test('workspace identity prefers a canonical repository key', () => {
   assert.match(workerSource, /workspace-identity\.mjs/)
   assert.match(workerSource, /migrateWorkspaceIdentities\(workspaces\)/)
+})
+
+test('worker and runtime enforce the same configurable review capacity', () => {
+  assert.match(workerSource, /reviewCapacityCheck/)
+  assert.match(runtimeSource, /reviewCapacityCheck/)
+  assert.match(runtimeSource, /SEO_AGENT_MAX_PENDING_REVIEWS_PER_WORKSPACE/)
+})
+
+test('completed action ids cannot be queued again', () => {
+  assert.match(workerSource, /An action id identifies one immutable proposal/)
+  assert.match(workerSource, /if \(status === 'archived_failed'\) return false\s+\/\//)
+})
+
+test('pending review branches are reminded in Discord', () => {
+  assert.match(workerSource, /remindPendingCodeReviews\(workspaces\)/)
+  assert.match(workerSource, /pending_code_review_reminded/)
+})
+
+test('Codex rewrites must provide a final target URL', () => {
+  assert.match(workerSource, /codexBrief\.decision === 'rewrite'/)
+  assert.match(workerSource, /targetUrl.*slutlig https-URL/)
 })

@@ -5,6 +5,7 @@ import { existsSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync
 import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 import { mergeJsonChanges } from '../../seo-agent-discord/json-state-merge.mjs'
+import { reviewCapacityCheck } from '../../seo-agent-discord/review-capacity-policy.mjs'
 
 const env = loadEnv(['/opt/ai-dashboard/apps/seo-runtime/.env', '/opt/ai-dashboard/apps/seo-agent-discord/.env', '/home/deploy/seo-agent-discord/.env'])
 const host = env.SEO_RUNTIME_HOST || '127.0.0.1'
@@ -13,6 +14,7 @@ const statePath = env.SEO_RUNTIME_STATE_PATH || '/opt/ai-dashboard/apps/seo-agen
 const stateLockPath = `${statePath}.lock`
 const runtimeToken = env.SEO_RUNTIME_TOKEN || ''
 const autonomousCodeEnabled = env.SEO_AGENT_AUTONOMOUS_CODE_ENABLED === 'true'
+const maxPendingReviewsPerWorkspace = Math.max(1, Number(env.SEO_AGENT_MAX_PENDING_REVIEWS_PER_WORKSPACE || '3'))
 const runtimeKey = 'seo-agent'
 const platformApiUrl = (env.PLATFORM_API_URL || 'https://dashboard2-platform-api.sebastian-castwall.workers.dev').replace(/\/$/, '')
 const platformToken = env.PLATFORM_API_TOKEN || ''
@@ -1161,8 +1163,18 @@ function scoreActionCandidate(state, action, context) {
   let score = Number(action.priorityScore ?? action.score ?? NaN)
   if (!Number.isFinite(score)) score = 45
 
-  if (workspaceReviewPending(state, context.workspace)) {
-    return rejected(action, -100, 'workspace_review_pending', ['en dev-ändring väntar redan på granskning'])
+  const reviewCapacity = reviewCapacityCheck({
+    state,
+    workspace: context.workspace,
+    action,
+    maxPendingReviews: maxPendingReviewsPerWorkspace
+  })
+  if (!reviewCapacity.ok) {
+    return rejected(action, -100, reviewCapacity.reason, [
+      reviewCapacity.reason === 'target_review_pending'
+        ? 'samma URL väntar redan på granskning'
+        : `${reviewCapacity.pendingCount} dev-ändringar väntar redan på granskning (gräns ${reviewCapacity.limit})`
+    ])
   }
 
   const terminal = terminalResultForAction(state, action)
@@ -1241,15 +1253,6 @@ function scoreActionCandidate(state, action, context) {
     positives,
     negatives
   }
-}
-
-function workspaceReviewPending(state, workspace) {
-  const repoFullName = String(workspace?.repoFullName || '').trim()
-  if (!repoFullName) return false
-  return Object.values(state.codeActionResults || {}).some((record) => {
-    if (!['review_ready', 'operator_approved'].includes(String(record?.status || ''))) return false
-    return String(record?.result?.repoFullName || '').trim() === repoFullName
-  })
 }
 
 function publicCandidateReview(candidate) {
