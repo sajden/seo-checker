@@ -46,6 +46,13 @@ test('blocked backlog actions do not fall back to opportunity scout', () => {
   assert.match(workerSource, /blocked-backlog/)
 })
 
+test('live guard rejections block opportunity scout before Codex', () => {
+  assert.match(workerSource, /function shouldSkipCodexOpportunityScoutForLiveRejections/)
+  assert.match(workerSource, /live_rejections_waiting_recheck_or_guard/)
+  assert.match(workerSource, /if \(shouldSkipCodexOpportunityScoutForLiveRejections\(pending, rejectionReasons\)\)/)
+  assert.match(workerSource, /if \(shouldSkipCodexOpportunityScoutForLiveRejections\(context\.pending \|\| \[\], context\.rejectionReasons \|\| \[\]\)\)/)
+})
+
 test('runtime mutations require bearer authentication', () => {
   assert.match(runtimeSource, /runtime_auth_not_configured/)
   assert.match(runtimeSource, /isAuthorizedRuntimeRequest/)
