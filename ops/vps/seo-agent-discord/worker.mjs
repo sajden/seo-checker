@@ -4098,7 +4098,11 @@ async function promoteReviewReadyAction(actionId, result, action, options = {}) 
     const exec = promisify(execFile)
     const promoted = await exec('/usr/bin/node', ['/home/deploy/seo-agent-discord/review-promoter.mjs', inputPath], {
       cwd: '/home/deploy/seo-agent-discord',
-      env: { ...process.env, PATH: `${process.env.HOME || '/home/deploy'}/.npm-global/bin:${process.env.HOME || '/home/deploy'}/.local/bin:${process.env.PATH || ''}` },
+      env: {
+        ...process.env,
+        CLOUDFLARE_API_TOKEN: env.CLOUDFLARE_API_TOKEN || process.env.CLOUDFLARE_API_TOKEN || '',
+        PATH: `${process.env.HOME || '/home/deploy'}/.npm-global/bin:${process.env.HOME || '/home/deploy'}/.local/bin:${process.env.PATH || ''}`
+      },
       timeout: 55 * 60 * 1000,
       maxBuffer: 20 * 1024 * 1024
     })

@@ -69,6 +69,13 @@ try {
   if (configuredDeploy && !verification.ok) {
     throw new Error(`Production verification failed before main push: ${verification.error || verification.status || 'new content not visible'}`)
   }
+  if (configuredDeploy) {
+    const experienceVerification = await verifyCriticalProductionExperience(repoFullName)
+    if (!experienceVerification.ok) {
+      throw new Error(`Critical production experience failed before main push: ${experienceVerification.error}`)
+    }
+    verification = { ...verification, criticalExperience: experienceVerification }
+  }
   await run('git', ['push', 'origin', `HEAD:${baseBranch}`], repoDir)
   pushed = true
   await run('git', ['fetch', 'origin', baseBranch], repoDir)
@@ -210,6 +217,62 @@ async function verifyLiveTarget(url, fingerprints) {
     await new Promise((resolve) => setTimeout(resolve, 12_000))
   }
   return { ok: false, status: lastStatus, error: lastError, fingerprintCount: fingerprints.length }
+}
+
+async function verifyCriticalProductionExperience(repo) {
+  if (repo !== 'sajden/parkeringspolaren-web') return { ok: true, note: 'no_repo_specific_check' }
+
+  let chromium
+  try {
+    ;({ chromium } = await import('playwright'))
+  } catch (error) {
+    return { ok: false, error: `Playwright kunde inte laddas: ${error?.code || error?.message || error}` }
+  }
+
+  const url = 'https://parkeringspolaren.se/sv/mc-parkering-jonkoping'
+  const viewports = [
+    { name: 'desktop', width: 1365, height: 768 },
+    { name: 'mobil', width: 390, height: 844 }
+  ]
+  let browser
+  try {
+    browser = await chromium.launch({
+      executablePath: process.env.SEO_AGENT_CHROME_PATH || '/usr/bin/google-chrome',
+      headless: true,
+      args: ['--no-sandbox', '--disable-dev-shm-usage']
+    })
+    for (const viewport of viewports) {
+      const context = await browser.newContext({ viewport })
+      try {
+        const page = await context.newPage()
+        const tileFailures = []
+        page.on('requestfailed', (request) => {
+          if (/tile\.openstreetmap\.org/i.test(request.url())) {
+            tileFailures.push(request.failure()?.errorText || 'request_failed')
+          }
+        })
+        const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 25_000 })
+        if (!response?.ok()) throw new Error(`HTTP ${response?.status() || 'utan svar'}`)
+        const map = page.locator('.leaflet-container').first()
+        await map.scrollIntoViewIfNeeded({ timeout: 15_000 })
+        await map.waitFor({ state: 'visible', timeout: 15_000 })
+        await page.waitForFunction(() => {
+          return [...document.querySelectorAll('img.leaflet-tile')]
+            .some((tile) => tile instanceof HTMLImageElement && tile.complete && tile.naturalWidth > 0)
+        }, undefined, { timeout: 15_000 })
+        if (tileFailures.length) throw new Error(`OSM tile request failed: ${tileFailures[0]}`)
+      } catch (error) {
+        return { ok: false, error: `${viewport.name}: ${String(error?.message || error).split('\n')[0].slice(0, 500)}` }
+      } finally {
+        await context.close().catch(() => {})
+      }
+    }
+    return { ok: true, url, viewports: viewports.map((viewport) => viewport.name) }
+  } catch (error) {
+    return { ok: false, error: error?.message || String(error) }
+  } finally {
+    await browser?.close().catch(() => {})
+  }
 }
 
 function normalizeText(value) {

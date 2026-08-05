@@ -89,6 +89,22 @@ test('configured production deploy is verified before main is pushed', () => {
   assert.match(promoterSource, /process\.env\.CLOUDFLARE_API_TOKEN/)
 })
 
+test('Parkeringspolaren map rendering is verified before main is pushed', () => {
+  const visualIndex = promoterSource.indexOf('verifyCriticalProductionExperience(repoFullName)')
+  const pushIndex = promoterSource.indexOf("await run('git', ['push', 'origin', `HEAD:${baseBranch}`]")
+  assert.ok(visualIndex >= 0)
+  assert.ok(pushIndex > visualIndex)
+  assert.match(promoterSource, /sajden\/parkeringspolaren-web/)
+  assert.match(promoterSource, /img\.leaflet-tile/)
+  assert.match(promoterSource, /naturalWidth > 0/)
+  assert.match(promoterSource, /name: 'desktop'/)
+  assert.match(promoterSource, /name: 'mobil'/)
+})
+
+test('Discord worker passes its loaded Cloudflare token to review promotion', () => {
+  assert.match(workerSource, /CLOUDFLARE_API_TOKEN: env\.CLOUDFLARE_API_TOKEN/)
+})
+
 test('repository tests run before an approved SEO branch is built', () => {
   const testIndex = promoterSource.indexOf("await run('npm', ['test']")
   const buildIndex = promoterSource.indexOf("await run('npm', ['run', 'build']")
