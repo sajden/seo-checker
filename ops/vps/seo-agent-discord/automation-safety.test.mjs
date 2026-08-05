@@ -52,8 +52,14 @@ test('blocked backlog actions do not fall back to opportunity scout', () => {
 test('live guard rejections block opportunity scout before Codex', () => {
   assert.match(workerSource, /function shouldSkipCodexOpportunityScoutForLiveRejections/)
   assert.match(workerSource, /live_rejections_waiting_recheck_or_guard/)
+  assert.match(workerSource, /target_recently_completed_waiting_measurement/)
   assert.match(workerSource, /if \(shouldSkipCodexOpportunityScoutForLiveRejections\(pending, rejectionReasons\)\)/)
   assert.match(workerSource, /if \(shouldSkipCodexOpportunityScoutForLiveRejections\(context\.pending \|\| \[\], context\.rejectionReasons \|\| \[\]\)\)/)
+})
+
+test('any good live candidate blocks synthetic scout', () => {
+  assert.match(workerSource, /if \(hasGoodLiveCandidate\) \{/)
+  assert.doesNotMatch(workerSource, /if \(!queueIsWeak && hasGoodLiveCandidate\)/)
 })
 
 test('runtime mutations require bearer authentication', () => {

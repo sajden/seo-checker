@@ -2548,6 +2548,7 @@ function isWaitOrGuardRejectionReason(reason) {
     || text === 'target_review_pending'
     || text === 'workspace_review_limit'
     || text === 'same_target_recent_experiment_limit'
+    || text === 'target_recently_completed_waiting_measurement'
     || /^(?:already_completed|recently_(?:deprioritized|guarded|ignored|skipped|failed)|failed)_waiting_recheck$/.test(text)
     || text === 'missing_target_url'
     || text === 'new_page_needs_human_approval'
@@ -2581,7 +2582,7 @@ async function syntheticAutonomousActionForWorkspace({ workspace, targetChannelI
     return isAutonomousReviewSafe(review)
   })
   const queueIsWeak = !pending.length || rejectionReasons.length >= Math.min(pending.length, 4)
-  if (!queueIsWeak && hasGoodLiveCandidate) {
+  if (hasGoodLiveCandidate) {
     logThrottled(`synthetic_autonomous_skipped:${workspace?.id || workspace?.label}:live`, 30 * 60 * 1000, 'synthetic_autonomous_skipped', { workspace: workspace?.label || workspace?.id || null, reason: 'good_live_candidate_available', pendingCount: pending.length })
     return null
   }
