@@ -12,6 +12,10 @@ export function requestsVisualChangeText(value) {
 function actionableText(value) {
   return String(value || '')
     .replace(
+      /\butan\b[^.!?\n]{0,220}\b(?:a|e|en|et)?(?:ä|a)ndring(?:ar|en|arna)?\b/gi,
+      ' '
+    )
+    .replace(
       /\butan att (?:ändra|röra)\b[^.!?\n]{0,220}/gi,
       ' '
     )

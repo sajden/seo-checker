@@ -22,6 +22,10 @@ test('allows metadata work without changing protected surfaces', () => {
     requiresOperatorProposalText('Skicka renderServerH1 till sidan så den får en server-renderad H1 utan layoutändring.'),
     false
   )
+  assert.equal(
+    requiresOperatorProposalText('Lägg till mobilapputveckling i metadata utan layout-, CTA- eller prisändringar.'),
+    false
+  )
 })
 
 test('classifies a requested visual change separately', () => {
