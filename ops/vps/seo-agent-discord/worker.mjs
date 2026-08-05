@@ -7976,6 +7976,12 @@ async function buildRankingReview(workspace, targetChannelId) {
     const review = reviewActionForPosting(action, workspace, targetChannelId, payload.workspacePolicy || '')
     return review.score < 55
   })
+  const eligibleLiveActionCount = actions.filter((action) => {
+    if (!isCodeAction(action) || isIndexingCheckAction(action)) return false
+    if (codeActionResultBlocks(action, workspace, targetChannelId)) return false
+    if (!autonomousCodeCandidateCheck(action, workspace, targetChannelId).ok) return false
+    return reviewActionForPosting(action, workspace, targetChannelId, payload.workspacePolicy || '').score >= 60
+  }).length
   const staleKeywordTargets = keywordMap
     .filter((item) => item.priority !== 'low')
     .filter((item) => {
@@ -7985,12 +7991,18 @@ async function buildRankingReview(workspace, targetChannelId) {
       return completedAt && Date.now() - completedAt > 30 * 24 * 60 * 60 * 1000
     })
     .slice(0, 5)
-  const next = selectRankingReviewNextStep({ workspace, profile, keywordMap, actions, experiments: refreshedExperiments, staleKeywordTargets, weakLiveQueue, targetChannelId })
+  const next = selectRankingReviewNextStep({ workspace, profile, keywordMap, actions, experiments: refreshedExperiments, staleKeywordTargets, weakLiveQueue, eligibleLiveActionCount, targetChannelId })
+  const batchRunAt = batch?.lastRunAt || batch?.lastRunSummary?.ranAt || null
+  const batchSummary = batch?.lastRunSummary || {}
   return {
     ok: true,
     profileLabel: profile.label,
     keywordMapCount: keywordMap.length,
     liveActionCount: actions.length,
+    eligibleLiveActionCount,
+    batchRunAt,
+    gscRowCount: Number(batchSummary.gscRawRows || batchSummary.gscRows || batch?.lastRunDetails?.gscRawRows || 0),
+    crawlPageCount: Number(batchSummary.crawlPagesChecked || batch?.lastRunDetails?.crawlPagesChecked || 0),
     experimentCount: experiments.length,
     pendingFollowups: pendingFollowups.slice(0, 5).map((item) => ({
       id: item.id,
@@ -8009,7 +8021,7 @@ async function buildRankingReview(workspace, targetChannelId) {
   }
 }
 
-function selectRankingReviewNextStep({ workspace, profile, keywordMap, actions, experiments, staleKeywordTargets, weakLiveQueue, targetChannelId }) {
+function selectRankingReviewNextStep({ workspace, profile, keywordMap, actions, experiments, staleKeywordTargets, weakLiveQueue, eligibleLiveActionCount, targetChannelId }) {
   const actionable = actions
     .filter((action) => isCodeAction(action) && !isIndexingCheckAction(action))
     .filter((action) => !codeActionResultBlocks(action, workspace, targetChannelId))
@@ -8029,12 +8041,17 @@ function selectRankingReviewNextStep({ workspace, profile, keywordMap, actions, 
   }
   const gap = staleKeywordTargets[0] || keywordMap.find((item) => item.priority === 'high')
   if (gap && weakLiveQueue) {
+    const previousExperiment = experiments.find((experiment) => experiment.targetUrl === gap.targetUrl || experiment.keyword === gap.keyword)
     return {
       type: 'keyword_gap',
+      status: 'research_candidate',
       title: `Förstärk ${gap.targetUrl} för "${gap.keyword}"`,
       targetUrl: gap.targetUrl,
       keyword: gap.keyword,
-      reason: 'keyword-map saknar färskt experiment eller live-kön är svag'
+      reason: previousExperiment?.completedAt
+        ? `Senaste matchande experiment avslutades ${formatDateTime(previousExperiment.completedAt)} och är äldre än 30 dagar. ${actions.length} live-actions granskades men ${eligibleLiveActionCount} passerade quality gate.`
+        : `Inget tidigare experiment matchar URL eller sökfras. ${actions.length} live-actions granskades men ${eligibleLiveActionCount} passerade quality gate.`,
+      nextAction: 'Ingen kodändring eller branch har skapats av denna review. Agenten använder kandidaten i nästa researchkörning och måste därefter presentera ett separat, evidensbaserat ändringsförslag för godkännande.'
     }
   }
   const followup = experiments.find((item) => item.reviewAfter && item.reviewAfter <= new Date().toISOString().slice(0, 10) && !item.reviewedAt)
@@ -8066,15 +8083,18 @@ function formatRankingReviewMessage(workspace, review) {
   const next = review.next || {}
   const outcomes = review.outcomeReview?.reviewed?.slice(0, 3) || []
   return [
-    `Daglig ranking-review för ${workspace?.label || workspace?.id || 'workspace'}`,
-    `Keyword-map: ${review.keywordMapCount} mål · Experiment: ${review.experimentCount} · Live-actions: ${review.liveActionCount}`,
+    `Daglig SEO-review för ${workspace?.label || workspace?.id || 'workspace'}`,
+    next.status === 'research_candidate' ? '**Status: research-kandidat — inget jobb, ingen branch och ingen kodändring har skapats.**' : '',
+    `Keyword-map: ${review.keywordMapCount} mål · Historiska experiment: ${review.experimentCount} · Live-actions: ${review.liveActionCount} (${review.eligibleLiveActionCount} godkända av quality gate)`,
+    review.batchRunAt ? `Dataunderlag: SEO-körning ${formatDateTime(review.batchRunAt)} · GSC ${review.gscRowCount} rader · crawl ${review.crawlPageCount} sidor.` : 'Dataunderlag: ingen färsk SEO-batch kunde verifieras.',
     review.pendingFollowups?.length ? `Uppföljning redo: ${review.pendingFollowups.map((item) => `${item.keyword || item.title}${item.commit ? ` (${item.commit})` : ''}`).join(', ')}` : '',
     outcomes.length ? `Experiment-utvärdering: ${outcomes.map((item) => `${item.outcome}: ${item.keyword || item.targetUrl}`).join(' | ')}` : '',
-    `Nästa SEO-experiment: ${next.title || 'inget säkert'}`,
+    `${next.type === 'keyword_gap' ? 'Research-kandidat' : 'Nästa steg'}: ${next.title || 'inget säkert'}`,
     next.targetUrl ? `URL: ${next.targetUrl}` : '',
     next.keyword ? `Keyword: ${next.keyword}` : '',
     next.reason ? `Varför: ${next.reason}` : '',
-    'Jag använder detta för att välja kodactions; GSC/API-kontroller rate-limtas och körs inte i loop.'
+    next.nextAction ? `Vad händer nu: ${next.nextAction}` : '',
+    'GSC/API-kontroller rate-limtas; ett separat förslag postas först när agenten har en konkret ändring och tillräckligt underlag.'
   ].filter(Boolean).join('\n').slice(0, 1900)
 }
 

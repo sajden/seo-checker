@@ -26,6 +26,7 @@ await checkService('seo-agent-discord.service', 'discord-worker')
 await checkService('seo-runtime.service', 'seo-runtime-service')
 await checkOneshotService('seo-agent-auto-deploy.service', 'seo-auto-deploy')
 await checkRuntimeHealth()
+await checkCriticalLiveExperiences()
 checkReleaseIntegrity()
 checkWorkerState()
 checkRepoHealth()
@@ -115,6 +116,77 @@ async function checkRuntimeHealth() {
     if (!response.ok || payload?.ok !== true) addIssue('seo-runtime-health', 'SEO Runtime API', `healthz svarade ${response.status} utan ok-status.`)
   } catch (error) {
     addIssue('seo-runtime-health', 'SEO Runtime API', `healthz kunde inte läsas (${error?.message || String(error)}).`)
+  }
+}
+
+async function checkCriticalLiveExperiences() {
+  const checks = [
+    {
+      id: 'parkeringspolaren-map',
+      label: 'Parkeringspolaren karta',
+      url: 'https://parkeringspolaren.se/sv/mc-parkering-jonkoping',
+      readySelector: '.leaflet-container',
+      assetSelector: 'img.leaflet-tile',
+      viewports: [
+        { name: 'desktop', width: 1365, height: 768 },
+        { name: 'mobil', width: 390, height: 844 }
+      ]
+    }
+  ]
+
+  let chromium
+  try {
+    ;({ chromium } = await import('playwright'))
+  } catch (error) {
+    addIssue('live-browser-unavailable', 'Visuell produktionskontroll', `Playwright kunde inte laddas (${error?.code || error?.message || error}).`)
+    return
+  }
+
+  let browser
+  try {
+    browser = await chromium.launch({
+      executablePath: env.SEO_AGENT_CHROME_PATH || '/usr/bin/google-chrome',
+      headless: true,
+      args: ['--no-sandbox', '--disable-dev-shm-usage']
+    })
+    for (const check of checks) {
+      for (const viewport of check.viewports) {
+        await checkLiveExperience(browser, check, viewport)
+      }
+    }
+  } catch (error) {
+    addIssue('live-browser-failed', 'Visuell produktionskontroll', `Chrome-kontrollen kunde inte köras (${error?.message || String(error)}).`)
+  } finally {
+    await browser?.close().catch(() => {})
+  }
+}
+
+async function checkLiveExperience(browser, check, viewport) {
+  const context = await browser.newContext({ viewport: { width: viewport.width, height: viewport.height } })
+  const page = await context.newPage()
+  const failures = []
+  page.on('requestfailed', (request) => {
+    if (/tile\.openstreetmap\.org/i.test(request.url())) failures.push(`${request.failure()?.errorText || 'request_failed'}: ${request.url()}`)
+  })
+  try {
+    const response = await page.goto(check.url, { waitUntil: 'domcontentloaded', timeout: 25_000 })
+    if (!response?.ok()) throw new Error(`HTTP ${response?.status() || 'utan svar'}`)
+    const container = page.locator(check.readySelector).first()
+    await container.scrollIntoViewIfNeeded({ timeout: 15_000 })
+    await container.waitFor({ state: 'visible', timeout: 15_000 })
+    await page.waitForFunction((selector) => {
+      const assets = [...document.querySelectorAll(selector)]
+      return assets.some((asset) => asset instanceof HTMLImageElement && asset.complete && asset.naturalWidth > 0)
+    }, check.assetSelector, { timeout: 15_000 })
+    if (failures.length) throw new Error(failures[0])
+  } catch (error) {
+    addIssue(
+      `live-${check.id}-${viewport.name}`,
+      check.label,
+      `${viewport.name} misslyckades på ${check.url}: ${String(error?.message || error).split('\n')[0].slice(0, 500)}`
+    )
+  } finally {
+    await context.close().catch(() => {})
   }
 }
 

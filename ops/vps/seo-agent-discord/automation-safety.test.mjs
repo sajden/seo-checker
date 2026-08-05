@@ -151,3 +151,18 @@ test('automatic deploys use immutable commit checkouts and drift monitoring', ()
   assert.match(watchdogSource, /release-code-drift/)
   assert.match(watchdogSource, /seo-agent-auto-deploy\.service/)
 })
+
+test('chain health verifies a real production map in desktop and mobile Chrome', () => {
+  assert.match(watchdogSource, /checkCriticalLiveExperiences/)
+  assert.match(watchdogSource, /parkeringspolaren\.se\/sv\/mc-parkering-jonkoping/)
+  assert.match(watchdogSource, /img\.leaflet-tile/)
+  assert.match(watchdogSource, /asset\.naturalWidth > 0/)
+  assert.match(watchdogSource, /name: 'desktop'/)
+  assert.match(watchdogSource, /name: 'mobil'/)
+})
+
+test('ranking reviews distinguish research ideas from actual code work', () => {
+  assert.match(workerSource, /Status: research-kandidat/)
+  assert.match(workerSource, /Ingen kodändring eller branch har skapats av denna review/)
+  assert.match(workerSource, /eligibleLiveActionCount/)
+})
