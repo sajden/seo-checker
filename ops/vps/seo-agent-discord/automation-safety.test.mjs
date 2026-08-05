@@ -64,6 +64,13 @@ test('only a live candidate that survived prior validation blocks synthetic scou
   assert.doesNotMatch(workerSource, /if \(!queueIsWeak && hasGoodLiveCandidate\)/)
 })
 
+test('Sebcastwall bypasses static goal gaps and uses the evidence-backed scout', () => {
+  assert.match(
+    workerSource,
+    /let rawAction = isSebcastwallWorkspace\(workspace, profile\)\s+\? null\s+: buildWorkspaceGoalGapAction/
+  )
+})
+
 test('runtime mutations require bearer authentication', () => {
   assert.match(runtimeSource, /runtime_auth_not_configured/)
   assert.match(runtimeSource, /isAuthorizedRuntimeRequest/)

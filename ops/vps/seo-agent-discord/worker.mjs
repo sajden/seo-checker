@@ -2599,7 +2599,11 @@ async function syntheticAutonomousActionForWorkspace({ workspace, targetChannelI
     })
     return null
   }
-  let rawAction = buildWorkspaceGoalGapAction(workspace, targetChannelId, sourcePayload)
+  // Sebcastwall has a broad commercial backlog, so static goal gaps are too easy to
+  // mistake for observed demand. Let its evidence-backed repo scout choose instead.
+  let rawAction = isSebcastwallWorkspace(workspace, profile)
+    ? null
+    : buildWorkspaceGoalGapAction(workspace, targetChannelId, sourcePayload)
   if (rawAction) {
     const backlogCheck = autonomousCodeCandidateCheck(rawAction, workspace, targetChannelId)
     if (!backlogCheck.ok) {
