@@ -57,7 +57,9 @@ test('live guard rejections block opportunity scout before Codex', () => {
   assert.match(workerSource, /if \(shouldSkipCodexOpportunityScoutForLiveRejections\(context\.pending \|\| \[\], context\.rejectionReasons \|\| \[\]\)\)/)
 })
 
-test('any good live candidate blocks synthetic scout', () => {
+test('only a live candidate that survived prior validation blocks synthetic scout', () => {
+  assert.match(workerSource, /const rejectedLiveActionIds = new Set/)
+  assert.match(workerSource, /if \(rejectedLiveActionIds\.has\(String\(action\?\.id \|\| ''\)\)\) return false/)
   assert.match(workerSource, /if \(hasGoodLiveCandidate\) \{/)
   assert.doesNotMatch(workerSource, /if \(!queueIsWeak && hasGoodLiveCandidate\)/)
 })

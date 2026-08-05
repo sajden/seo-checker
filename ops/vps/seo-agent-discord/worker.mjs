@@ -2575,13 +2575,16 @@ async function syntheticAutonomousActionForWorkspace({ workspace, targetChannelI
     })
     return null
   }
+  const rejectedLiveActionIds = new Set(
+    rejectionReasons.map((item) => String(item?.id || '')).filter(Boolean)
+  )
   const hasGoodLiveCandidate = pending.some((action) => {
+    if (rejectedLiveActionIds.has(String(action?.id || ''))) return false
     const check = autonomousCodeCandidateCheck(action, workspace, targetChannelId)
     if (!check.ok) return false
     const review = reviewActionForPosting(action, workspace, targetChannelId, workspacePolicy)
     return isAutonomousReviewSafe(review)
   })
-  const queueIsWeak = !pending.length || rejectionReasons.length >= Math.min(pending.length, 4)
   if (hasGoodLiveCandidate) {
     logThrottled(`synthetic_autonomous_skipped:${workspace?.id || workspace?.label}:live`, 30 * 60 * 1000, 'synthetic_autonomous_skipped', { workspace: workspace?.label || workspace?.id || null, reason: 'good_live_candidate_available', pendingCount: pending.length })
     return null
