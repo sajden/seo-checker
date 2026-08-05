@@ -159,6 +159,8 @@ test('chain health verifies a real production map in desktop and mobile Chrome',
   assert.match(watchdogSource, /asset\.naturalWidth > 0/)
   assert.match(watchdogSource, /name: 'desktop'/)
   assert.match(watchdogSource, /name: 'mobil'/)
+  assert.match(watchdogSource, /seo-heavy-work-global\.json/)
+  assert.match(watchdogSource, /MemAvailable/)
 })
 
 test('ranking reviews distinguish research ideas from actual code work', () => {

@@ -120,6 +120,7 @@ async function checkRuntimeHealth() {
 }
 
 async function checkCriticalLiveExperiences() {
+  if (!hasLiveBrowserCapacity()) return
   const checks = [
     {
       id: 'parkeringspolaren-map',
@@ -159,6 +160,22 @@ async function checkCriticalLiveExperiences() {
   } finally {
     await browser?.close().catch(() => {})
   }
+}
+
+function hasLiveBrowserCapacity() {
+  const heavyWorkLock = '/home/deploy/seo-agent-workspaces/.locks/seo-heavy-work-global.json'
+  const owner = readJson(heavyWorkLock, null)
+  if (owner?.pid) {
+    try {
+      process.kill(Number(owner.pid), 0)
+      return false
+    } catch {}
+  }
+  try {
+    const availableKb = Number(readFileSync('/proc/meminfo', 'utf8').match(/^MemAvailable:\s+(\d+)/m)?.[1] || 0)
+    if (availableKb && availableKb < 700 * 1024) return false
+  } catch {}
+  return true
 }
 
 async function checkLiveExperience(browser, check, viewport) {
