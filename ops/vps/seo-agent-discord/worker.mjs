@@ -448,10 +448,11 @@ async function reconcileInterruptedPromotions(workspaces) {
         continue
       }
     }
+    const mainCommit = String(completedResult.commit || commit).trim()
     const completedAt = new Date().toISOString()
     state.codeActionResults[actionId] = { ...record, status: 'completed', completedAt, result: completedResult }
     recordActionLedger(action, workspace, await channelForWorkspace(workspace), 'completed', {
-      commit,
+      commit: mainCommit,
       repoFullName,
       source: 'interrupted_promotion_recovery'
     })
@@ -467,13 +468,13 @@ async function reconcileInterruptedPromotions(workspaces) {
     }
     if (!record.promotionRecoveryNotifiedAt && targetChannelId) {
       await sendDiscordMessage([
-        `Promotionens status återställdes efter ett avbrutet svar för ${workspace.label || repoFullName}.`,
-        `Commit på main: ${commit}`,
+        `Ändringen publicerades för ${workspace.label || repoFullName}. Agentens svar avbröts efter pushen, men statusen har verifierats och återställts.`,
+        `Commit på main: ${mainCommit}`,
         context.targetUrl ? `Mål-URL: ${context.targetUrl}` : '',
-        'Statusen är återställd till klar och blockerar inte längre nästa SEO-jobb.'
+        'SEO-jobbet är klart och blockerar inte nästa jobb.'
       ].filter(Boolean).join('\n'), targetChannelId, [], { kind: 'code_result' })
     }
-    log('interrupted_promotion_recovered_completed', { actionId, repoFullName, commit })
+    log('interrupted_promotion_recovered_completed', { actionId, repoFullName, reviewCommit: commit, mainCommit })
   }
   saveState()
 }

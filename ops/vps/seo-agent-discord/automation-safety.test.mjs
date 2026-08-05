@@ -139,6 +139,8 @@ test('an interrupted approved promotion is retried without asking for approval a
   assert.match(workerSource, /status: 'operator_approved'/)
   assert.match(workerSource, /interrupted_promotion_retry_failed/)
   assert.match(workerSource, /!record\?\.operatorApprovedAt/)
+  assert.match(workerSource, /const mainCommit = String\(completedResult\.commit \|\| commit\)/)
+  assert.match(workerSource, /Commit på main: \$\{mainCommit\}/)
 })
 
 test('repo health requires exact local and remote sync', () => {
