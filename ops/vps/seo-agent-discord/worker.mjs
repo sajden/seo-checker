@@ -2764,10 +2764,12 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
   const previousInvalidScoutAt = Date.parse(previousScout?.at || '')
   const previousInvalidScoutAgeMs = Number.isFinite(previousInvalidScoutAt) ? Date.now() - previousInvalidScoutAt : Infinity
   const scoutMinIntervalMs = opportunityScoutIntervalForWorkspace(profile, context)
-  if (previousScout?.blockedReason && previousInvalidScoutAgeMs >= 0 && previousInvalidScoutAgeMs < opportunityScoutInvalidCooldownMs) {
+  const previousScoutBlockedReason = previousScout?.blockedReason
+    || (previousScout?.status === 'no_policy_compatible_opportunity' ? previousScout?.reason || 'no_policy_compatible_opportunity' : null)
+  if (previousScoutBlockedReason && previousInvalidScoutAgeMs >= 0 && previousInvalidScoutAgeMs < opportunityScoutInvalidCooldownMs) {
     logThrottled(`codex_opportunity_skipped:${key}:blocked`, 60 * 60 * 1000, 'codex_opportunity_skipped', {
       workspace: workspace?.label || workspace?.id || null,
-      reason: previousScout.blockedReason || 'recent_invalid_scout',
+      reason: previousScoutBlockedReason || 'recent_invalid_scout',
       ageMinutes: Math.round(previousInvalidScoutAgeMs / 60000),
       minIntervalMinutes: Math.round(opportunityScoutInvalidCooldownMs / 60000)
     })

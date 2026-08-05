@@ -71,6 +71,12 @@ test('Sebcastwall bypasses static goal gaps and uses the evidence-backed scout',
   )
 })
 
+test('policy-incompatible opportunity scouts cool down before Codex retries', () => {
+  assert.match(workerSource, /previousScoutBlockedReason/)
+  assert.match(workerSource, /previousScout\?\.status === 'no_policy_compatible_opportunity'/)
+  assert.match(workerSource, /reason: previousScoutBlockedReason \|\| 'recent_invalid_scout'/)
+})
+
 test('runtime mutations require bearer authentication', () => {
   assert.match(runtimeSource, /runtime_auth_not_configured/)
   assert.match(runtimeSource, /isAuthorizedRuntimeRequest/)
