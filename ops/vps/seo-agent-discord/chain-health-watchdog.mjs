@@ -190,7 +190,7 @@ async function checkLiveExperience(browser, check, viewport) {
     const response = await page.goto(check.url, { waitUntil: 'domcontentloaded', timeout: 25_000 })
     if (!response?.ok()) throw new Error(`HTTP ${response?.status() || 'utan svar'}`)
     const container = page.locator(check.readySelector).first()
-    await container.scrollIntoViewIfNeeded({ timeout: 15_000 })
+    await container.evaluate((element) => element.scrollIntoView({ block: 'center' }))
     await container.waitFor({ state: 'visible', timeout: 15_000 })
     await page.waitForFunction((selector) => {
       const root = document.querySelector(selector)

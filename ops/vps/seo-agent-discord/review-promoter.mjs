@@ -254,7 +254,7 @@ async function verifyCriticalProductionExperience(repo) {
         const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 25_000 })
         if (!response?.ok()) throw new Error(`HTTP ${response?.status() || 'utan svar'}`)
         const map = page.locator('[data-map-engine]').first()
-        await map.scrollIntoViewIfNeeded({ timeout: 15_000 })
+        await map.evaluate((element) => element.scrollIntoView({ block: 'center' }))
         await map.waitFor({ state: 'visible', timeout: 15_000 })
         await page.waitForFunction(() => {
           const root = document.querySelector('[data-map-engine]')
