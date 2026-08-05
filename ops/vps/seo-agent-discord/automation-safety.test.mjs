@@ -95,6 +95,8 @@ test('Parkeringspolaren map rendering is verified before main is pushed', () => 
   assert.ok(visualIndex >= 0)
   assert.ok(pushIndex > visualIndex)
   assert.match(promoterSource, /sajden\/parkeringspolaren-web/)
+  assert.match(promoterSource, /data-map-layer-ready/)
+  assert.match(promoterSource, /canvas\.mapboxgl-canvas/)
   assert.match(promoterSource, /img\.leaflet-tile/)
   assert.match(promoterSource, /naturalWidth > 0/)
   assert.match(promoterSource, /name: 'desktop'/)
@@ -103,6 +105,11 @@ test('Parkeringspolaren map rendering is verified before main is pushed', () => 
 
 test('Discord worker passes its loaded Cloudflare token to review promotion', () => {
   assert.match(workerSource, /CLOUDFLARE_API_TOKEN: env\.CLOUDFLARE_API_TOKEN/)
+})
+
+test('Discord worker passes the public Mapbox build configuration to review promotion', () => {
+  assert.match(workerSource, /NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN: env\.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN/)
+  assert.match(workerSource, /NEXT_PUBLIC_MAPBOX_STYLE: env\.NEXT_PUBLIC_MAPBOX_STYLE/)
 })
 
 test('repository tests run before an approved SEO branch is built', () => {
@@ -171,6 +178,8 @@ test('automatic deploys use immutable commit checkouts and drift monitoring', ()
 test('chain health verifies a real production map in desktop and mobile Chrome', () => {
   assert.match(watchdogSource, /checkCriticalLiveExperiences/)
   assert.match(watchdogSource, /parkeringspolaren\.se\/sv\/mc-parkering-jonkoping/)
+  assert.match(watchdogSource, /data-map-layer-ready/)
+  assert.match(watchdogSource, /canvas\.mapboxgl-canvas/)
   assert.match(watchdogSource, /img\.leaflet-tile/)
   assert.match(watchdogSource, /asset\.naturalWidth > 0/)
   assert.match(watchdogSource, /name: 'desktop'/)

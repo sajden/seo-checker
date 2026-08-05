@@ -126,8 +126,7 @@ async function checkCriticalLiveExperiences() {
       id: 'parkeringspolaren-map',
       label: 'Parkeringspolaren karta',
       url: 'https://parkeringspolaren.se/sv/mc-parkering-jonkoping',
-      readySelector: '.leaflet-container',
-      assetSelector: 'img.leaflet-tile',
+      readySelector: '[data-map-engine]',
       viewports: [
         { name: 'desktop', width: 1365, height: 768 },
         { name: 'mobil', width: 390, height: 844 }
@@ -183,7 +182,9 @@ async function checkLiveExperience(browser, check, viewport) {
   const page = await context.newPage()
   const failures = []
   page.on('requestfailed', (request) => {
-    if (/tile\.openstreetmap\.org/i.test(request.url())) failures.push(`${request.failure()?.errorText || 'request_failed'}: ${request.url()}`)
+    if (/(?:tile\.openstreetmap\.org|(?:api|events)\.mapbox\.com|tiles\.mapbox\.com)/i.test(request.url())) {
+      failures.push(`${request.failure()?.errorText || 'request_failed'}: ${request.url()}`)
+    }
   })
   try {
     const response = await page.goto(check.url, { waitUntil: 'domcontentloaded', timeout: 25_000 })
@@ -192,9 +193,24 @@ async function checkLiveExperience(browser, check, viewport) {
     await container.scrollIntoViewIfNeeded({ timeout: 15_000 })
     await container.waitFor({ state: 'visible', timeout: 15_000 })
     await page.waitForFunction((selector) => {
-      const assets = [...document.querySelectorAll(selector)]
-      return assets.some((asset) => asset instanceof HTMLImageElement && asset.complete && asset.naturalWidth > 0)
-    }, check.assetSelector, { timeout: 15_000 })
+      const root = document.querySelector(selector)
+      const count = Number(root?.getAttribute('data-map-record-count') || 0)
+      return root?.getAttribute('data-map-layer-ready') === 'true' && count > 0
+    }, check.readySelector, { timeout: 15_000 })
+    const engine = await container.getAttribute('data-map-engine')
+    if (engine === 'mapbox') {
+      await page.waitForFunction((selector) => {
+        const canvas = document.querySelector(`${selector} canvas.mapboxgl-canvas`)
+        return canvas instanceof HTMLCanvasElement && canvas.width > 0 && canvas.height > 0
+      }, check.readySelector, { timeout: 15_000 })
+    } else if (engine === 'leaflet') {
+      await page.waitForFunction((selector) => {
+        const assets = [...document.querySelectorAll(`${selector} img.leaflet-tile`)]
+        return assets.some((asset) => asset instanceof HTMLImageElement && asset.complete && asset.naturalWidth > 0)
+      }, check.readySelector, { timeout: 15_000 })
+    } else {
+      throw new Error(`okänd kartmotor: ${engine || 'saknas'}`)
+    }
     if (failures.length) throw new Error(failures[0])
   } catch (error) {
     addIssue(

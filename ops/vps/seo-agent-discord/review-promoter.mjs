@@ -245,22 +245,37 @@ async function verifyCriticalProductionExperience(repo) {
       const context = await browser.newContext({ viewport })
       try {
         const page = await context.newPage()
-        const tileFailures = []
+        const mapFailures = []
         page.on('requestfailed', (request) => {
-          if (/tile\.openstreetmap\.org/i.test(request.url())) {
-            tileFailures.push(request.failure()?.errorText || 'request_failed')
+          if (/(?:tile\.openstreetmap\.org|(?:api|events)\.mapbox\.com|tiles\.mapbox\.com)/i.test(request.url())) {
+            mapFailures.push(request.failure()?.errorText || 'request_failed')
           }
         })
         const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 25_000 })
         if (!response?.ok()) throw new Error(`HTTP ${response?.status() || 'utan svar'}`)
-        const map = page.locator('.leaflet-container').first()
+        const map = page.locator('[data-map-engine]').first()
         await map.scrollIntoViewIfNeeded({ timeout: 15_000 })
         await map.waitFor({ state: 'visible', timeout: 15_000 })
         await page.waitForFunction(() => {
-          return [...document.querySelectorAll('img.leaflet-tile')]
-            .some((tile) => tile instanceof HTMLImageElement && tile.complete && tile.naturalWidth > 0)
+          const root = document.querySelector('[data-map-engine]')
+          const count = Number(root?.getAttribute('data-map-record-count') || 0)
+          return root?.getAttribute('data-map-layer-ready') === 'true' && count > 0
         }, undefined, { timeout: 15_000 })
-        if (tileFailures.length) throw new Error(`OSM tile request failed: ${tileFailures[0]}`)
+        const engine = await map.getAttribute('data-map-engine')
+        if (engine === 'mapbox') {
+          await page.waitForFunction(() => {
+            const canvas = document.querySelector('[data-map-engine] canvas.mapboxgl-canvas')
+            return canvas instanceof HTMLCanvasElement && canvas.width > 0 && canvas.height > 0
+          }, undefined, { timeout: 15_000 })
+        } else if (engine === 'leaflet') {
+          await page.waitForFunction(() => {
+            return [...document.querySelectorAll('[data-map-engine] img.leaflet-tile')]
+              .some((tile) => tile instanceof HTMLImageElement && tile.complete && tile.naturalWidth > 0)
+          }, undefined, { timeout: 15_000 })
+        } else {
+          throw new Error(`okänd kartmotor: ${engine || 'saknas'}`)
+        }
+        if (mapFailures.length) throw new Error(`Map request failed: ${mapFailures[0]}`)
       } catch (error) {
         return { ok: false, error: `${viewport.name}: ${String(error?.message || error).split('\n')[0].slice(0, 500)}` }
       } finally {

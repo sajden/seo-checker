@@ -4101,6 +4101,8 @@ async function promoteReviewReadyAction(actionId, result, action, options = {}) 
       env: {
         ...process.env,
         CLOUDFLARE_API_TOKEN: env.CLOUDFLARE_API_TOKEN || process.env.CLOUDFLARE_API_TOKEN || '',
+        NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN: env.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN || process.env.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN || '',
+        NEXT_PUBLIC_MAPBOX_STYLE: env.NEXT_PUBLIC_MAPBOX_STYLE || process.env.NEXT_PUBLIC_MAPBOX_STYLE || '',
         PATH: `${process.env.HOME || '/home/deploy'}/.npm-global/bin:${process.env.HOME || '/home/deploy'}/.local/bin:${process.env.PATH || ''}`
       },
       timeout: 55 * 60 * 1000,
