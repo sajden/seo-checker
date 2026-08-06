@@ -190,6 +190,11 @@ test('pending review branches are reminded in Discord', () => {
   assert.match(workerSource, /pending_code_review_reminded/)
 })
 
+test('old Discord controls cannot execute archived SEO work', () => {
+  assert.match(workerSource, /messageAgeMs > 14 \* 24 \* 60 \* 60 \* 1000/)
+  assert.match(workerSource, /SEO-kortet är arkiverat/)
+})
+
 test('Codex rewrites must provide a final target URL', () => {
   assert.match(workerSource, /codexBrief\.decision === 'rewrite'/)
   assert.match(workerSource, /targetUrl.*slutlig https-URL/)

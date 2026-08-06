@@ -5055,6 +5055,16 @@ function startDiscordInteractionClient() {
         return
       }
 
+      const messageAgeMs = Date.now() - Number(interaction.message?.createdTimestamp || 0)
+      if (messageAgeMs > 14 * 24 * 60 * 60 * 1000) {
+        await interaction.reply({
+          content: 'Det här SEO-kortet är arkiverat och kan inte längre köras. Aktuella beslut finns längst ned i respektive SEO-kanal.',
+          flags: MessageFlags.Ephemeral
+        })
+        await interaction.message.edit({ components: [] }).catch(() => null)
+        return
+      }
+
       const actionId = state.messageToAction?.[interaction.message?.id] || extractActionIdFromDiscordMessage(interaction.message)
       if (!actionId) {
         await interaction.reply({ content: 'Jag hittar inte action-id för den här knappen. Be mig posta om det aktiva kortet, så skickar jag en ny knapp.', flags: MessageFlags.Ephemeral })
