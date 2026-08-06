@@ -13,6 +13,7 @@ import { requestsVisualChangeText, requiresOperatorProposalText } from './operat
 import { isPlainObject, mergeJsonChanges } from './json-state-merge.mjs'
 import { reviewCapacityCheck } from './review-capacity-policy.mjs'
 import { canonicalRepoFullName, workspaceProfileKey } from './workspace-identity.mjs'
+import { checkActionEvidenceIntegrity } from './action-evidence-policy.mjs'
 
 const env = loadEnv([
   '/home/deploy/.hermes/.env',
@@ -68,10 +69,10 @@ const maxPendingReviewsPerWorkspace = Math.max(1, Number(env.SEO_AGENT_MAX_PENDI
 const opportunityScoutMinIntervalMs = Number(env.SEO_AGENT_OPPORTUNITY_SCOUT_MIN_INTERVAL_MS || String(90 * 60 * 1000))
 const opportunityScoutGrowthMinIntervalMs = Number(env.SEO_AGENT_OPPORTUNITY_SCOUT_GROWTH_MIN_INTERVAL_MS || String(60 * 60 * 1000))
 const opportunityScoutInvalidCooldownMs = Number(env.SEO_AGENT_OPPORTUNITY_SCOUT_INVALID_COOLDOWN_MS || String(3 * 60 * 60 * 1000))
-const sameTargetAutonomousCooldownMs = Number(env.SEO_AGENT_SAME_TARGET_AUTONOMOUS_COOLDOWN_MS || String(30 * 24 * 60 * 60 * 1000))
+const sameTargetAutonomousCooldownMs = Number(env.SEO_AGENT_SAME_TARGET_AUTONOMOUS_COOLDOWN_MS || String(90 * 24 * 60 * 60 * 1000))
 const sameTargetAutonomousMaxRecent = Number(env.SEO_AGENT_SAME_TARGET_AUTONOMOUS_MAX_RECENT || '1')
 const engagementMinViews = Number(env.SEO_AGENT_ENGAGEMENT_MIN_VIEWS || '50')
-const completedTargetCooldownMs = Number(env.SEO_AGENT_COMPLETED_TARGET_COOLDOWN_MS || String(30 * 24 * 60 * 60 * 1000))
+const completedTargetCooldownMs = Number(env.SEO_AGENT_COMPLETED_TARGET_COOLDOWN_MS || String(90 * 24 * 60 * 60 * 1000))
 const repeatedIntentCooldownMs = Number(env.SEO_AGENT_REPEATED_INTENT_COOLDOWN_MS || String(90 * 24 * 60 * 60 * 1000))
 const codexChatEnabled = env.SEO_AGENT_CODEX_CHAT_ENABLED !== 'false'
 const smartOutboundGuardEnabled = env.SEO_AGENT_SMART_OUTBOUND_GUARD !== 'false'
@@ -2252,6 +2253,8 @@ function autonomousCodeCandidateCheck(action, workspace, targetChannelId) {
   }
   const engagementCheck = engagementEvidenceCheck(action)
   if (!engagementCheck.ok) return engagementCheck
+  const evidenceIntegrity = checkActionEvidenceIntegrity(action)
+  if (!evidenceIntegrity.ok) return evidenceIntegrity
   const kind = actionKindForLearning(action)
   if (!['content', 'internal-links'].includes(kind)) return { ok: false, reason: `unsupported_kind:${kind}` }
   if (isSebcastwallWorkspace(workspace) && String(action?.id || '').startsWith('seo_synthetic_')) {
@@ -2273,6 +2276,7 @@ function autonomousCodeCandidateCheck(action, workspace, targetChannelId) {
   if (ledger?.status === 'completed' && !isLedgerRecheckDue(ledger)) return { ok: false, reason: 'already_completed_waiting_recheck' }
   if (ledger?.status === 'deprioritized' && !isLedgerRecheckDue(ledger)) return { ok: false, reason: 'recently_deprioritized_waiting_recheck' }
   if (ledger?.status === 'ignored' && !isLedgerRecheckDue(ledger)) return { ok: false, reason: 'recently_ignored_waiting_recheck' }
+  if (ledger?.status === 'rejected' && !isLedgerRecheckDue(ledger)) return { ok: false, reason: 'recently_rejected_waiting_recheck' }
   return { ok: true, reason: 'candidate' }
 }
 
@@ -2467,7 +2471,7 @@ async function remindPendingCodeReviews(workspaces) {
   if (!clearedPreviousCards) return false
   const commitUrl = result.commit ? githubCommitUrl(result.repoFullName || workspace.repoFullName, result.commit) : ''
   const posted = await sendDiscordMessage([
-    `Påminnelse: en SEO-ändring väntar på granskning för ${workspace.label || workspace.repoFullName}.`,
+    `Påminnelse om samma SEO-ändring för ${workspace.label || workspace.repoFullName}. Det här är inte ett nytt förslag.`,
     `Action ID: \`${actionId}\``,
     postedAction.title ? `Kort: ${postedAction.title}` : '',
     result.commit ? `Commit: ${result.commit}` : '',
@@ -2573,6 +2577,11 @@ function isWaitOrGuardRejectionReason(reason) {
     || text === 'workspace_review_limit'
     || text === 'same_target_recent_experiment_limit'
     || text === 'target_recently_completed_waiting_measurement'
+    || text === 'recently_rejected_waiting_recheck'
+    || text === 'gsc_claim_without_gsc_provenance'
+    || text === 'verified_evidence_source_mismatch'
+    || text === 'fresh_evidence_missing_timestamp'
+    || text === 'fresh_evidence_is_stale'
     || /^(?:already_completed|recently_(?:deprioritized|guarded|ignored|skipped|failed)|failed)_waiting_recheck$/.test(text)
     || text === 'missing_target_url'
     || text === 'new_page_needs_human_approval'
@@ -2654,12 +2663,12 @@ async function syntheticAutonomousActionForWorkspace({ workspace, targetChannelI
   }
   const action = await enrichActionWithKeywordMetrics({
     ...rawAction,
-    evidenceSource: sourcePayload?.batchId ? 'fresh_seo_run_plus_workspace_backlog' : 'workspace_goal_backlog',
-    evidenceBatchId: sourcePayload?.batchId || null,
-    evidenceRunAt: sourcePayload?.runAt || sourcePayload?.lastRunAt || sourcePayload?.batch?.lastRunAt || null,
-    evidenceNote: sourcePayload?.batchId
+    evidenceSource: rawAction.evidenceSource || (sourcePayload?.batchId ? 'fresh_seo_run_plus_workspace_backlog' : 'workspace_goal_backlog'),
+    evidenceBatchId: rawAction.evidenceBatchId || sourcePayload?.batchId || null,
+    evidenceRunAt: rawAction.evidenceRunAt || sourcePayload?.runAt || sourcePayload?.lastRunAt || sourcePayload?.batch?.lastRunAt || null,
+    evidenceNote: rawAction.evidenceNote || (sourcePayload?.batchId
       ? `Agent-skapad backlog validerad mot färsk SEO Monitor-batch ${sourcePayload.batchId}; ska ändå inte beskrivas som exakt GSC-query om actionen inte kommer direkt från live-actions.`
-      : 'Agent-skapad backlog från workspace-mål och tidigare ledger; ska inte beskrivas som färsk GSC-query om live-data saknas.'
+      : 'Agent-skapad backlog från workspace-mål och tidigare ledger; ska inte beskrivas som färsk GSC-query om live-data saknas.')
   })
   const candidateCheck = autonomousCodeCandidateCheck(action, workspace, targetChannelId)
   if (!candidateCheck.ok) {
@@ -2755,6 +2764,7 @@ function buildWorkspaceGoalGapAction(workspace, targetChannelId = null, sourcePa
     if (ledger?.status === 'completed' && !isLedgerRecheckDue(ledger)) continue
     if (ledger?.status === 'ignored' && !isLedgerRecheckDue(ledger)) continue
     if (ledger?.status === 'deprioritized' && !isLedgerRecheckDue(ledger)) continue
+    if (ledger?.status === 'rejected' && !isLedgerRecheckDue(ledger)) continue
     return action
   }
   return null
@@ -2832,7 +2842,7 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
     const inMeasurementWindow = Number.isFinite(completedAt) && Date.now() - completedAt < sameTargetAutonomousCooldownMs
     if ((inMeasurementWindow || reviewAfter > Date.now()) && experiment.targetUrl) excludedTargets.push(experiment.targetUrl)
   }
-  const recentCodeResultBlockedStatuses = new Set(['completed', 'no_changes', 'build_failed', 'failed', 'deprioritized', 'blocked', 'review_ready'])
+  const recentCodeResultBlockedStatuses = new Set(['completed', 'no_changes', 'build_failed', 'failed', 'deprioritized', 'blocked', 'rejected', 'review_ready'])
   for (const item of recentCodeResults) {
     const resultAt = Date.parse(item.at || '')
     const status = String(item.status || '')
@@ -8319,7 +8329,7 @@ function recentCodeResultsForWorkspace(workspace, targetChannelId = null) {
       targetUrl: ledger.targetUrl || result.result?.targetUrl || '',
       keyword: ledger.keyword || result.result?.keyword || '',
       commit: result.result?.commit || ledger.commit || '',
-      at: result.completedAt || result.failedAt || ledger.lastEventAt || '',
+      at: result.completedAt || result.rejectedAt || result.failedAt || ledger.lastEventAt || '',
       failureCategory: result.failure?.category || '',
       summary: result.failure?.operatorSummary || result.error || ''
     }))
@@ -9123,7 +9133,7 @@ function rememberCodexRejectedAction(action, workspace, targetChannelId, codexBr
   const decision = String(codexBrief?.decision || '').toLowerCase()
   const reason = `codex:${codexBrief?.recommendation || codexBrief?.decision || 'unavailable'}:${codexBrief?.reason || codexBrief?.why || source}`
   const event = recommendation === 'deprioritize' ? 'deprioritized' : recommendation === 'skip' || decision === 'block' ? 'ignored' : 'guarded'
-  const recheckDays = event === 'guarded' ? 1 : 7
+  const recheckDays = event === 'guarded' ? 1 : event === 'ignored' ? 90 : 45
   recordActionLedger(action, workspace, targetChannelId, event, {
     reason: reason.slice(0, 360),
     source,
@@ -9197,7 +9207,7 @@ function ledgerStatusForEvent(event, fallback = 'seen') {
 
 function defaultLedgerRecheck(status, nowIso) {
   const date = new Date(nowIso)
-  if (status === 'completed') date.setDate(date.getDate() + 14)
+  if (status === 'completed' || status === 'rejected') date.setDate(date.getDate() + 90)
   else if (status === 'ignored' || status === 'deprioritized' || status === 'guarded') date.setDate(date.getDate() + 45)
   else date.setDate(date.getDate() + 7)
   return date.toISOString().slice(0, 10)

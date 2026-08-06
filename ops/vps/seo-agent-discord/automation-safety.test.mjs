@@ -79,7 +79,7 @@ test('policy-incompatible opportunity scouts cool down before Codex retries', ()
 
 test('recent code result targets are removed from opportunity scout evidence before Codex', () => {
   assert.match(workerSource, /const recentCodeResults = recentCodeResultsForWorkspace\(workspace, targetChannelId\)/)
-  assert.match(workerSource, /const recentCodeResultBlockedStatuses = new Set\(\['completed', 'no_changes', 'build_failed', 'failed', 'deprioritized', 'blocked', 'review_ready'\]\)/)
+  assert.match(workerSource, /const recentCodeResultBlockedStatuses = new Set\(\['completed', 'no_changes', 'build_failed', 'failed', 'deprioritized', 'blocked', 'rejected', 'review_ready'\]\)/)
   assert.match(workerSource, /Date\.now\(\) - resultAt < completedTargetCooldownMs/)
   assert.match(workerSource, /recentCodeResultBlockedStatuses\.has\(status\)\) excludedTargets\.push\(targetUrl\)/)
   assert.ok(workerSource.indexOf('recentCodeResultBlockedStatuses') < workerSource.indexOf('excludeOpportunityEvidenceTargets(rawEvidenceContext, excludedTargets)'))
@@ -187,6 +187,7 @@ test('pending review branches are reminded in Discord', () => {
   assert.match(workerSource, /remindPendingCodeReviews\(workspaces\)/)
   assert.match(workerSource, /clearReviewComponentsForAction\(actionId, targetChannelId\)/)
   assert.match(workerSource, /pending_code_review_previous_card_clear_failed/)
+  assert.match(workerSource, /Det här är inte ett nytt förslag/)
   assert.match(workerSource, /pending_code_review_reminded/)
 })
 
@@ -255,4 +256,17 @@ test('cosmetic synonym-only SEO diffs are blocked deterministically', () => {
   assert.match(runnerSource, /deterministicMaterialityReview\(input, diff\.stdout\)/)
   assert.match(runnerSource, /similarity < 0\.88/)
   assert.match(runnerSource, /utan materiellt nytt SEO-värde/)
+})
+
+test('target history and rejected actions use a ninety day guard', () => {
+  assert.match(workerSource, /SEO_AGENT_COMPLETED_TARGET_COOLDOWN_MS \|\| String\(90 \* 24 \* 60 \* 60 \* 1000\)/)
+  assert.match(workerSource, /ledger\?\.status === 'rejected' && !isLedgerRecheckDue\(ledger\)/)
+  assert.match(workerSource, /status === 'completed' \|\| status === 'rejected'/)
+})
+
+test('verified evidence provenance survives synthetic action enrichment', () => {
+  assert.match(workerSource, /evidenceSource: rawAction\.evidenceSource \|\|/)
+  assert.match(workerSource, /checkActionEvidenceIntegrity\(action\)/)
+  assert.match(workerSource, /gsc_claim_without_gsc_provenance/)
+  assert.match(workerSource, /fresh_evidence_is_stale/)
 })
