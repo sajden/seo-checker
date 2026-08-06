@@ -8097,7 +8097,6 @@ function selectRankingReviewNextStep({ workspace, profile, keywordMap, actions, 
 function shouldNotifyRankingReview(review) {
   if (!review?.ok) return false
   if (review.pendingFollowups?.length) return true
-  if (review.weakLiveQueue && review.next?.type === 'keyword_gap') return true
   return false
 }
 

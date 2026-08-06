@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { promisify } from 'node:util'
+import { applyIssueHysteresis } from './chain-health-policy.mjs'
 
 const exec = promisify(execFile)
 const env = loadEnv(['/home/deploy/.hermes/.env', '/home/deploy/seo-agent-discord/.env'])
@@ -17,6 +18,8 @@ const runtimeUrl = (env.SEO_RUNTIME_URL || 'http://127.0.0.1:1460').replace(/\/$
 const workerStaleMs = Number(env.SEO_AGENT_CHAIN_WORKER_STALE_MS || 15 * 60 * 1000)
 const repoHealthStaleMs = Number(env.SEO_AGENT_CHAIN_REPO_HEALTH_STALE_MS || 45 * 60 * 1000)
 const repeatAlertMs = Number(env.SEO_AGENT_CHAIN_ALERT_REPEAT_MS || 6 * 60 * 60 * 1000)
+const liveFailureThreshold = Number(env.SEO_AGENT_CHAIN_LIVE_FAILURE_THRESHOLD || 3)
+const recoveryThreshold = Number(env.SEO_AGENT_CHAIN_RECOVERY_THRESHOLD || 2)
 const dryRun = env.SEO_AGENT_CHAIN_HEALTH_DRY_RUN === 'true' || process.argv.includes('--dry-run')
 
 const previous = readJson(alertStatePath, {})
@@ -33,23 +36,25 @@ checkRepoHealth()
 checkStaleCodeWork()
 
 const now = new Date()
-const issueIds = issues.map((issue) => issue.id).sort()
+const health = applyIssueHysteresis(issues, previous, { liveFailureThreshold, recoveryThreshold })
+const confirmedIssues = health.activeIssues
+const issueIds = health.activeIds
 const previousIds = Array.isArray(previous.activeIssueIds) ? previous.activeIssueIds.slice().sort() : []
 const changed = JSON.stringify(issueIds) !== JSON.stringify(previousIds)
 const lastAlertAt = Date.parse(previous.lastAlertAt || '')
 const shouldRepeat = !Number.isFinite(lastAlertAt) || now.getTime() - lastAlertAt >= repeatAlertMs
 
-if (issues.length && (changed || shouldRepeat)) {
+if (confirmedIssues.length && (changed || shouldRepeat)) {
   await notify([
     '**SEO-kedjan behöver tillsyn**',
-    ...issues.map((issue) => `- **${issue.label}:** ${issue.detail}`),
+    ...confirmedIssues.map((issue) => `- **${issue.label}:** ${issue.detail}`),
     '',
     'Samma felläge larmas inte igen förrän läget ändras eller sex timmar har gått.'
   ].join('\n'))
   previous.lastAlertAt = now.toISOString()
 }
 
-if (!issues.length && previousIds.length) {
+if (!confirmedIssues.length && previousIds.length) {
   await notify([
     '**SEO-kedjan är återställd**',
     `Tidigare fel är borta: ${previousIds.join(', ')}.`,
@@ -61,13 +66,14 @@ if (!issues.length && previousIds.length) {
 const nextState = {
   ...previous,
   checkedAt: now.toISOString(),
-  status: issues.length ? 'degraded' : 'healthy',
+  status: confirmedIssues.length ? 'degraded' : 'healthy',
   activeIssueIds: issueIds,
-  activeIssues: issues
+  activeIssues: confirmedIssues,
+  issueObservations: health.issueObservations
 }
 writeJson(alertStatePath, nextState)
 console.log(JSON.stringify(nextState, null, 2))
-if (issues.length) process.exitCode = 1
+if (confirmedIssues.length) process.exitCode = 1
 
 async function checkService(unit, id) {
   try {
@@ -196,7 +202,7 @@ async function checkLiveExperience(browser, check, viewport) {
       const root = document.querySelector(selector)
       const count = Number(root?.getAttribute('data-map-record-count') || 0)
       return root?.getAttribute('data-map-layer-ready') === 'true' && count > 0
-    }, check.readySelector, { timeout: 15_000 })
+    }, check.readySelector, { timeout: 25_000 })
     const engine = await container.getAttribute('data-map-engine')
     if (engine === 'mapbox') {
       await page.waitForFunction((selector) => {

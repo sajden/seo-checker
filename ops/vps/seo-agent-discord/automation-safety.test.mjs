@@ -216,8 +216,20 @@ test('chain health verifies a real production map in desktop and mobile Chrome',
   assert.doesNotMatch(watchdogSource, /scrollIntoViewIfNeeded/)
 })
 
+test('chain health debounces intermittent live-browser failures', () => {
+  assert.match(watchdogSource, /applyIssueHysteresis/)
+  assert.match(watchdogSource, /SEO_AGENT_CHAIN_LIVE_FAILURE_THRESHOLD \|\| 3/)
+  assert.match(watchdogSource, /SEO_AGENT_CHAIN_RECOVERY_THRESHOLD \|\| 2/)
+})
+
 test('ranking reviews distinguish research ideas from actual code work', () => {
   assert.match(workerSource, /Status: research-kandidat/)
   assert.match(workerSource, /Ingen kodändring eller branch har skapats av denna review/)
   assert.match(workerSource, /eligibleLiveActionCount/)
+  assert.doesNotMatch(workerSource, /if \(review\.weakLiveQueue && review\.next\?\.type === 'keyword_gap'\) return true/)
+})
+
+test('Swedish SEO copy does not preserve awkward English grammar for exact match', () => {
+  assert.match(runnerSource, /använder inte engelsk plural/)
+  assert.match(runnerSource, /Do not preserve English plural forms/)
 })
