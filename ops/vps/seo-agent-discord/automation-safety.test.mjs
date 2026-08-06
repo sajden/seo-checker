@@ -270,3 +270,12 @@ test('verified evidence provenance survives synthetic action enrichment', () => 
   assert.match(workerSource, /gsc_claim_without_gsc_provenance/)
   assert.match(workerSource, /fresh_evidence_is_stale/)
 })
+
+test('approved runtime queue is revalidated immediately before execution', () => {
+  const processStart = workerSource.indexOf('async function processApprovedCodeActions')
+  const runtimeStart = workerSource.indexOf('const runtimeRun = await runNextApprovedCodeActionThroughRuntime()', processStart)
+  const policyRecheck = workerSource.indexOf('prunePolicyIncompatibleApprovedQueue(workspaces)', processStart)
+  assert.ok(processStart >= 0 && policyRecheck > processStart && policyRecheck < runtimeStart)
+  assert.match(workerSource, /pre_runtime_policy_recheck/)
+  assert.match(workerSource, /approved_queue_pruned_by_policy/)
+})

@@ -3710,6 +3710,8 @@ async function processApprovedCodeActions(workspaces) {
     saveState()
   }
   state.codeActionResults = state.codeActionResults || {}
+  const prunedQueuedActions = await prunePolicyIncompatibleApprovedQueue(workspaces)
+  if (prunedQueuedActions > 0) saveState()
   const runtimeRun = await runNextApprovedCodeActionThroughRuntime()
   if (runtimeRun?.running) return true
   if (runtimeRun?.uncertain) return true
@@ -3770,6 +3772,38 @@ async function processApprovedCodeActions(workspaces) {
     }
     return
   }
+}
+
+async function prunePolicyIncompatibleApprovedQueue(workspaces) {
+  const queue = state.approvedCodeActionQueue || {}
+  let pruned = 0
+  for (const entry of Object.values(queue)) {
+    if (!entry?.id) continue
+    const workspace = workspaces.find((item) => item.repoFullName === entry.repoFullName)
+      || workspaces.find((item) => item.label === entry.workspaceSlug)
+      || { label: entry.workspaceSlug || entry.repoFullName || 'workspace', repoFullName: entry.repoFullName, branch: entry.branch || 'main' }
+    const targetChannelId = entry.channelId || await channelForWorkspace(workspace)
+    const policy = autonomousCodeCandidateCheck(entry, workspace, targetChannelId)
+    if (policy.ok) continue
+    delete state.approvedCodeActionQueue[entry.id]
+    recordActionLedger(entry, workspace, targetChannelId, 'rejected', {
+      source: 'pre_runtime_policy_recheck',
+      reason: policy.reason,
+      recheckAfter: isoDatePlusDays(90)
+    })
+    state.codeActionResults[entry.id] = {
+      status: 'rejected',
+      rejectedAt: new Date().toISOString(),
+      rejectionReason: `pre_runtime_policy_recheck:${policy.reason}`
+    }
+    log('approved_queue_pruned_by_policy', {
+      actionId: entry.id,
+      workspace: workspace?.label || workspace?.repoFullName || null,
+      reason: policy.reason
+    })
+    pruned += 1
+  }
+  return pruned
 }
 
 async function processQueuedApprovedCodeAction(workspaces) {
