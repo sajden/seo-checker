@@ -21,3 +21,20 @@ export function checkActionEvidenceIntegrity(action, options = {}) {
   }
   return { ok: true, reason: 'evidence_integrity_ok' }
 }
+
+export function attachBatchEvidenceProvenance(action, sourcePayload = null) {
+  if (!action || typeof action !== 'object' || action.evidenceSource || !sourcePayload?.batchId) return action
+  const evidenceText = [action.why, ...(Array.isArray(action.evidence) ? action.evidence : [])]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase()
+  const hasGscEvidence = /\bgsc\b|search console/.test(evidenceText)
+  return {
+    ...action,
+    evidenceSource: hasGscEvidence ? 'seo_monitor_gsc_batch' : 'seo_monitor_batch',
+    evidenceBatchId: sourcePayload.batchId,
+    evidenceNote: hasGscEvidence
+      ? `SEO Monitor-batch ${sourcePayload.batchId} innehåller GSC-proveniens; aktualitet på enskild query ska inte påstås utan separat tidsstämpel.`
+      : `SEO Monitor-batch ${sourcePayload.batchId}; ingen färsk GSC-query får påstås utan strukturerad GSC-evidens.`
+  }
+}

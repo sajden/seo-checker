@@ -7,6 +7,48 @@ function combinedActionText(action) {
   ].filter(Boolean).join('\n')
 }
 
+function normalizedSearchText(value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function keywordCoverageClaim(action) {
+  const keyword = String(action?.keyword || '').trim()
+  if (!keyword) return null
+  const text = normalizedSearchText(combinedActionText(action))
+  if (!/tack keyword|lagg in keyword|keyword hittades inte|title h1 h2 meta|exakt sokfras|exakt query|saknar exakt/.test(text)) return null
+  return keyword
+}
+
+function significantKeywordTokens(keyword) {
+  const stopWords = new Set(['och', 'att', 'den', 'det', 'for', 'fran', 'med', 'mot', 'pa', 'som', 'till', 'vid'])
+  return normalizedSearchText(keyword)
+    .split(' ')
+    .filter((token) => token.length >= 2 && !stopWords.has(token))
+}
+
+function tokenCoveredBySignal(token, words) {
+  return words.some((word) => word === token
+    || (token.length >= 3 && word.startsWith(token))
+    || (word.length >= 3 && token.startsWith(word)))
+}
+
+export function keywordAlreadyCovered(keyword, signals) {
+  const tokens = significantKeywordTokens(keyword)
+  if (!tokens.length) return false
+  const words = normalizedSearchText([
+    signals?.title,
+    signals?.h1,
+    signals?.metaDescription
+  ].filter(Boolean).join(' ')).split(' ').filter(Boolean)
+  return tokens.every((token) => tokenCoveredBySignal(token, words))
+}
+
 export function claimedMissingSignals(action) {
   const text = combinedActionText(action)
   return {
@@ -45,7 +87,8 @@ export function extractLivePageSignals(html) {
 
 export async function validateActionAgainstLivePage(action, fetchImpl = fetch) {
   const claimed = claimedMissingSignals(action)
-  if (!Object.values(claimed).some(Boolean)) {
+  const claimedKeyword = keywordCoverageClaim(action)
+  if (!Object.values(claimed).some(Boolean) && !claimedKeyword) {
     return { ok: true, checked: false, reason: 'no_missing_signal_claim' }
   }
   const targetUrl = String(action?.targetUrl || action?.url || '').trim()
@@ -62,6 +105,16 @@ export async function validateActionAgainstLivePage(action, fetchImpl = fetch) {
       return { ok: false, checked: true, reason: `live_page_http_${response.status}`, targetUrl }
     }
     const present = extractLivePageSignals(await response.text())
+    if (claimedKeyword && keywordAlreadyCovered(claimedKeyword, present)) {
+      return {
+        ok: false,
+        checked: true,
+        reason: 'live_page_already_covers_keyword_semantically',
+        targetUrl,
+        keyword: claimedKeyword,
+        present
+      }
+    }
     const contradicted = Object.entries(claimed)
       .filter(([key, isMissing]) => isMissing && Boolean(present[key]))
       .map(([key]) => key)

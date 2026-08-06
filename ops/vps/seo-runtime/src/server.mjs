@@ -583,6 +583,9 @@ async function fetchLiveActions(workspaceKey, payload = {}) {
         source: 'platform',
         path,
         actions: platformPayload.actions,
+        batchId: platformPayload.batchId || null,
+        contractVersion: platformPayload.contractVersion || null,
+        projectSlug: platformPayload.projectSlug || null,
         workspacePolicy: platformPayload.workspacePolicy || '',
         workspace: platformPayload.workspace || null,
         raw: payload.includeRaw ? platformPayload : undefined

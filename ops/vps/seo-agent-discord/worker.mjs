@@ -13,7 +13,7 @@ import { requestsVisualChangeText, requiresOperatorProposalText } from './operat
 import { isPlainObject, mergeJsonChanges } from './json-state-merge.mjs'
 import { reviewCapacityCheck } from './review-capacity-policy.mjs'
 import { canonicalRepoFullName, workspaceProfileKey } from './workspace-identity.mjs'
-import { checkActionEvidenceIntegrity } from './action-evidence-policy.mjs'
+import { attachBatchEvidenceProvenance, checkActionEvidenceIntegrity } from './action-evidence-policy.mjs'
 
 const env = loadEnv([
   '/home/deploy/.hermes/.env',
@@ -2141,7 +2141,13 @@ async function chooseAutonomousCodeAction(actions, workspace, targetChannelId, w
     rememberNoAutonomousCandidate(workspace, targetChannelId, [], [{ reason: 'seo_batch_not_found_waiting_for_fresh_run' }])
     return null
   }
-  const pending = prioritizeActionQueue(actions.filter((item) => item?.status === 'pending'), workspace, targetChannelId)
+  const pending = prioritizeActionQueue(
+    actions
+      .filter((item) => item?.status === 'pending')
+      .map((action) => attachBatchEvidenceProvenance(action, sourcePayload)),
+    workspace,
+    targetChannelId
+  )
   const rejectionReasons = []
   for (const action of pending) {
     if (!action?.id) {
@@ -7337,6 +7343,9 @@ async function fetchSeoMonitorActionsViaRuntime(workspace, limit, options = {}) 
       actions: payload.actions,
       workspacePolicy: payload.workspacePolicy || '',
       workspace: payload.workspace || null,
+      batchId: payload.batchId || null,
+      contractVersion: payload.contractVersion || null,
+      projectSlug: payload.projectSlug || null,
       runtimeSource: 'seo-runtime'
     }
     runtimeLiveActionsCache.set(cacheKey, { at: Date.now(), payload: runtimeResult })
