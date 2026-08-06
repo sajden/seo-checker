@@ -250,3 +250,9 @@ test('Swedish SEO copy does not preserve awkward English grammar for exact match
   assert.match(runnerSource, /använder inte engelsk plural/)
   assert.match(runnerSource, /Do not preserve English plural forms/)
 })
+
+test('cosmetic synonym-only SEO diffs are blocked deterministically', () => {
+  assert.match(runnerSource, /deterministicMaterialityReview\(input, diff\.stdout\)/)
+  assert.match(runnerSource, /similarity < 0\.88/)
+  assert.match(runnerSource, /utan materiellt nytt SEO-värde/)
+})

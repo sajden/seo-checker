@@ -369,7 +369,8 @@ async function runQualityGate(repoDir, input) {
     const diffStat = await run('git', ['diff', '--stat'], repoDir)
     if (!diffStat.stdout.trim()) throw new Error('Codex made no changes')
     const diff = await run('git', ['diff', '--', '.'], repoDir)
-    const review = deterministicLanguageReview(input, diff.stdout)
+    const review = deterministicMaterialityReview(input, diff.stdout)
+      || deterministicLanguageReview(input, diff.stdout)
       || await reviewDiffWithCodex(repoDir, input, diffStat.stdout, diff.stdout, attempt)
     lastReview = review
     if (review.decision === 'allow') return { ok: true, attempts: attempt, review }
@@ -386,6 +387,36 @@ async function runQualityGate(repoDir, input) {
   }
   await rejectDirtyWorktree(repoDir, input, lastReview || { reason: 'quality_unknown' })
   throw new Error('SEO quality gate failed without approval')
+}
+
+function deterministicMaterialityReview(input, diff) {
+  const lines = String(diff || '').split(/\r?\n/)
+  const removed = lines.filter((line) => line.startsWith('-') && !line.startsWith('---'))
+  const added = lines.filter((line) => line.startsWith('+') && !line.startsWith('+++'))
+  if (!removed.length || removed.length > 3 || added.length > 3) return null
+  const rationale = normalizeComparableText([input.title, input.why, input.recommendedAction].filter(Boolean).join(' '))
+  if (/felstav|sakfel|inaktuell|utgangen|canonical|redirect|404|juridisk/.test(rationale)) return null
+  const removedTokens = normalizeComparableText(removed.join(' ')).split(' ').filter(Boolean)
+  const addedTokens = normalizeComparableText(added.join(' ')).split(' ').filter(Boolean)
+  if (removedTokens.length < 8 || addedTokens.length < 8) return null
+  const removedCounts = tokenCounts(removedTokens)
+  const addedCounts = tokenCounts(addedTokens)
+  let shared = 0
+  for (const [token, count] of removedCounts) shared += Math.min(count, addedCounts.get(token) || 0)
+  const similarity = shared / Math.max(removedTokens.length, addedTokens.length)
+  if (similarity < 0.88) return null
+  return {
+    decision: 'block',
+    reason: 'Diffen är nästan identisk med befintlig text och består främst av ett litet synonymbyte utan materiellt nytt SEO-värde.',
+    requiredFix: '',
+    confidence: 1
+  }
+}
+
+function tokenCounts(tokens) {
+  const counts = new Map()
+  for (const token of tokens) counts.set(token, (counts.get(token) || 0) + 1)
+  return counts
 }
 
 function deterministicLanguageReview(input, diff) {
@@ -433,6 +464,7 @@ async function reviewDiffWithCodex(repoDir, input, diffStat, diff, attempt) {
     '- är tydligt kopplad till target URL/keyword eller workspace-mål,',
     '- inte lägger in generisk malltext,',
     '- inte upprepar samma experiment utan ny evidens,',
+    '- blockerar kosmetiska synonymbyten och enstaka generiska verbbyten när sidans innebörd, sökintention och erbjudande förblir oförändrade,',
     '- inte lägger SMB/B2B/konsult/SaaS-språk på konsumenttjänster,',
     '- använder naturlig, idiomatisk svenska i synlig copy; verifierad sökvolym tillåter inte ordagrann keyword-stuffing, utelämnade prepositioner eller sökfraser som låter som rå querydata,',
     '- böjer och integrerar engelska sökfraser naturligt på svenska sidor; använder inte engelsk plural eller engelsk meningsbyggnad bara för att matcha en rå query,',
