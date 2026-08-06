@@ -157,6 +157,16 @@ test('repo health requires exact local and remote sync', () => {
   assert.match(repoHealthSource, /unpushed_commits/)
 })
 
+test('automation readiness accepts a clean pending review branch', () => {
+  assert.match(workerSource, /branch=\\"\$\(git -C \\"\$dir\\" branch --show-current\)\\"/)
+  assert.match(workerSource, /push --dry-run origin \\"HEAD:\$target\\"/)
+  const queueFunction = workerSource.slice(
+    workerSource.indexOf('async function maybeQueueAutonomousCodeActions'),
+    workerSource.indexOf('function autonomousWorkspaceOrder')
+  )
+  assert.ok(queueFunction.indexOf('activeActionBlocksAutonomousCode') < queueFunction.indexOf('repoAutomationReady'))
+})
+
 test('workspace identity prefers a canonical repository key', () => {
   assert.match(workerSource, /workspace-identity\.mjs/)
   assert.match(workerSource, /migrateWorkspaceIdentities\(workspaces\)/)

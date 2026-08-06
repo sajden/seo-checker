@@ -1846,6 +1846,14 @@ async function maybeQueueAutonomousCodeActions(workspaces) {
   for (const workspace of autonomousWorkspaceOrder(workspaces)) {
     const targetChannelId = await channelForWorkspace(workspace)
     if (!targetChannelId || !workspace.repoFullName) continue
+    const active = activeActionRecordFor(workspace, targetChannelId)
+    if (active?.actionId && activeActionBlocksAutonomousCode(active)) {
+      logThrottled(`autonomous_active_card_block:${active.actionId}`, 30 * 60 * 1000, 'autonomous_active_card_block', {
+        workspace: workspace.label || workspace.id || null,
+        actionId: active.actionId
+      })
+      continue
+    }
     const repoReady = await repoAutomationReady(workspace.repoFullName, workspace.branch || 'main')
     if (!repoReady.ready) {
       logThrottled(`autonomous_repo_not_ready:${workspace.repoFullName}`, 60 * 60 * 1000, 'autonomous_repo_not_ready', {
@@ -1862,14 +1870,6 @@ async function maybeQueueAutonomousCodeActions(workspaces) {
         workspace: workspace.label || workspace.id || null,
         usedToday,
         limit: autonomousCodePerWorkspacePerDay
-      })
-      continue
-    }
-    const active = activeActionRecordFor(workspace, targetChannelId)
-    if (active?.actionId && activeActionBlocksAutonomousCode(active)) {
-      logThrottled(`autonomous_active_card_block:${active.actionId}`, 30 * 60 * 1000, 'autonomous_active_card_block', {
-        workspace: workspace.label || workspace.id || null,
-        actionId: active.actionId
       })
       continue
     }
@@ -4368,7 +4368,7 @@ async function runLocalDoctor() {
     const exec = promisify(execFile)
     const [codex, git, repos] = await Promise.allSettled([
       exec('bash', ['-lc', 'export PATH="$HOME/.npm-global/bin:$HOME/.local/bin:$PATH"; command -v codex >/dev/null || { echo missing; exit 0; }; codex doctor 2>&1 | grep -Eiq "no Codex credentials|✗ auth|auth file.*missing" && echo auth_missing || echo ready']),
-      exec('bash', ['-lc', 'missing=\"\"; failed=\"\"; for repo in sebcastwall natverkskollen parkeringspolaren-web vagkollen; do dir=\"$HOME/seo-agent-workspaces/$repo\"; if [ ! -d \"$dir/.git\" ]; then missing=\"$missing ${repo}\"; continue; fi; if [ -n \"$(git -C \"$dir\" status --porcelain)\" ]; then failed=\"$failed ${repo}:dirty\"; continue; fi; git -C \"$dir\" fetch origin main >/dev/null 2>&1 && git -C \"$dir\" merge --ff-only FETCH_HEAD >/dev/null 2>&1 && git -C \"$dir\" push --dry-run origin HEAD:main >/dev/null 2>&1 || failed=\"$failed ${repo}\"; done; if [ -n \"$failed\" ]; then echo \"missing:${failed# }\"; else echo ready; fi']),
+      exec('bash', ['-lc', 'missing=\"\"; failed=\"\"; for repo in sebcastwall natverkskollen parkeringspolaren-web vagkollen; do dir=\"$HOME/seo-agent-workspaces/$repo\"; if [ ! -d \"$dir/.git\" ]; then missing=\"$missing ${repo}\"; continue; fi; if [ -n \"$(git -C \"$dir\" status --porcelain)\" ]; then failed=\"$failed ${repo}:dirty\"; continue; fi; branch=\"$(git -C \"$dir\" branch --show-current)\"; target=\"${branch:-main}\"; git -C \"$dir\" fetch origin \"$target\" >/dev/null 2>&1 && git -C \"$dir\" push --dry-run origin \"HEAD:$target\" >/dev/null 2>&1 || failed=\"$failed ${repo}\"; done; if [ -n \"$failed\" ]; then echo \"missing:${failed# }\"; else echo ready; fi']),
       exec('bash', ['-lc', 'missing=\"\"; for repo in sebcastwall natverkskollen parkeringspolaren-web vagkollen; do test -d \"$HOME/seo-agent-workspaces/$repo/.git\" || missing=\"$missing ${repo}\"; done; if [ -n \"$missing\" ]; then echo \"missing:${missing# }\"; else echo ready; fi']),
     ])
     return {
