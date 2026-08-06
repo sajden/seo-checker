@@ -2807,6 +2807,14 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
     const inMeasurementWindow = Number.isFinite(completedAt) && Date.now() - completedAt < sameTargetAutonomousCooldownMs
     if ((inMeasurementWindow || reviewAfter > Date.now()) && experiment.targetUrl) excludedTargets.push(experiment.targetUrl)
   }
+  const recentCodeResultBlockedStatuses = new Set(['completed', 'no_changes', 'build_failed', 'failed', 'deprioritized', 'blocked', 'review_ready'])
+  for (const item of recentCodeResults) {
+    const resultAt = Date.parse(item.at || '')
+    const status = String(item.status || '')
+    const targetUrl = String(item.targetUrl || '').trim()
+    const inResultCooldown = Number.isFinite(resultAt) && Date.now() - resultAt < completedTargetCooldownMs
+    if (targetUrl && inResultCooldown && recentCodeResultBlockedStatuses.has(status)) excludedTargets.push(targetUrl)
+  }
   if (isSebcastwallWorkspace(workspace, profile)) {
     const supportTrackUrls = [
       ...rawEvidenceContext.gscRows.map((item) => item.page),

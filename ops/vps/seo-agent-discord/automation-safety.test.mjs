@@ -77,6 +77,15 @@ test('policy-incompatible opportunity scouts cool down before Codex retries', ()
   assert.match(workerSource, /reason: previousScoutBlockedReason \|\| 'recent_invalid_scout'/)
 })
 
+test('recent code result targets are removed from opportunity scout evidence before Codex', () => {
+  assert.match(workerSource, /const recentCodeResults = recentCodeResultsForWorkspace\(workspace, targetChannelId\)/)
+  assert.match(workerSource, /const recentCodeResultBlockedStatuses = new Set\(\['completed', 'no_changes', 'build_failed', 'failed', 'deprioritized', 'blocked', 'review_ready'\]\)/)
+  assert.match(workerSource, /Date\.now\(\) - resultAt < completedTargetCooldownMs/)
+  assert.match(workerSource, /recentCodeResultBlockedStatuses\.has\(status\)\) excludedTargets\.push\(targetUrl\)/)
+  assert.ok(workerSource.indexOf('recentCodeResultBlockedStatuses') < workerSource.indexOf('excludeOpportunityEvidenceTargets(rawEvidenceContext, excludedTargets)'))
+  assert.ok(workerSource.indexOf('recentCodeResultBlockedStatuses') < workerSource.indexOf('buildKeywordPlannerDiscoveryEvidence(keywordMap, excludedTargets)'))
+})
+
 test('runtime mutations require bearer authentication', () => {
   assert.match(runtimeSource, /runtime_auth_not_configured/)
   assert.match(runtimeSource, /isAuthorizedRuntimeRequest/)
