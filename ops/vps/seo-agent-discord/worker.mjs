@@ -2463,6 +2463,8 @@ async function remindPendingCodeReviews(workspaces) {
   const postedAction = state.postedActionIds?.[actionId] || {}
   const targetChannelId = postedAction.channelId || await channelForWorkspace(workspace)
   if (!targetChannelId) return false
+  const clearedPreviousCards = await clearReviewComponentsForAction(actionId, targetChannelId)
+  if (!clearedPreviousCards) return false
   const commitUrl = result.commit ? githubCommitUrl(result.repoFullName || workspace.repoFullName, result.commit) : ''
   const posted = await sendDiscordMessage([
     `Påminnelse: en SEO-ändring väntar på granskning för ${workspace.label || workspace.repoFullName}.`,
@@ -2480,6 +2482,29 @@ async function remindPendingCodeReviews(workspaces) {
   state.lastCodeReviewReminderAt = new Date().toISOString()
   log('pending_code_review_reminded', { actionId, repoFullName: result.repoFullName || null, messageId: posted.id })
   saveState()
+  return true
+}
+
+async function clearReviewComponentsForAction(actionId, targetChannelId) {
+  const messageIds = Object.entries(state.messageToAction || {})
+    .filter(([, mappedActionId]) => String(mappedActionId || '') === String(actionId || ''))
+    .map(([messageId]) => messageId)
+  for (const messageId of messageIds) {
+    try {
+      await discordJson(`/channels/${targetChannelId}/messages/${messageId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ components: [] })
+      })
+      delete state.messageToAction[messageId]
+    } catch (error) {
+      log('pending_code_review_previous_card_clear_failed', {
+        actionId,
+        messageId,
+        error: error?.message || String(error)
+      })
+      return false
+    }
+  }
   return true
 }
 
