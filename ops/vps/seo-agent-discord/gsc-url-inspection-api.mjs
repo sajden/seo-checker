@@ -11,7 +11,7 @@ const stateDir = '/home/deploy/seo-agent-discord/state'
 const input = JSON.parse(readFileSync(inputPath, 'utf8'))
 const command = String(input.command || '').trim()
 
-if (!['doctor', 'doctor-shallow', 'inspect-url'].includes(command)) throw new Error(`Unsupported command: ${command}`)
+if (!['doctor', 'doctor-shallow', 'inspect-url', 'submit-sitemap'].includes(command)) throw new Error(`Unsupported command: ${command}`)
 
 const result = await run(command, input)
 console.log(JSON.stringify(result, null, 2))
@@ -83,6 +83,23 @@ async function run(command, input) {
       status: 'missing_oauth_config',
       error: 'GSC URL Inspection API requires OAuth client id, client secret and refresh token'
     }
+  }
+
+  if (command === 'submit-sitemap') {
+    const siteUrl = normalizeSiteUrl(String(input.gscProperty || '').trim(), input)
+    const sitemapUrl = String(input.sitemapUrl || '').trim()
+    if (!/^https:\/\//i.test(sitemapUrl)) return { ok: false, command, status: 'invalid_sitemap_url', error: 'sitemapUrl must be an https URL' }
+    const accessToken = hasGoogleServiceAccount(env)
+      ? await googleServiceAccountAccessToken(env, 'https://www.googleapis.com/auth/webmasters')
+      : await refreshAccessToken(config)
+    const response = await fetch(`https://www.googleapis.com/webmasters/v3/sites/${encodeURIComponent(siteUrl)}/sitemaps/${encodeURIComponent(sitemapUrl)}`, {
+      method: 'PUT',
+      headers: { authorization: `Bearer ${accessToken}` }
+    })
+    const payload = response.status === 204 ? null : await response.json().catch(() => null)
+    return response.ok
+      ? { ok: true, command, status: 'sitemap_submitted', siteUrl, sitemapUrl }
+      : { ok: false, command, status: `google_api_${response.status}`, siteUrl, sitemapUrl, error: payload?.error?.message || `google_api_${response.status}` }
   }
 
   const targetUrl = String(input.targetUrl || '').trim()

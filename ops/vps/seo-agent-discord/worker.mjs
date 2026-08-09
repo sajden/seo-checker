@@ -14,6 +14,7 @@ import { isPlainObject, mergeJsonChanges } from './json-state-merge.mjs'
 import { reviewCapacityCheck } from './review-capacity-policy.mjs'
 import { canonicalRepoFullName, workspaceProfileKey } from './workspace-identity.mjs'
 import { attachBatchEvidenceProvenance, checkActionEvidenceIntegrity } from './action-evidence-policy.mjs'
+import { exactTargetFromRecords, validateExactInspection } from './gsc-exact-url-policy.mjs'
 
 const env = loadEnv([
   '/home/deploy/.hermes/.env',
@@ -1382,7 +1383,8 @@ async function collectGscIssueEvidence(issue, sitemapUrls) {
 
 async function inspectGscIssueQuietly(action, workspace) {
   try {
-    const targetUrl = String(action?.targetUrl || '')
+    const targetUrl = exactTargetFromRecords({ action })
+    if (!targetUrl) return { status: 'unknown', confidence: 0, reason: 'missing_exact_target_url' }
     const host = targetUrl ? new URL(targetUrl).hostname.replace(/^www\./, '') : workspaceHost(workspace)
     const result = await runGscInspectionThroughRuntime({
       command: 'inspect-url',
@@ -1391,6 +1393,14 @@ async function inspectGscIssueQuietly(action, workspace) {
       gscProperty: workspace?.gscProperty || '',
       targetUrl
     })
+    const exactVerdict = validateExactInspection({ expectedUrl: targetUrl, result })
+    if (!exactVerdict.ok) {
+      log('gsc_quiet_exact_target_guarded', { actionId: action?.id || null, targetUrl, reason: exactVerdict.reason, inspectedUrl: exactVerdict.inspected || null })
+      return { status: 'unknown', confidence: 0, reason: exactVerdict.reason }
+    }
+    if (exactVerdict.reason === 'google_canonical_differs') {
+      return { ...result.inspection, status: 'not_indexed_or_warning', confidence: 0.95, reason: exactVerdict.reason }
+    }
     return result?.inspection || null
   } catch (error) {
     logThrottled(`gsc_quiet_inspection_failed:${action?.id || 'unknown'}`, 6 * 60 * 60 * 1000, 'gsc_quiet_inspection_failed', {
@@ -1556,6 +1566,7 @@ async function postGscIssueAction({ action, issue, workspace, targetChannelId, s
       messageId: posted.id,
       channelId: targetChannelId,
       title: action.title,
+      targetUrl: action.targetUrl || action.url || null,
       workspaceId: workspace.id || null,
       postedAt: new Date().toISOString()
     }
@@ -1564,6 +1575,7 @@ async function postGscIssueAction({ action, issue, workspace, targetChannelId, s
       actionId: action.id,
       messageId: posted.id,
       channelId: targetChannelId,
+      targetUrl: action.targetUrl || action.url || null,
       workspaceId: workspace.id || null,
       firstPostedAt: new Date().toISOString(),
       postedAt: new Date().toISOString()
@@ -4595,6 +4607,7 @@ async function postPendingActions({ workspace, targetChannelId }) {
         messageId: posted.id,
         channelId: targetChannelId,
         title: enrichedAction.title || '',
+        targetUrl: enrichedAction.targetUrl || enrichedAction.url || null,
         workspaceId: workspace?.id || null,
         postedAt: new Date().toISOString()
       }
@@ -4602,6 +4615,7 @@ async function postPendingActions({ workspace, targetChannelId }) {
         actionId: id,
         messageId: posted.id,
         channelId: targetChannelId,
+        targetUrl: enrichedAction.targetUrl || enrichedAction.url || null,
         workspaceId: workspace?.id || null,
         firstPostedAt: new Date().toISOString(),
         postedAt: new Date().toISOString()
@@ -5207,8 +5221,19 @@ async function handleGscUiButton(actionId, targetChannelId) {
 }
 
 async function runGscInspectionAction(action, workspace, targetChannelId, source = 'gsc_firefox_ui') {
-  const targetUrl = action.targetUrl || ''
+  const targetUrl = exactTargetFromRecords({ action })
+  if (!targetUrl) {
+    const error = 'missing_exact_target_url'
+    recordActionLedger(action, workspace, targetChannelId, 'guarded', { source, reason: error, recheckAfter: isoDatePlusDays(1) })
+    await sendDiscordMessage([
+      `GSC-kontrollen stoppades för ${workspace?.label || workspace?.id || 'workspace'}.`,
+      'Fel: kortet saknar en exakt mål-URL. Jag använder aldrig startsidan som reserv för en undersida.',
+      `Action ID: ${action?.id || 'saknas'}`
+    ].join('\n'), targetChannelId)
+    return { ok: false, indexedByGsc: false, error }
+  }
   const host = targetUrl ? new URL(targetUrl).hostname.replace(/^www\./, '') : String(workspace?.gscProperty || '').replace(/^sc-domain:/, '')
+  const readiness = await collectIndexingReadiness(targetUrl, workspace)
   const input = {
     command: 'inspect-url',
     workspaceId: workspace?.id || null,
@@ -5224,7 +5249,18 @@ async function runGscInspectionAction(action, workspace, targetChannelId, source
     return { ok: false, status: 'runtime_unavailable', error: error?.message || String(error) }
   })
   const observationPath = result?.observation?.path || ''
-  const indexedByGsc = result?.inspection?.status === 'indexed' && Number(result?.inspection?.confidence || 0) >= 0.8
+  const exactVerdict = validateExactInspection({ expectedUrl: targetUrl, result })
+  const indexedByGsc = exactVerdict.ok && exactVerdict.indexed && readiness.indexable
+  if (!exactVerdict.ok) {
+    log('gsc_exact_target_guarded', { actionId: action.id, targetUrl, reason: exactVerdict.reason, inspectedUrl: exactVerdict.inspected || null })
+    recordActionLedger(action, workspace, targetChannelId, 'guarded', {
+      source,
+      reason: exactVerdict.reason,
+      expectedUrl: targetUrl,
+      inspectedUrl: exactVerdict.inspected || null,
+      recheckAfter: isoDatePlusDays(1)
+    })
+  }
   if (indexedByGsc) {
     const decisionInput = {
       actionId: action.id,
@@ -5243,15 +5279,20 @@ async function runGscInspectionAction(action, workspace, targetChannelId, source
       clearActiveAction(action.id)
     }
     state.indexingConfirmations = state.indexingConfirmations || {}
-    state.indexingConfirmations[`${workspace?.label || workspace?.id || 'workspace'}:${normalizeActionPath(action.targetUrl || '')}`] = {
+    state.indexingConfirmations[`${workspace?.label || workspace?.id || 'workspace'}:${normalizeActionPath(targetUrl)}`] = {
       status: 'indexed',
       actionId: action.id,
       confirmedAt: new Date().toISOString(),
       source,
+      targetUrl,
       observationPath,
       inspection: result.inspection
     }
     saveState()
+  }
+  let sitemapSubmission = null
+  if (result.ok && !indexedByGsc && readiness.inSitemap && readiness.sitemapUrl) {
+    sitemapSubmission = await submitWorkspaceSitemap(workspace, readiness.sitemapUrl, targetUrl)
   }
   await sendDiscordMessage([
     `${source === 'auto_gsc_ui' ? 'Jag försökte själv köra' : 'GSC URL Inspection körd för'} ${workspace?.label || workspace?.id || 'workspace'}.`,
@@ -5261,6 +5302,13 @@ async function runGscInspectionAction(action, workspace, targetChannelId, source
     indexedByGsc ? `Resultat: GSC visar att URL:en är indexerad (${Number(result.inspection.confidence).toFixed(2)} confidence). Jag markerade kortet som hanterat.` : '',
     result.ok && observationPath ? `Observation sparad på VPS: ${observationPath}` : '',
     result.ok && !indexedByGsc ? formatGscInspectionFollowup(result) : '',
+    `Teknisk kontroll: HTTP ${readiness.httpStatus || 'okänt'} · sitemap ${readiness.inSitemap ? 'ja' : readiness.inSitemap === false ? 'nej' : 'okänd'} · canonical ${readiness.canonicalMatches ? 'rätt' : readiness.canonicalUrl ? 'avviker' : 'saknas'} · noindex ${readiness.noindex ? 'ja' : 'nej'}.`,
+    readiness.parentUrl ? `Intern länk från föräldrasidan: ${readiness.linkedFromParent ? 'ja' : 'nej'} (${readiness.parentUrl}).` : '',
+    sitemapSubmission?.ok ? `Sitemap skickades om via Search Console API: ${readiness.sitemapUrl}.` : '',
+    sitemapSubmission && !sitemapSubmission.ok ? `Sitemap kunde inte skickas om: ${sitemapSubmission.error || sitemapSubmission.status || 'okänt fel'}.` : '',
+    result.ok && !indexedByGsc && readiness.indexable ? 'Nästa steg: öppna exakt URL i Search Console och välj Begär indexering. Google erbjuder ingen generell API för detta på vanliga tjänstesidor.' : '',
+    !exactVerdict.ok ? `Säkerhetsstopp: resultatet gällde ${exactVerdict.inspected || 'ingen verifierbar URL'}, inte exakt ${targetUrl}. Kortet är fortfarande öppet.` : '',
+    exactVerdict.ok && exactVerdict.reason === 'google_canonical_differs' ? `Resultat: Google använder en annan canonical (${exactVerdict.googleCanonical}). Sidan markeras inte som indexerad.` : '',
     !result.ok ? `Fel: ${result.error || result.status || 'kunde inte öppna GSC UI'}` : ''
   ].filter(Boolean).join('\n'), targetChannelId)
   return {
@@ -5268,6 +5316,77 @@ async function runGscInspectionAction(action, workspace, targetChannelId, source
     indexedByGsc,
     error: result.error || result.status || '',
     observationPath
+  }
+}
+
+async function collectIndexingReadiness(targetUrl, workspace) {
+  const normalizedTarget = normalizeComparableUrl(targetUrl)
+  const sitemapUrls = await fetchWorkspaceSitemapUrls(workspace)
+  const parsed = new URL(targetUrl)
+  const pathParts = parsed.pathname.split('/').filter(Boolean)
+  const parentUrl = pathParts.length > 1 ? `${parsed.origin}/${pathParts.slice(0, -1).join('/')}` : ''
+  const result = {
+    targetUrl,
+    httpStatus: 0,
+    inSitemap: sitemapUrls instanceof Set ? sitemapUrls.has(normalizedTarget) : null,
+    sitemapUrl: `https://${parsed.hostname.replace(/^www\./, '')}/sitemap.xml`,
+    canonicalUrl: '',
+    canonicalMatches: false,
+    noindex: false,
+    parentUrl,
+    linkedFromParent: null,
+    indexable: false
+  }
+  try {
+    const response = await fetch(targetUrl, { redirect: 'follow', signal: AbortSignal.timeout(10000) })
+    result.httpStatus = response.status
+    const html = await response.text()
+    const canonical = html.match(/<link\b[^>]*\brel=["'][^"']*canonical[^"']*["'][^>]*\bhref=["']([^"']+)["'][^>]*>|<link\b[^>]*\bhref=["']([^"']+)["'][^>]*\brel=["'][^"']*canonical[^"']*["'][^>]*>/i)
+    result.canonicalUrl = canonical ? new URL(canonical[1] || canonical[2], targetUrl).toString() : ''
+    result.canonicalMatches = Boolean(result.canonicalUrl && normalizeComparableUrl(result.canonicalUrl) === normalizedTarget)
+    result.noindex = /<meta\b[^>]*(?:name|property)=["']robots["'][^>]*content=["'][^"']*noindex/i.test(html) || /\bnoindex\b/i.test(response.headers.get('x-robots-tag') || '')
+  } catch (error) {
+    result.fetchError = error?.message || String(error)
+  }
+  if (parentUrl) {
+    try {
+      const response = await fetch(parentUrl, { redirect: 'follow', signal: AbortSignal.timeout(10000) })
+      const html = await response.text()
+      const hrefs = [...html.matchAll(/<a\b[^>]*\bhref=["']([^"']+)["']/gi)].map((match) => {
+        try { return normalizeComparableUrl(new URL(match[1], parentUrl).toString()) } catch { return '' }
+      })
+      result.linkedFromParent = hrefs.includes(normalizedTarget)
+    } catch {
+      result.linkedFromParent = null
+    }
+  }
+  result.indexable = result.httpStatus >= 200 && result.httpStatus < 300 && !result.noindex && result.canonicalMatches
+  return result
+}
+
+async function submitWorkspaceSitemap(workspace, sitemapUrl, targetUrl) {
+  state.gscSitemapSubmissions = state.gscSitemapSubmissions || {}
+  const key = `${workspace?.id || workspace?.label || 'workspace'}:${sitemapUrl}`
+  const previousAt = Date.parse(state.gscSitemapSubmissions[key]?.submittedAt || '')
+  if (previousAt && Date.now() - previousAt < 24 * 60 * 60 * 1000) return { ok: true, status: 'recently_submitted' }
+  try {
+    const response = await fetch(`${seoRuntimeUrl}/seo/integrations/gsc/sitemap-submit`, {
+      method: 'POST',
+      headers: runtimeHeaders(),
+      body: JSON.stringify({
+        workspaceId: workspace?.id || null,
+        workspaceHost: new URL(targetUrl).hostname.replace(/^www\./, ''),
+        gscProperty: workspace?.gscProperty || '',
+        sitemapUrl
+      })
+    })
+    const payload = await response.json().catch(() => ({}))
+    const result = payload.result || payload
+    state.gscSitemapSubmissions[key] = { submittedAt: new Date().toISOString(), ok: Boolean(result.ok), status: result.status || '', error: result.error || null }
+    saveState()
+    return result
+  } catch (error) {
+    return { ok: false, status: 'runtime_unavailable', error: error?.message || String(error) }
   }
 }
 
@@ -6583,6 +6702,7 @@ async function repostActiveActionCard(workspace, payload, targetChannelId, optio
       messageId: posted.id,
       channelId: targetChannelId,
       title: enrichedAction.title || '',
+      targetUrl: enrichedAction.targetUrl || enrichedAction.url || null,
       workspaceId: workspace?.id || null,
       repostedAt: new Date().toISOString()
     }
@@ -6592,6 +6712,7 @@ async function repostActiveActionCard(workspace, payload, targetChannelId, optio
       actionId: action.id,
       messageId: posted.id,
       channelId: targetChannelId,
+      targetUrl: enrichedAction.targetUrl || enrichedAction.url || null,
       workspaceId: workspace?.id || null,
       firstPostedAt: activeRecord?.firstPostedAt || activeRecord?.postedAt || new Date().toISOString(),
       postedAt: new Date().toISOString(),
@@ -9395,8 +9516,9 @@ function fallbackActionFromState(actionId, targetChannelId = null, workspace = n
     String(record?.actionId || '') === id &&
     (!targetChannelId || String(record?.channelId || '') === String(targetChannelId))
   )) || null
-  if (!posted && !active) return null
-  const inferredTargetUrl = inferFallbackActionTargetUrl(id, workspace, active, posted)
+  const ledger = Object.values(state.actionLedger || {}).find((record) => String(record?.actionId || '') === id) || null
+  if (!posted && !active && !ledger) return null
+  const inferredTargetUrl = exactTargetFromRecords({ posted, active, ledger })
   const isIndexing = /kontrollera-indexering|url-inspection|beg-r-indexering|begar-indexering/i.test(id) || /kontrollera indexering|url inspection|begär indexering|begar indexering/i.test(posted?.title || '')
   return {
     id,
@@ -9416,38 +9538,6 @@ function fallbackActionFromState(actionId, targetChannelId = null, workspace = n
     projectSlug: workspace?.label || active?.workspaceId || posted?.workspaceId || null,
     source: 'discord_state'
   }
-}
-
-function inferFallbackActionTargetUrl(actionId, workspace = null, active = null, posted = null) {
-  const candidates = [
-    workspace?.gscProperty,
-    workspace?.id,
-    active?.workspaceId,
-    posted?.workspaceId
-  ].filter(Boolean).map(String)
-  for (const value of candidates) {
-    const firstPart = value.split('__')[0]
-    if (/^https?:\/\//i.test(firstPart)) return ensureTrailingSlash(firstPart)
-    const domain = firstPart.replace(/^sc-domain:/, '').trim()
-    if (/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(domain)) return `https://${domain}/`
-  }
-  const id = String(actionId || '')
-  const domainMatch = id.match(/(?:^|_)([a-z0-9-]+)-se(?:_|$)/i)
-  if (domainMatch?.[1]) return `https://${domainMatch[1].replace(/-/g, '')}.se/`
-  return null
-}
-
-function ensureTrailingSlash(value) {
-  const text = String(value || '').trim()
-  if (!text) return text
-  try {
-    const parsed = new URL(text)
-    if (!parsed.pathname || parsed.pathname === '/') {
-      parsed.pathname = '/'
-      return parsed.toString()
-    }
-  } catch {}
-  return text.endsWith('/') ? text : `${text}/`
 }
 
 async function buildActionCardMessage(action, workspacePolicy, workspace, review = null, targetChannelId = null) {

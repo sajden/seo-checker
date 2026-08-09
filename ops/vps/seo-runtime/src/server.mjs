@@ -96,6 +96,11 @@ async function handleRequest(request, response) {
     const result = await inspectGscUrl(body)
     return sendJson(response, result.statusCode || 200, result.body)
   }
+  if (request.method === 'POST' && url.pathname === '/seo/integrations/gsc/sitemap-submit') {
+    const body = await readJsonBody(request)
+    const result = await submitGscSitemap(body)
+    return sendJson(response, result.statusCode || 200, result.body)
+  }
   const nextMatch = url.pathname.match(/^\/seo\/workspaces\/([^/]+)\/actions\/next$/)
   if (request.method === 'POST' && nextMatch) {
     const workspaceKey = decodeURIComponent(nextMatch[1])
@@ -504,6 +509,16 @@ async function inspectGscUrl(payload = {}) {
 
 async function runGscUrlInspectionApiTool(input) {
   return runJsonNodeTool(gscUrlInspectionToolPath, input, 'gsc-url-inspection-api')
+}
+
+async function submitGscSitemap(payload = {}) {
+  const result = await runGscUrlInspectionApiTool({ ...payload, command: 'submit-sitemap' }).catch((error) => ({
+    ok: false,
+    command: 'submit-sitemap',
+    status: 'api_exception',
+    error: error?.message || String(error)
+  }))
+  return { statusCode: 200, body: { ok: Boolean(result.ok), runtimeKey, source: 'google_search_console_api', result } }
 }
 
 async function runGscFirefoxUiTool(input) {
