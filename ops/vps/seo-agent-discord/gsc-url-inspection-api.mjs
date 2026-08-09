@@ -140,6 +140,7 @@ async function run(command, input) {
     source: 'google_url_inspection_api',
     siteUrl,
     targetUrl,
+    inspectionResultLink: String(payload?.inspectionResult?.inspectionResultLink || ''),
     inspection,
     raw: payload
   }
@@ -192,7 +193,7 @@ function normalizeInspection(payload) {
   const userCanonical = String(indexStatus.userCanonical || '')
   const status = verdict === 'PASS'
     ? 'indexed'
-    : verdict === 'FAIL' || verdict === 'PARTIAL'
+    : verdict === 'FAIL' || verdict === 'PARTIAL' || verdict === 'NEUTRAL'
       ? 'not_indexed_or_warning'
       : 'unknown'
   const reason = [

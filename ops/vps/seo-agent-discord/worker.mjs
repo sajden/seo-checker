@@ -5249,6 +5249,7 @@ async function runGscInspectionAction(action, workspace, targetChannelId, source
     return { ok: false, status: 'runtime_unavailable', error: error?.message || String(error) }
   })
   const observationPath = result?.observation?.path || ''
+  const inspectionResultLink = String(result?.inspectionResultLink || result?.raw?.inspectionResult?.inspectionResultLink || '')
   const exactVerdict = validateExactInspection({ expectedUrl: targetUrl, result })
   const indexedByGsc = exactVerdict.ok && exactVerdict.indexed && readiness.indexable
   if (!exactVerdict.ok) {
@@ -5301,6 +5302,7 @@ async function runGscInspectionAction(action, workspace, targetChannelId, source
     result.apiFallbackReason ? `API-fallback: ${result.apiFallbackReason}.` : '',
     indexedByGsc ? `Resultat: GSC visar att URL:en är indexerad (${Number(result.inspection.confidence).toFixed(2)} confidence). Jag markerade kortet som hanterat.` : '',
     result.ok && observationPath ? `Observation sparad på VPS: ${observationPath}` : '',
+    inspectionResultLink ? `[Öppna exakt URL i Search Console](${inspectionResultLink})` : '',
     result.ok && !indexedByGsc ? formatGscInspectionFollowup(result) : '',
     `Teknisk kontroll: HTTP ${readiness.httpStatus || 'okänt'} · sitemap ${readiness.inSitemap ? 'ja' : readiness.inSitemap === false ? 'nej' : 'okänd'} · canonical ${readiness.canonicalMatches ? 'rätt' : readiness.canonicalUrl ? 'avviker' : 'saknas'} · noindex ${readiness.noindex ? 'ja' : 'nej'}.`,
     readiness.parentUrl ? `Intern länk från föräldrasidan: ${readiness.linkedFromParent ? 'ja' : 'nej'} (${readiness.parentUrl}).` : '',
@@ -5414,7 +5416,8 @@ function formatGscInspectionFollowup(result) {
   const reason = result?.inspection?.reason || ''
   const attempts = Array.isArray(result?.attempts) ? result.attempts : []
   if (status === 'not_indexed_or_warning') {
-    return 'Resultat: GSC visar en indexeringsvarning. Jag lämnar kortet öppet så agenten kan föreslå repo-fix eller markera som hanterat efter kontroll.'
+    const coverage = String(result?.inspection?.coverageState || '').trim()
+    return `Resultat: URL:en är inte verifierat indexerad${coverage ? ` (${coverage})` : ''}. Kortet lämnas öppet tills exakt URL är indexerad eller medvetet bortprioriterad.`
   }
   if (/url_not_in_property/i.test(reason)) {
     return 'Fel: GSC säger att URL:en inte ligger i vald property. Jag behandlar det som workspace/property-matchningsfel, inte som content-fix.'
@@ -9903,7 +9906,7 @@ function actionComponents(action) {
     add('approved', 'Approve', 3)
     add('skipped', 'Skip', 2)
   } else if (isIndexingCheckAction(action)) {
-    buttons.push({ type: 2, custom_id: 'seo-gsc-ui:inspect', label: 'Open in GSC', style: 1 })
+    buttons.push({ type: 2, custom_id: 'seo-gsc-ui:inspect', label: 'Kontrollera URL', style: 1 })
     add('skipped', 'Mark handled', 2)
   } else {
     add('skipped', 'Mark handled', 2)
