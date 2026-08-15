@@ -15,6 +15,7 @@ import { reviewCapacityCheck } from './review-capacity-policy.mjs'
 import { canonicalRepoFullName, workspaceProfileKey } from './workspace-identity.mjs'
 import { attachBatchEvidenceProvenance, checkActionEvidenceIntegrity } from './action-evidence-policy.mjs'
 import { exactTargetFromRecords, validateExactInspection } from './gsc-exact-url-policy.mjs'
+import { isIndexingActionIdentity } from './action-type-policy.mjs'
 
 const env = loadEnv([
   '/home/deploy/.hermes/.env',
@@ -9757,15 +9758,20 @@ function normalizeActionCardBrief(text) {
 
 function formatActionMessage(action, workspacePolicy, workspace, review = null) {
   if (isGscAuthAction(action)) return formatGscAuthMessage(action, workspacePolicy, workspace)
+  const indexingCheck = isIndexingCheckAction(action)
   const showKeywordAsSearchTerm = shouldUseKeywordPlannerMetrics(action)
   const label = workspace?.label || action.workspaceSlug || action.projectSlug || 'workspace'
   const title = review?.actionTitle || humanActionTitle(action)
-  const concreteAction = review?.concreteAction || humanConcreteAction(action, workspace)
+  const concreteAction = indexingCheck
+    ? `Kontrollera exakt URL (${action.targetUrl || action.url || 'mål-URL saknas'}) mot live-status, canonical, sitemap, internlänk och GSC. Ingen kodbranch skapas om inget tekniskt fel finns.`
+    : review?.concreteAction || humanConcreteAction(action, workspace)
   const why = review?.why || action.why || 'Passerar SEO-agentens relevanskontroll.'
-  const expectedWork = review?.expectedWork || (isCodeAction(action) ? 'gör en repoändring, bygger, committar och postar GitHub-länk' : 'hanterar kontrollen och markerar nästa steg')
-  const risk = review?.risk || 'okänd'
-  const recommendation = review?.recommendation || (isCodeAction(action) ? 'Review' : 'Review')
-  const score = Number.isFinite(Number(review?.score)) ? ` · score ${Math.round(Number(review.score))}` : ''
+  const expectedWork = indexingCheck
+    ? 'kör kontrollen utan repoändring; om ett kodfel hittas skapas därefter ett separat review-kort med branch, build och compare-länk'
+    : review?.expectedWork || (isCodeAction(action) ? 'gör en repoändring, bygger, committar och postar GitHub-länk' : 'hanterar kontrollen och markerar nästa steg')
+  const risk = indexingCheck ? 'låg - kontrollen ändrar ingen kod eller design' : review?.risk || 'okänd'
+  const recommendation = indexingCheck ? 'Kontrollera URL' : review?.recommendation || (isCodeAction(action) ? 'Review' : 'Review')
+  const score = !indexingCheck && Number.isFinite(Number(review?.score)) ? ` · score ${Math.round(Number(review.score))}` : ''
   const codexDecision = review?.codexDecision ? `Codex-bedömning: ${review.codexDecision}${review.codexReason ? ` (${String(review.codexReason).slice(0, 140)})` : ''}` : ''
   const lines = [
     `Nästa SEO-kandidat för ${label}`,
@@ -9786,9 +9792,11 @@ function formatActionMessage(action, workspacePolicy, workspace, review = null) 
     review?.negatives?.length ? `Notis: ${review.negatives.join('; ')}` : '',
     '',
     `ID: \`${action.id}\``,
-    isCodeAction(action)
+    indexingCheck
+      ? `Det finns ingen commit ännu. Tryck Kontrollera URL. Bara om kontrollen hittar ett repo-fel får du därefter en separat compare-länk att granska och godkänna.`
+      : isCodeAction(action)
       ? `Välj med knapparna, eller svara i vanlig svenska om jag ska köra den, hoppa över den, vänta med den eller förklara mer.`
-      : `Det här är en GSC/browser-check, inte en kodaction. Tryck Open in GSC för att öppna Search Console-fönstret, eller skriv i chatten om den är hanterad, kan vänta eller behöver förklaras.`
+      : `Det här är en kontroll, inte en kodaction. Skriv i chatten om den är hanterad, kan vänta eller behöver förklaras.`
   ]
   return lines.filter(Boolean).join('\n').slice(0, 1900)
 }
@@ -9951,8 +9959,7 @@ function isGscAuthAction(action) {
 }
 
 function isIndexingCheckAction(action) {
-  const text = `${action.title || ''} ${action.why || ''} ${action.recommendedAction || ''} ${action.category || ''}`.toLowerCase()
-  return text.includes('kontrollera indexering') || text.includes('url inspection') || text.includes('begär indexering') || text.includes('begar indexering') || text.includes('webbadressen är okänd') || text.includes('webbadressen ar okand')
+  return isIndexingActionIdentity(action)
 }
 
 function isCodeAction(action) {
