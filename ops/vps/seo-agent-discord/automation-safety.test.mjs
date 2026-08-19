@@ -75,6 +75,10 @@ test('policy-incompatible opportunity scouts cool down before Codex retries', ()
   assert.match(workerSource, /previousScoutBlockedReason/)
   assert.match(workerSource, /previousScout\?\.status === 'no_policy_compatible_opportunity'/)
   assert.match(workerSource, /reason: previousScoutBlockedReason \|\| 'recent_invalid_scout'/)
+  assert.match(workerSource, /SEO_AGENT_OPPORTUNITY_SCOUT_NO_ACTION_COOLDOWN_MS/)
+  assert.match(workerSource, /function shouldBackoffNoActionOpportunityScout/)
+  assert.match(workerSource, /previousScout\.status === 'no_policy_compatible_opportunity'/)
+  assert.match(workerSource, /reason: 'recent_no_action_scout_backoff'/)
 })
 
 test('recent code result targets are removed from opportunity scout evidence before Codex', () => {

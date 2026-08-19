@@ -71,6 +71,7 @@ const maxPendingReviewsPerWorkspace = Math.max(1, Number(env.SEO_AGENT_MAX_PENDI
 const opportunityScoutMinIntervalMs = Number(env.SEO_AGENT_OPPORTUNITY_SCOUT_MIN_INTERVAL_MS || String(90 * 60 * 1000))
 const opportunityScoutGrowthMinIntervalMs = Number(env.SEO_AGENT_OPPORTUNITY_SCOUT_GROWTH_MIN_INTERVAL_MS || String(60 * 60 * 1000))
 const opportunityScoutInvalidCooldownMs = Number(env.SEO_AGENT_OPPORTUNITY_SCOUT_INVALID_COOLDOWN_MS || String(3 * 60 * 60 * 1000))
+const opportunityScoutNoActionCooldownMs = Number(env.SEO_AGENT_OPPORTUNITY_SCOUT_NO_ACTION_COOLDOWN_MS || String(12 * 60 * 60 * 1000))
 const sameTargetAutonomousCooldownMs = Number(env.SEO_AGENT_SAME_TARGET_AUTONOMOUS_COOLDOWN_MS || String(90 * 24 * 60 * 60 * 1000))
 const sameTargetAutonomousMaxRecent = Number(env.SEO_AGENT_SAME_TARGET_AUTONOMOUS_MAX_RECENT || '1')
 const engagementMinViews = Number(env.SEO_AGENT_ENGAGEMENT_MIN_VIEWS || '50')
@@ -2830,6 +2831,17 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
     })
     return null
   }
+  if (shouldBackoffNoActionOpportunityScout(previousScout) && previousInvalidScoutAgeMs >= 0 && previousInvalidScoutAgeMs < opportunityScoutNoActionCooldownMs) {
+    logThrottled(`codex_opportunity_skipped:${key}:no-action-backoff`, 60 * 60 * 1000, 'codex_opportunity_skipped', {
+      workspace: workspace?.label || workspace?.id || null,
+      reason: 'recent_no_action_scout_backoff',
+      previousStatus: previousScout?.status || null,
+      previousReason: previousScout?.reason || previousScout?.blockedReason || null,
+      ageMinutes: Math.round(previousInvalidScoutAgeMs / 60000),
+      minIntervalMinutes: Math.round(opportunityScoutNoActionCooldownMs / 60000)
+    })
+    return null
+  }
   const previousScoutAt = Date.parse(previousScout?.at || 0)
   const scoutAgeMs = Number.isFinite(previousScoutAt) ? Date.now() - previousScoutAt : Infinity
   if (scoutAgeMs >= 0 && scoutAgeMs < scoutMinIntervalMs) {
@@ -3151,6 +3163,14 @@ function opportunityScoutIntervalForWorkspace(profile, context = {}) {
   const weakQueue = !rejected.length || rejected.length >= 4 || rejected.some((item) => /already_result|missing_target_url|not_code_action|guard:|recently/i.test(String(item?.reason || '')))
   if (String(profile?.siteType || '').includes('consultancy') && weakQueue) return opportunityScoutGrowthMinIntervalMs
   return opportunityScoutMinIntervalMs
+}
+
+function shouldBackoffNoActionOpportunityScout(previousScout) {
+  if (!previousScout || typeof previousScout !== 'object') return false
+  if (previousScout.status === 'no_policy_compatible_opportunity') return true
+  return previousScout.status === 'no_verified_opportunity'
+    && previousScout.reason
+    && previousScout.reason !== 'empty_verified_evidence'
 }
 
 async function buildKeywordPlannerDiscoveryEvidence(keywordMap, excludedTargets = []) {
