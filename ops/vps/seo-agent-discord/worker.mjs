@@ -27,6 +27,8 @@ const DISCORD_API = 'https://discord.com/api/v10'
 const token = required('DISCORD_BOT_TOKEN')
 const channelId = required('DISCORD_CHANNEL_ID')
 const allowedUserId = required('DISCORD_ALLOWED_USER_ID')
+const configuredArticleReviewChannelId = String(env.SEO_AGENT_ARTICLE_REVIEW_CHANNEL_ID || '').trim()
+const articleReviewChannelName = String(env.SEO_AGENT_ARTICLE_REVIEW_CHANNEL_NAME || 'artikelgranskning').trim()
 const platformApiUrl = (env.PLATFORM_API_URL || 'https://dashboard2-platform-api.sebastian-castwall.workers.dev').replace(/\/$/, '')
 const platformToken = env.PLATFORM_API_TOKEN || ''
 const platformRunnerId = env.SEO_AGENT_PLATFORM_RUNNER_ID || 'seo-agent-vps'
@@ -4936,6 +4938,7 @@ async function syncContentReviewQueue() {
 async function postContentReviewCard(type, item, cardId = item.id) {
   const id = String(cardId || '')
   if (!id) return
+  const targetChannelId = await contentReviewChannelFor(type)
   const content = formatContentReviewCard(type, item)
   const contentHash = createHash('sha256').update(content).digest('hex')
   const existing = state.contentReviewCards[id]
@@ -4943,22 +4946,67 @@ async function postContentReviewCard(type, item, cardId = item.id) {
   state.messageToAction = state.messageToAction || {}
   if (existing?.messageId) {
     state.messageToAction[existing.messageId] = id
-    if (existing.contentHash === contentHash) return
-    await discordJson(`/channels/${channelId}/messages/${existing.messageId}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ content, components: contentReviewComponents(type) })
-    })
-    state.contentReviewCards[id] = {
-      ...existing,
-      contentHash,
-      refreshedAt: new Date().toISOString(),
-      status: 'posted'
+    const existingChannelId = String(existing.channelId || channelId)
+    if (existingChannelId === targetChannelId) {
+      if (existing.contentHash === contentHash) return
+      await discordJson(`/channels/${targetChannelId}/messages/${existing.messageId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ content, components: contentReviewComponents(type) })
+      })
+      state.contentReviewCards[id] = {
+        ...existing,
+        channelId: targetChannelId,
+        contentHash,
+        refreshedAt: new Date().toISOString(),
+        status: 'posted'
+      }
+      return
     }
-    return
   }
-  const posted = await sendDiscordMessage(content, channelId, contentReviewComponents(type), { kind: 'action_card' })
-  state.contentReviewCards[id] = { type, messageId: posted.id, postedAt: new Date().toISOString(), contentHash, status: 'posted' }
+  const posted = await sendDiscordMessage(content, targetChannelId, contentReviewComponents(type), { kind: 'action_card' })
+  state.contentReviewCards[id] = { type, channelId: targetChannelId, messageId: posted.id, postedAt: new Date().toISOString(), contentHash, status: 'posted' }
   state.messageToAction[posted.id] = id
+}
+
+async function contentReviewChannelFor(type) {
+  if (type !== 'article' && type !== 'article_publish') return channelId
+  if (configuredArticleReviewChannelId) return configuredArticleReviewChannelId
+  const cached = state.contentReviewChannels?.article
+  if (cached?.id) return String(cached.id)
+  if (!guildId || !articleReviewChannelName) return channelId
+
+  try {
+    const channels = await discordJson(`/guilds/${guildId}/channels`)
+    const existing = Array.isArray(channels)
+      ? channels.find((item) => item?.type === 0 && item?.name === articleReviewChannelName)
+      : null
+    if (existing?.id) {
+      state.contentReviewChannels = state.contentReviewChannels || {}
+      state.contentReviewChannels.article = { id: existing.id, name: articleReviewChannelName }
+      return String(existing.id)
+    }
+
+    const defaultChannel = Array.isArray(channels)
+      ? channels.find((item) => String(item?.id || '') === String(channelId))
+      : null
+    const created = await discordJson(`/guilds/${guildId}/channels`, {
+      method: 'POST',
+      body: JSON.stringify({
+        name: articleReviewChannelName,
+        type: 0,
+        parent_id: defaultChannel?.parent_id || undefined,
+        topic: 'Manuell granskning och publicering av artiklar för sebcastwall.se'
+      })
+    })
+    if (created?.id) {
+      state.contentReviewChannels = state.contentReviewChannels || {}
+      state.contentReviewChannels.article = { id: created.id, name: articleReviewChannelName }
+      return String(created.id)
+    }
+  } catch (error) {
+    log('article_review_channel_resolve_failed', { channel: articleReviewChannelName, error: error?.message || String(error) })
+  }
+  return channelId
 }
 
 function formatContentReviewCard(type, item) {
@@ -4970,13 +5018,20 @@ function formatContentReviewCard(type, item) {
 
 function formatArticleReviewCard(action) {
   const quality = Number(action.quality?.score || 0)
+  const searchIntent = describeArticleSearchIntent(action)
+  const readerGoal = String(action.summary || '').trim()
+  const demandEvidence = articleDemandEvidence(action)
+  const cta = articleCtaSummary(action)
   return [
     '**Artikel redo för granskning**',
     `ID: \`${action.id}\``,
     `**${action.title}**`,
-    action.preferredKeyword ? `Sökfras: ${action.preferredKeyword}` : '',
+    action.preferredKeyword ? `Uppmätt sökfras: ${action.preferredKeyword}` : '',
+    searchIntent ? `Sökintention bakom frasen: ${searchIntent}` : '',
+    readerGoal ? `Artikeln hjälper läsaren att: ${readerGoal}` : '',
+    demandEvidence ? `Datastöd: ${demandEvidence}` : '',
+    cta ? `CTA: ${cta}` : '',
     `Kvalitet: ${quality}/100`,
-    action.summary ? `Varför: ${action.summary}` : '',
     action.quality?.summary ? `Granskning: ${action.quality.summary}` : '',
     action.sourceUrl ? `[Öppna hela utkastet](${action.sourceUrl})` : '',
     '',
@@ -5001,15 +5056,45 @@ function formatNewsletterReviewCard(issue) {
 }
 
 function formatArticlePublishCard(action) {
+  const searchIntent = describeArticleSearchIntent(action)
   return [
     '**Artikel godkänd - redo att publiceras**',
     `ID: \`${action.id}\``,
     `**${action.title}**`,
-    action.preferredKeyword ? `Sökfras: ${action.preferredKeyword}` : '',
+    action.preferredKeyword ? `Uppmätt sökfras: ${action.preferredKeyword}` : '',
+    searchIntent ? `Sökintention bakom frasen: ${searchIntent}` : '',
+    action.summary ? `Artikeln hjälper läsaren att: ${action.summary}` : '',
     action.sourceUrl ? `[Granska utkastet en sista gång](${action.sourceUrl})` : '',
     '',
     'Nästa knapp publicerar artikeln externt på sebcastwall.se.'
   ].filter(Boolean).join('\n').slice(0, 1900)
+}
+
+function describeArticleSearchIntent(action) {
+  const explicit = String(action.searchIntent || action.intent || action.demand?.intent || '').trim()
+  if (explicit) return explicit
+  const keyword = String(action.preferredKeyword || '').toLowerCase()
+  if (!keyword) return ''
+  const local = /\b(stockholm|bromma|nära mig|i närheten)\b/i.test(keyword)
+  const service = /\b(hjälp|reparation|service|konsult|installera|installation|support)\b/i.test(keyword)
+  const problem = /\b(fungerar inte|startar inte|problem|fel|långsam|dåligt|svagt|hur|varför)\b/i.test(keyword)
+  if (local && service) return 'lokal kommersiell – hitta, jämföra eller boka hjälp'
+  if (problem) return 'informativ problemlösning – förstå och lösa ett konkret problem'
+  if (service) return 'kommersiell research – bedöma eller köpa en tjänst'
+  return 'informationssökning – förstå ämnet och välja nästa steg'
+}
+
+function articleDemandEvidence(action) {
+  const evidence = Array.isArray(action.evidence) ? action.evidence.map(String) : []
+  const reasoning = evidence.find((item) => /^Reasoning:/i.test(item))
+  return reasoning ? reasoning.replace(/^Reasoning:\s*/i, '') : ''
+}
+
+function articleCtaSummary(action) {
+  const body = String(action.body || '').toLowerCase()
+  if (body.includes('/kontakt') || body.includes('ta kontakt')) return 'kontakta SebCastwall om egen felsökning inte räcker'
+  if (body.includes('/tjanster/hem-it') || body.includes('hem-it')) return 'gå vidare till Hem-IT för personlig hjälp'
+  return ''
 }
 
 function formatNewsletterPublishCard(issue) {

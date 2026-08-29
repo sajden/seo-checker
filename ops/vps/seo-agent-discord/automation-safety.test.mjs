@@ -200,6 +200,14 @@ test('old Discord controls cannot execute archived SEO work', () => {
   assert.match(workerSource, /SEO-kortet är arkiverat/)
 })
 
+test('article review cards use a dedicated Discord channel and explain search intent', () => {
+  assert.match(workerSource, /SEO_AGENT_ARTICLE_REVIEW_CHANNEL_NAME \|\| 'artikelgranskning'/)
+  assert.match(workerSource, /type !== 'article' && type !== 'article_publish'/)
+  assert.match(workerSource, /Sökintention bakom frasen:/)
+  assert.match(workerSource, /Artikeln hjälper läsaren att:/)
+  assert.match(workerSource, /CTA:/)
+})
+
 test('Codex rewrites must provide a final target URL', () => {
   assert.match(workerSource, /codexBrief\.decision === 'rewrite'/)
   assert.match(workerSource, /targetUrl.*slutlig https-URL/)
