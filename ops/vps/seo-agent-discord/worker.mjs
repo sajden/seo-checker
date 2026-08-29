@@ -5076,7 +5076,7 @@ function describeArticleSearchIntent(action) {
   const keyword = String(action.preferredKeyword || '').toLowerCase()
   if (!keyword) return ''
   const local = /\b(stockholm|bromma|nära mig|i närheten)\b/i.test(keyword)
-  const service = /\b(hjälp|reparation|service|konsult|installera|installation|support)\b/i.test(keyword)
+  const service = /(hjälp|reparation|service|konsult|installera|installation|support)/i.test(keyword)
   const problem = /\b(fungerar inte|startar inte|problem|fel|långsam|dåligt|svagt|hur|varför)\b/i.test(keyword)
   if (local && service) return 'lokal kommersiell – hitta, jämföra eller boka hjälp'
   if (problem) return 'informativ problemlösning – förstå och lösa ett konkret problem'
@@ -5087,7 +5087,11 @@ function describeArticleSearchIntent(action) {
 function articleDemandEvidence(action) {
   const evidence = Array.isArray(action.evidence) ? action.evidence.map(String) : []
   const reasoning = evidence.find((item) => /^Reasoning:/i.test(item))
-  return reasoning ? reasoning.replace(/^Reasoning:\s*/i, '') : ''
+  const value = reasoning ? reasoning.replace(/^Reasoning:\s*/i, '').trim() : ''
+  if (!value || /verifierat.*test|dynamisk efterfrågan/i.test(value)) {
+    return 'saknas i artikelunderlaget – begär konkret källa och mätvärde före godkännande'
+  }
+  return value
 }
 
 function articleCtaSummary(action) {
