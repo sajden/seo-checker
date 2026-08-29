@@ -4917,11 +4917,15 @@ async function syncContentReviewQueue() {
     contentAgentJson(newsletterAgentUrl, newsletterAgentToken, '/issues')
   ])
 
-  const article = (articlePayload.actions || [])
+  const articles = (articlePayload.actions || [])
     .filter((item) => item.actionType === 'review_article_draft' && item.status === 'pending')
-    .sort((left, right) => Number(right.quality?.score || 0) - Number(left.quality?.score || 0))[0]
-  const articlePublish = (articlePayload.actions || [])
-    .filter((item) => item.actionType === 'publish_article_draft' && item.status === 'pending')[0]
+    .sort((left, right) => Number(right.quality?.score || 0) - Number(left.quality?.score || 0)
+      || Date.parse(right.updatedAt || right.createdAt || 0) - Date.parse(left.updatedAt || left.createdAt || 0))
+    .slice(0, 2)
+  const articlePublishes = (articlePayload.actions || [])
+    .filter((item) => item.actionType === 'publish_article_draft' && item.status === 'pending')
+    .sort((left, right) => Date.parse(right.updatedAt || right.createdAt || 0) - Date.parse(left.updatedAt || left.createdAt || 0))
+    .slice(0, 2)
   const newsletter = (newsletterPayload.issues || [])
     .filter((item) => item.status === 'reviewing' && Number(item.editorialGate?.quality?.total || 0) >= 80)
     .sort((left, right) => Number(right.editorialGate?.quality?.total || 0) - Number(left.editorialGate?.quality?.total || 0))[0]
@@ -4929,8 +4933,8 @@ async function syncContentReviewQueue() {
     .filter((item) => item.status === 'approved' && item.publish?.status !== 'published')
     .sort((left, right) => Date.parse(right.approvedAt || 0) - Date.parse(left.approvedAt || 0))[0]
 
-  if (article) await postContentReviewCard('article', article)
-  if (articlePublish) await postContentReviewCard('article_publish', articlePublish)
+  for (const article of articles) await postContentReviewCard('article', article)
+  for (const articlePublish of articlePublishes) await postContentReviewCard('article_publish', articlePublish)
   if (newsletter) await postContentReviewCard('newsletter', newsletter)
   if (newsletterPublish) await postContentReviewCard('newsletter_publish', newsletterPublish, `newsletter_publish_${newsletterPublish.id}`)
 }
@@ -5072,6 +5076,9 @@ function formatArticlePublishCard(action) {
 
 function describeArticleSearchIntent(action) {
   const explicit = String(action.searchIntent || action.intent || action.demand?.intent || '').trim()
+  if (explicit === 'support_question') return 'informativ problemlösning – förstå och lösa ett konkret problem'
+  if (explicit === 'commercial_research') return 'kommersiell research – bedöma eller köpa en tjänst'
+  if (explicit === 'observed_organic') return 'observerad organisk efterfrågan – matcha en faktisk Google-sökning'
   if (explicit) return explicit
   const keyword = String(action.preferredKeyword || '').toLowerCase()
   if (!keyword) return ''
@@ -5085,6 +5092,20 @@ function describeArticleSearchIntent(action) {
 }
 
 function articleDemandEvidence(action) {
+  const demand = action.demand && typeof action.demand === 'object' ? action.demand : null
+  if (demand) {
+    if (demand.status === 'needs_verification' || demand.source === 'manual_editorial_review') {
+      return 'exakt efterfrågan behöver verifieras före godkännande'
+    }
+    const source = String(action.demandSource || demand.source || '').replace(/^search-demand:/, '')
+    const parts = [
+      source ? `källa=${source}` : '',
+      demand.searchVolume ? `sökningar/mån=${demand.searchVolume}` : '',
+      demand.demandBucket ? `efterfrågan=${demand.demandBucket}` : '',
+      demand.competition ? `konkurrens=${demand.competition}` : ''
+    ].filter(Boolean)
+    if (parts.length) return parts.join(', ')
+  }
   const evidence = Array.isArray(action.evidence) ? action.evidence.map(String) : []
   const reasoning = evidence.find((item) => /^Reasoning:/i.test(item))
   const value = reasoning ? reasoning.replace(/^Reasoning:\s*/i, '').trim() : ''
