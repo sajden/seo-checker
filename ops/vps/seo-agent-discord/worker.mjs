@@ -5022,6 +5022,13 @@ function formatContentReviewCard(type, item) {
 
 function formatArticleReviewCard(action) {
   const quality = Number(action.quality?.score || 0)
+  const primaryKeyword = String(action.keywordBrief?.primaryKeyword || action.preferredKeyword || '').trim()
+  const supportingKeywords = Array.isArray(action.keywordBrief?.supportingKeywords)
+    ? action.keywordBrief.supportingKeywords.map(String).filter(Boolean).slice(0, 4)
+    : []
+  const keywordMatch = action.keywordMatch?.passed === true
+    ? 'godkänd – rubrik, metadata, inledning och innehåll möter samma sökintention'
+    : 'saknas – godkänn inte innan artikelns sökords-/intentmatch har kontrollerats'
   const searchIntent = describeArticleSearchIntent(action)
   const readerGoal = String(action.summary || '').trim()
   const demandEvidence = articleDemandEvidence(action)
@@ -5030,7 +5037,9 @@ function formatArticleReviewCard(action) {
     '**Artikel redo för granskning**',
     `ID: \`${action.id}\``,
     `**${action.title}**`,
-    action.preferredKeyword ? `Uppmätt sökfras: ${action.preferredKeyword}` : '',
+    primaryKeyword ? `Primärt sökord (låst): ${primaryKeyword}` : '',
+    supportingKeywords.length ? `Stödfraser: ${supportingKeywords.join(', ')}` : '',
+    `Sökords-/artikelmatch: ${keywordMatch}`,
     searchIntent ? `Sökintention bakom frasen: ${searchIntent}` : '',
     readerGoal ? `Artikeln hjälper läsaren att: ${readerGoal}` : '',
     demandEvidence ? `Datastöd: ${demandEvidence}` : '',
@@ -5061,11 +5070,13 @@ function formatNewsletterReviewCard(issue) {
 
 function formatArticlePublishCard(action) {
   const searchIntent = describeArticleSearchIntent(action)
+  const primaryKeyword = String(action.keywordBrief?.primaryKeyword || action.preferredKeyword || '').trim()
   return [
     '**Artikel godkänd - redo att publiceras**',
     `ID: \`${action.id}\``,
     `**${action.title}**`,
-    action.preferredKeyword ? `Uppmätt sökfras: ${action.preferredKeyword}` : '',
+    primaryKeyword ? `Primärt sökord (låst): ${primaryKeyword}` : '',
+    action.keywordMatch?.passed === true ? 'Sökords-/artikelmatch: godkänd' : 'Sökords-/artikelmatch: kontrollera före publicering',
     searchIntent ? `Sökintention bakom frasen: ${searchIntent}` : '',
     action.summary ? `Artikeln hjälper läsaren att: ${action.summary}` : '',
     action.sourceUrl ? `[Granska utkastet en sista gång](${action.sourceUrl})` : '',
