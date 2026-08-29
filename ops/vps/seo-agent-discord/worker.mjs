@@ -5026,6 +5026,12 @@ function formatArticleReviewCard(action) {
   const supportingKeywords = Array.isArray(action.keywordBrief?.supportingKeywords)
     ? action.keywordBrief.supportingKeywords.map(String).filter(Boolean).slice(0, 4)
     : []
+  const ranking = action.keywordBrief?.ranking && typeof action.keywordBrief.ranking === 'object'
+    ? action.keywordBrief.ranking
+    : null
+  const alternatives = Array.isArray(ranking?.alternatives)
+    ? ranking.alternatives.slice(0, 4).map((item) => `${item.keyword} (${item.searchVolume || 0}/mån, score ${item.score})`)
+    : []
   const keywordMatch = action.keywordMatch?.passed === true
     ? 'godkänd – rubrik, metadata, inledning och innehåll möter samma sökintention'
     : 'saknas – godkänn inte innan artikelns sökords-/intentmatch har kontrollerats'
@@ -5039,6 +5045,8 @@ function formatArticleReviewCard(action) {
     `**${action.title}**`,
     primaryKeyword ? `Primärt sökord (låst): ${primaryKeyword}` : '',
     supportingKeywords.length ? `Stödfraser: ${supportingKeywords.join(', ')}` : '',
+    ranking?.score ? `Urvalspoäng: ${ranking.score}/100${ranking.position ? ` · position ${ranking.position}` : ''}` : '',
+    alternatives.length ? `Vann mot: ${alternatives.join(' · ')}` : '',
     `Sökords-/artikelmatch: ${keywordMatch}`,
     searchIntent ? `Sökintention bakom frasen: ${searchIntent}` : '',
     readerGoal ? `Artikeln hjälper läsaren att: ${readerGoal}` : '',
