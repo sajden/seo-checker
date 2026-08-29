@@ -211,6 +211,8 @@ test('article review cards use a dedicated Discord channel and explain search in
   assert.match(workerSource, /\.slice\(0, 2\)/)
   assert.match(workerSource, /for \(const article of articles\)/)
   assert.match(workerSource, /sökningar\/mån=/)
+  assert.match(workerSource, /informationssökning – förstå och lösa en konkret uppgift/)
+  assert.match(workerSource, /kontakta SebCastwall för hjälp med planering och genomförande/)
 })
 
 test('Codex rewrites must provide a final target URL', () => {

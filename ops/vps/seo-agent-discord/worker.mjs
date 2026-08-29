@@ -5079,6 +5079,7 @@ function describeArticleSearchIntent(action) {
   if (explicit === 'support_question') return 'informativ problemlösning – förstå och lösa ett konkret problem'
   if (explicit === 'commercial_research') return 'kommersiell research – bedöma eller köpa en tjänst'
   if (explicit === 'observed_organic') return 'observerad organisk efterfrågan – matcha en faktisk Google-sökning'
+  if (explicit === 'informational') return 'informationssökning – förstå och lösa en konkret uppgift'
   if (explicit) return explicit
   const keyword = String(action.preferredKeyword || '').toLowerCase()
   if (!keyword) return ''
@@ -5117,8 +5118,15 @@ function articleDemandEvidence(action) {
 
 function articleCtaSummary(action) {
   const body = String(action.body || '').toLowerCase()
-  if (body.includes('/kontakt') || body.includes('ta kontakt')) return 'kontakta SebCastwall om egen felsökning inte räcker'
-  if (body.includes('/tjanster/hem-it') || body.includes('hem-it')) return 'gå vidare till Hem-IT för personlig hjälp'
+  const audience = String(action.audience || '').toLowerCase()
+  const topic = `${action.title || ''} ${action.preferredKeyword || ''}`.toLowerCase()
+  if (body.includes('/tjanster/hem-it') || body.includes('hem-it') || audience === 'b2c') {
+    return 'boka personlig Hem-IT-hjälp om egen felsökning inte räcker'
+  }
+  if (audience === 'b2b' || /sharepoint|microsoft 365|teams|onedrive|power automate/.test(topic)) {
+    return 'kontakta SebCastwall för hjälp med planering och genomförande'
+  }
+  if (body.includes('/kontakt') || body.includes('ta kontakt')) return 'kontakta SebCastwall för hjälp med nästa steg'
   return ''
 }
 
