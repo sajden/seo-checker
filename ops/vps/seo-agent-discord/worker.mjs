@@ -5196,7 +5196,7 @@ async function decideContentReview(actionId, decision, operatorId) {
   })
   let response = null
   if (ref.type === 'article' || ref.type === 'article_publish') {
-    response = await contentAgentJson(articleAgentUrl, articleAgentToken, `/actions/${encodeURIComponent(ref.id)}/decision`, { method: 'POST', body })
+    response = await decideContentAgentAction(ref.id, decision, body)
   } else if (ref.type === 'newsletter_publish' && decision === 'approved') {
     response = await contentAgentJson(newsletterAgentUrl, newsletterAgentToken, `/issues/${encodeURIComponent(ref.id)}/approve`, {
       method: 'POST',
@@ -5245,8 +5245,35 @@ async function contentAgentJson(baseUrl, agentToken, pathname, init = {}) {
     }
   })
   const payload = await response.json().catch(() => ({}))
-  if (!response.ok) throw new Error(payload.error || payload.message || `content_agent_${response.status}`)
+  if (!response.ok) {
+    const error = new Error(payload.message || payload.error || `content_agent_${response.status}`)
+    error.code = payload.error || `content_agent_${response.status}`
+    error.status = response.status
+    error.payload = payload
+    throw error
+  }
   return payload
+}
+
+async function decideContentAgentAction(actionId, decision, body) {
+  const pathname = `/actions/${encodeURIComponent(actionId)}/decision`
+  try {
+    return await contentAgentJson(articleAgentUrl, articleAgentToken, pathname, { method: 'POST', body })
+  } catch (initialError) {
+    // The downstream approval can complete before a proxy or response step
+    // fails. Retry the same idempotent decision once and accept the explicit
+    // "already decided" state instead of leaving Discord spinning forever.
+    try {
+      return await contentAgentJson(articleAgentUrl, articleAgentToken, pathname, { method: 'POST', body })
+    } catch (retryError) {
+      const actionStatus = String(retryError?.payload?.actionStatus || '')
+      if (retryError?.code === 'action_not_pending' && actionStatus === decision) {
+        log('content_decision_reconciled', { actionId, decision, initialError: initialError?.message || String(initialError) })
+        return { ok: true, reconciled: true, action: { id: actionId, status: actionStatus } }
+      }
+      throw initialError
+    }
+  }
 }
 
 function startDiscordInteractionClient() {
@@ -5355,8 +5382,11 @@ function startDiscordInteractionClient() {
       log('button_decision_saved', { actionId, decision, discordMessageId: interaction.message.id })
     } catch (error) {
       log('button_decision_failed', { error: error?.message || String(error) })
-      if (!interaction.replied && !interaction.deferred) {
-        await interaction.reply({ content: `Decision failed: ${error?.message || String(error)}`, flags: MessageFlags.Ephemeral }).catch(() => null)
+      const failureMessage = `Beslutet kunde inte bekräftas: ${error?.message || String(error)}. Kontrollera kortets status innan du klickar igen.`
+      if (interaction.deferred || interaction.replied) {
+        await interaction.editReply({ content: failureMessage }).catch(() => null)
+      } else {
+        await interaction.reply({ content: failureMessage, flags: MessageFlags.Ephemeral }).catch(() => null)
       }
     }
   })

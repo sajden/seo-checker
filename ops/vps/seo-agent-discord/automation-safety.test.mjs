@@ -220,6 +220,14 @@ test('article review cards use a dedicated Discord channel and explain search in
   assert.match(workerSource, /kontakta SebCastwall för hjälp med planering och genomförande/)
 })
 
+test('content decisions reconcile completed side effects and always finish deferred replies', () => {
+  assert.match(workerSource, /async function decideContentAgentAction/)
+  assert.match(workerSource, /retryError\?\.code === 'action_not_pending' && actionStatus === decision/)
+  assert.match(workerSource, /content_decision_reconciled/)
+  assert.match(workerSource, /interaction\.deferred \|\| interaction\.replied/)
+  assert.match(workerSource, /await interaction\.editReply\(\{ content: failureMessage \}\)/)
+})
+
 test('Codex rewrites must provide a final target URL', () => {
   assert.match(workerSource, /codexBrief\.decision === 'rewrite'/)
   assert.match(workerSource, /targetUrl.*slutlig https-URL/)
