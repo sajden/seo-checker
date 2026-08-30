@@ -5046,7 +5046,7 @@ function formatArticleReviewCard(action) {
     primaryKeyword ? `Primärt sökord (låst): ${primaryKeyword}` : '',
     supportingKeywords.length ? `Stödfraser: ${supportingKeywords.join(', ')}` : '',
     ranking?.score ? `Urvalspoäng: ${ranking.score}/100${ranking.position ? ` · position ${ranking.position}` : ''}` : '',
-    alternatives.length ? `Vann mot: ${alternatives.join(' · ')}` : '',
+    alternatives.length ? `Andra mätta alternativ: ${alternatives.join(' · ')}` : '',
     `Sökords-/artikelmatch: ${keywordMatch}`,
     searchIntent ? `Sökintention bakom frasen: ${searchIntent}` : '',
     readerGoal ? `Artikeln hjälper läsaren att: ${readerGoal}` : '',

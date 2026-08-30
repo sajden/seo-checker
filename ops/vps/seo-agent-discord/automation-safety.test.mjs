@@ -207,7 +207,7 @@ test('article review cards use a dedicated Discord channel and explain search in
   assert.match(workerSource, /Primärt sökord \(låst\):/)
   assert.match(workerSource, /Stödfraser:/)
   assert.match(workerSource, /Urvalspoäng:/)
-  assert.match(workerSource, /Vann mot:/)
+  assert.match(workerSource, /Andra mätta alternativ:/)
   assert.match(workerSource, /Sökords-\/artikelmatch:/)
   assert.match(workerSource, /Artikeln hjälper läsaren att:/)
   assert.match(workerSource, /CTA:/)
