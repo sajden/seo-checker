@@ -218,6 +218,11 @@ test('article review cards use a dedicated Discord channel and explain search in
   assert.match(workerSource, /sökningar\/mån=/)
   assert.match(workerSource, /informationssökning – förstå och lösa en konkret uppgift/)
   assert.match(workerSource, /kontakta SebCastwall för hjälp med planering och genomförande/)
+  assert.match(workerSource, /Godkänn och publicera/)
+  assert.match(workerSource, /contentReviewEmbeds\(type, item\)/)
+  assert.match(workerSource, /https:\/\/sebcastwall\.se\/api\/articles\/cover/)
+  assert.match(workerSource, /options\.embeds\?\.length/)
+  assert.doesNotMatch(workerSource, /for \(const articlePublish of articlePublishes\)/)
 })
 
 test('content decisions reconcile completed side effects and always finish deferred replies', () => {

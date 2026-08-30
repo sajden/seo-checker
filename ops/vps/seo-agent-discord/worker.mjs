@@ -4922,10 +4922,6 @@ async function syncContentReviewQueue() {
     .sort((left, right) => Number(right.quality?.score || 0) - Number(left.quality?.score || 0)
       || Date.parse(right.updatedAt || right.createdAt || 0) - Date.parse(left.updatedAt || left.createdAt || 0))
     .slice(0, 2)
-  const articlePublishes = (articlePayload.actions || [])
-    .filter((item) => item.actionType === 'publish_article_draft' && item.status === 'pending')
-    .sort((left, right) => Date.parse(right.updatedAt || right.createdAt || 0) - Date.parse(left.updatedAt || left.createdAt || 0))
-    .slice(0, 2)
   const newsletter = (newsletterPayload.issues || [])
     .filter((item) => item.status === 'reviewing' && Number(item.editorialGate?.quality?.total || 0) >= 80)
     .sort((left, right) => Number(right.editorialGate?.quality?.total || 0) - Number(left.editorialGate?.quality?.total || 0))[0]
@@ -4934,7 +4930,6 @@ async function syncContentReviewQueue() {
     .sort((left, right) => Date.parse(right.approvedAt || 0) - Date.parse(left.approvedAt || 0))[0]
 
   for (const article of articles) await postContentReviewCard('article', article)
-  for (const articlePublish of articlePublishes) await postContentReviewCard('article_publish', articlePublish)
   if (newsletter) await postContentReviewCard('newsletter', newsletter)
   if (newsletterPublish) await postContentReviewCard('newsletter_publish', newsletterPublish, `newsletter_publish_${newsletterPublish.id}`)
 }
@@ -4944,7 +4939,8 @@ async function postContentReviewCard(type, item, cardId = item.id) {
   if (!id) return
   const targetChannelId = await contentReviewChannelFor(type)
   const content = formatContentReviewCard(type, item)
-  const contentHash = createHash('sha256').update(content).digest('hex')
+  const embeds = contentReviewEmbeds(type, item)
+  const contentHash = createHash('sha256').update(JSON.stringify({ content, embeds })).digest('hex')
   const existing = state.contentReviewCards[id]
   state.contentActionRefs[id] = { type, id: String(item.id || '') }
   state.messageToAction = state.messageToAction || {}
@@ -4955,7 +4951,7 @@ async function postContentReviewCard(type, item, cardId = item.id) {
       if (existing.contentHash === contentHash) return
       await discordJson(`/channels/${targetChannelId}/messages/${existing.messageId}`, {
         method: 'PATCH',
-        body: JSON.stringify({ content, components: contentReviewComponents(type) })
+        body: JSON.stringify({ content, components: contentReviewComponents(type), embeds })
       })
       state.contentReviewCards[id] = {
         ...existing,
@@ -4967,7 +4963,7 @@ async function postContentReviewCard(type, item, cardId = item.id) {
       return
     }
   }
-  const posted = await sendDiscordMessage(content, targetChannelId, contentReviewComponents(type), { kind: 'action_card' })
+  const posted = await sendDiscordMessage(content, targetChannelId, contentReviewComponents(type), { kind: 'action_card', embeds })
   state.contentReviewCards[id] = { type, channelId: targetChannelId, messageId: posted.id, postedAt: new Date().toISOString(), contentHash, status: 'posted' }
   state.messageToAction[posted.id] = id
 }
@@ -5020,6 +5016,22 @@ function formatContentReviewCard(type, item) {
   return formatNewsletterReviewCard(item)
 }
 
+function contentReviewEmbeds(type, item) {
+  if (type !== 'article') return []
+  const audience = String(item.audience || '').toUpperCase() === 'B2C' ? 'B2C' : 'B2B'
+  const category = Array.isArray(item.tags) && item.tags[0] ? String(item.tags[0]) : (audience === 'B2C' ? 'Hem-IT' : 'Företagsteknik')
+  const params = new URLSearchParams({
+    title: String(item.title || 'Praktisk teknikguide'),
+    category,
+    audience,
+    description: String(item.summary || '')
+  })
+  return [{
+    type: 'rich',
+    image: { url: `https://sebcastwall.se/api/articles/cover?${params.toString()}` }
+  }]
+}
+
 function formatArticleReviewCard(action) {
   const quality = Number(action.quality?.score || 0)
   const primaryKeyword = String(action.keywordBrief?.primaryKeyword || action.preferredKeyword || '').trim()
@@ -5056,7 +5068,7 @@ function formatArticleReviewCard(action) {
     action.quality?.summary ? `Granskning: ${action.quality.summary}` : '',
     action.sourceUrl ? `[Öppna hela utkastet](${action.sourceUrl})` : '',
     '',
-    'Godkänn sparar utkastet för nästa steg. Inget publiceras automatiskt.'
+    'Godkänn och publicera lägger ut artikeln direkt på sebcastwall.se. Skriv om och Avvisa publicerar ingenting.'
   ].filter(Boolean).join('\n').slice(0, 1900)
 }
 
@@ -5178,7 +5190,7 @@ function contentReviewComponents(type = 'article') {
   return [{
     type: 1,
     components: [
-      { type: 2, custom_id: 'content-decision:approved', label: 'Godkänn', style: 3 },
+      { type: 2, custom_id: 'content-decision:approved', label: type === 'article' ? 'Godkänn och publicera' : 'Godkänn', style: 3 },
       { type: 2, custom_id: 'content-decision:rewrite_requested', label: 'Skriv om', style: 1 },
       { type: 2, custom_id: 'content-decision:skipped', label: 'Avvisa', style: 4 }
     ]
@@ -5219,7 +5231,7 @@ async function decideContentReview(actionId, decision, operatorId) {
   }
   saveState()
   const label = ref.type.startsWith('article') ? 'artikeln' : 'nyhetsbrevet'
-  if (decision === 'approved' && ref.type === 'article_publish') {
+  if (decision === 'approved' && (ref.type === 'article' || ref.type === 'article_publish')) {
     const publishedUrl = response?.executionResult?.publish?.publishedPath || response?.executionResult?.publish?.publicUrl || null
     return { summary: publishedUrl ? `Artikeln är publicerad: ${publishedUrl}` : 'Artikeln är publicerad på sebcastwall.se.' }
   }
@@ -5228,7 +5240,7 @@ async function decideContentReview(actionId, decision, operatorId) {
     const delivery = issue.delivery?.status === 'sent' ? ` Utskicket skickades till ${issue.delivery.recipientCount || 0} mottagare.` : ''
     return { summary: `Nyhetsbrevet är publicerat${issue.publish?.publicUrl ? `: ${issue.publish.publicUrl}` : '.'}${delivery}` }
   }
-  if (decision === 'approved') return { summary: `Innehållet i ${label} är godkänt. Ett separat publiceringskort kommer i kanalen; inget är publicerat eller skickat ännu.` }
+  if (decision === 'approved') return { summary: `Innehållet i ${label} är godkänt.` }
   if (decision === 'rewrite_requested') return { summary: `Omskrivning startad för ${label}. Ett nytt granskningskort kommer när kvalitetskontrollen är klar.` }
   if (ref.type.endsWith('_publish')) return { summary: `Publiceringen av ${label} väntar. Det godkända utkastet finns kvar.` }
   return { summary: `Avvisat: ${label} tas bort från den aktiva granskningskön.` }
@@ -10227,7 +10239,7 @@ async function sendDiscordMessage(content, targetChannelId = channelId, componen
   const checked = await validateOutboundDiscordMessage(String(content ?? ''), targetChannelId, components, options)
   return discordJson(`/channels/${targetChannelId}/messages`, {
     method: 'POST',
-    body: JSON.stringify({ content: checked.content, ...(components.length ? { components } : {}) })
+    body: JSON.stringify({ content: checked.content, ...(components.length ? { components } : {}), ...(options.embeds?.length ? { embeds: options.embeds } : {}) })
   })
 }
 
