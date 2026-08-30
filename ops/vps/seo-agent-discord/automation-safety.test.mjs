@@ -220,7 +220,7 @@ test('article review cards use a dedicated Discord channel and explain search in
   assert.match(workerSource, /kontakta SebCastwall för hjälp med planering och genomförande/)
   assert.match(workerSource, /Godkänn och publicera/)
   assert.match(workerSource, /contentReviewEmbeds\(type, item\)/)
-  assert.match(workerSource, /https:\/\/sebcastwall\.se\/api\/articles\/cover/)
+  assert.match(workerSource, /raw\.githubusercontent\.com\/sajden\/sebcastwall\/main\/public\/assets\/articles\/article-cover-background\.png/)
   assert.match(workerSource, /options\.embeds\?\.length/)
   assert.doesNotMatch(workerSource, /for \(const articlePublish of articlePublishes\)/)
 })

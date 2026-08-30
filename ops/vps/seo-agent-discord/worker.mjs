@@ -5018,17 +5018,11 @@ function formatContentReviewCard(type, item) {
 
 function contentReviewEmbeds(type, item) {
   if (type !== 'article') return []
-  const audience = String(item.audience || '').toUpperCase() === 'B2C' ? 'B2C' : 'B2B'
-  const category = Array.isArray(item.tags) && item.tags[0] ? String(item.tags[0]) : (audience === 'B2C' ? 'Hem-IT' : 'Företagsteknik')
-  const params = new URLSearchParams({
-    title: String(item.title || 'Praktisk teknikguide'),
-    category,
-    audience,
-    description: String(item.summary || '')
-  })
   return [{
     type: 'rich',
-    image: { url: `https://sebcastwall.se/api/articles/cover?${params.toString()}` }
+    title: String(item.title || 'Praktisk teknikguide').slice(0, 256),
+    url: String(item.sourceUrl || 'https://sebcastwall.se/artiklar'),
+    image: { url: 'https://raw.githubusercontent.com/sajden/sebcastwall/main/public/assets/articles/article-cover-background.png' }
   }]
 }
 
