@@ -5019,9 +5019,14 @@ function formatContentReviewCard(type, item) {
 function contentReviewEmbeds(type, item) {
   if (type !== 'article') return []
   const audience = String(item.audience || '').toUpperCase() === 'B2C' ? 'B2C' : 'B2B'
-  const imageUrl = audience === 'B2C'
-    ? 'https://sebcastwall.se/assets/owner/hem-it-computer-hero.png'
-    : 'https://sebcastwall.se/assets/owner/m365-hardvara-hero.png'
+  const category = Array.isArray(item.tags) && item.tags[0] ? String(item.tags[0]) : (audience === 'B2C' ? 'Hem-IT' : 'Företagsteknik')
+  const params = new URLSearchParams({
+    title: String(item.title || 'Praktisk teknikguide'),
+    category,
+    audience,
+    description: String(item.summary || '')
+  })
+  const imageUrl = `https://sebcastwall.se/api/articles/cover?${params.toString()}`
   return [{
     type: 'rich',
     title: String(item.title || 'Praktisk teknikguide').slice(0, 256),
