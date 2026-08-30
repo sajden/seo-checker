@@ -5018,11 +5018,15 @@ function formatContentReviewCard(type, item) {
 
 function contentReviewEmbeds(type, item) {
   if (type !== 'article') return []
+  const audience = String(item.audience || '').toUpperCase() === 'B2C' ? 'B2C' : 'B2B'
+  const imageUrl = audience === 'B2C'
+    ? 'https://sebcastwall.se/assets/owner/hem-it-computer-hero.png'
+    : 'https://sebcastwall.se/assets/owner/m365-hardvara-hero.png'
   return [{
     type: 'rich',
     title: String(item.title || 'Praktisk teknikguide').slice(0, 256),
     url: String(item.sourceUrl || 'https://sebcastwall.se/artiklar'),
-    image: { url: 'https://raw.githubusercontent.com/sajden/sebcastwall/main/public/assets/articles/article-cover-background.png' }
+    image: { url: imageUrl }
   }]
 }
 
