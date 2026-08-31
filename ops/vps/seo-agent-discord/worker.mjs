@@ -4670,6 +4670,7 @@ async function postPendingActions({ workspace, targetChannelId }) {
     : await fetchSeoMonitorActions(workspace, 10)
   const items = Array.isArray(actions.actions) ? actions.actions : []
   ensureWorkspaceProfile(workspace, targetChannelId)
+  syncSeoReviewCandidateQueue(workspace, targetChannelId, items)
   state.activeActionByWorkspace = state.activeActionByWorkspace || {}
   const activeKey = activeWorkspaceActionKey(workspace, targetChannelId)
   const active = state.activeActionByWorkspace[activeKey]
@@ -4845,6 +4846,75 @@ async function postPendingActions({ workspace, targetChannelId }) {
       'Detta är en statusrapport, inte en föreslagen kodändring.'
     ].join('\n'))
   }
+}
+
+function seoReviewQueueKey(workspace, targetChannelId) {
+  return activeWorkspaceActionKey(workspace, targetChannelId)
+}
+
+function syncSeoReviewCandidateQueue(workspace, targetChannelId, items) {
+  state.seoReviewQueue = state.seoReviewQueue || {}
+  const key = seoReviewQueueKey(workspace, targetChannelId)
+  const previous = state.seoReviewQueue[key] || { items: [] }
+  const previousById = new Map((previous.items || []).map((item) => [String(item.id), item]))
+  const pendingIds = new Set()
+  const nextItems = []
+  for (const action of Array.isArray(items) ? items : []) {
+    const id = String(action?.id || '')
+    if (!id || action?.status !== 'pending') continue
+    pendingIds.add(id)
+    const old = previousById.get(id)
+    nextItems.push({
+      id,
+      title: action.title || old?.title || 'SEO-förslag',
+      targetUrl: action.targetUrl || action.url || old?.targetUrl || '',
+      keyword: action.keyword || old?.keyword || '',
+      priority: action.priority || old?.priority || 'medium',
+      priorityScore: action.priorityScore ?? action.score ?? old?.priorityScore ?? null,
+      evidenceType: action.evidenceType || old?.evidenceType || '',
+      evidenceRunAt: action.evidenceRunAt || old?.evidenceRunAt || '',
+      status: old?.status === 'active' ? 'active' : 'queued',
+      firstSeenAt: old?.firstSeenAt || new Date().toISOString(),
+      lastSeenAt: new Date().toISOString()
+    })
+  }
+  for (const old of previous.items || []) {
+    if (!pendingIds.has(String(old.id)) && ['queued', 'active'].includes(String(old.status || ''))) {
+      nextItems.push({ ...old, status: 'not_in_latest_batch' })
+    }
+  }
+  nextItems.sort((a, b) => {
+    const score = (item) => Number.isFinite(Number(item.priorityScore)) ? Number(item.priorityScore) : -Infinity
+    return score(b) - score(a) || Date.parse(a.firstSeenAt || '') - Date.parse(b.firstSeenAt || '')
+  })
+  state.seoReviewQueue[key] = {
+    workspaceId: workspace?.id || workspace?.repoFullName || key,
+    workspaceLabel: workspace?.label || workspace?.repoFullName || key,
+    channelId: targetChannelId,
+    updatedAt: new Date().toISOString(),
+    items: nextItems.slice(0, 30)
+  }
+}
+
+function formatSeoReviewQueueMessage(workspace, targetChannelId) {
+  const key = seoReviewQueueKey(workspace, targetChannelId)
+  const queue = state.seoReviewQueue?.[key]
+  const active = state.activeActionByWorkspace?.[key]
+  const items = (queue?.items || []).filter((item) => ['queued', 'active'].includes(String(item.status || '')))
+  if (!items.length) return 'SEO-kön är tom för detta workspace. Agenten väntar på nya verifierade kandidater.'
+  const lines = items.slice(0, 10).map((item, index) => {
+    const evidence = item.evidenceType ? ` · evidens: ${item.evidenceType}` : ''
+    const marker = active?.actionId === item.id ? 'AKTIV' : 'I KÖ'
+    return `${index + 1}. ${marker} · ${item.title}\n   ${item.targetUrl || 'mål-URL saknas'}${item.keyword ? ` · ${item.keyword}` : ''} · ${item.priority || 'medium'}${evidence}`
+  })
+  return [
+    `SEO-kö för ${queue.workspaceLabel || workspace?.label || 'workspace'}`,
+    `Kandidater i kön: ${items.length}`,
+    '',
+    lines.join('\n'),
+    '',
+    active?.actionId ? 'En branch eller granskningskort är aktivt. Nästa kandidat går vidare när den är godkänd eller stoppad.' : 'Nästa kandidat kan förberedas som branch när den passerar alla grindar.'
+  ].join('\n')
 }
 
 function humanNoActionReason(reason) {
@@ -6268,6 +6338,11 @@ async function handleChatMessage(content, message, targetChannelId) {
     const review = await buildRankingReview(workspace, targetChannelId).catch((error) => ({ ok: false, error: error?.message || String(error) }))
     if (review.ok) await sendStrategicRankingReport(workspace, review, targetChannelId)
     else await sendDiscordMessage(`Kunde inte bygga ranking-review: ${review.error || 'okänt fel'}`, targetChannelId)
+    return
+  }
+  if (/^(kö|ko|queue|seo queue|seo-kö|seo-ko)$/i.test(trimmed)) {
+    const workspace = workspaceForChannel(targetChannelId)
+    await sendDiscordMessage(formatSeoReviewQueueMessage(workspace, targetChannelId), targetChannelId)
     return
   }
   if (/^(lärdomar|lardomar|lessons?|minne|memory|ledger)$/i.test(trimmed)) {
