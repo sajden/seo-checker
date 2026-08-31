@@ -50,12 +50,12 @@ test('blocked backlog actions do not fall back to opportunity scout', () => {
   assert.match(workerSource, /blocked-backlog/)
 })
 
-test('live guard rejections block opportunity scout before Codex', () => {
+test('live guard rejections block generic scouts but not Sebcastwall refresh scouts', () => {
   assert.match(workerSource, /function shouldSkipCodexOpportunityScoutForLiveRejections/)
   assert.match(workerSource, /live_rejections_waiting_recheck_or_guard/)
   assert.match(workerSource, /target_recently_completed_waiting_measurement/)
-  assert.match(workerSource, /if \(shouldSkipCodexOpportunityScoutForLiveRejections\(pending, rejectionReasons\)\)/)
-  assert.match(workerSource, /if \(shouldSkipCodexOpportunityScoutForLiveRejections\(context\.pending \|\| \[\], context\.rejectionReasons \|\| \[\]\)\)/)
+  assert.match(workerSource, /if \(!isSebcastwallWorkspace\(workspace, profile\) && shouldSkipCodexOpportunityScoutForLiveRejections\(pending, rejectionReasons\)\)/)
+  assert.match(workerSource, /if \(!isSebcastwallWorkspace\(workspace\) && shouldSkipCodexOpportunityScoutForLiveRejections\(context\.pending \|\| \[\], context\.rejectionReasons \|\| \[\]\)\)/)
 })
 
 test('only a live candidate that survived prior validation blocks synthetic scout', () => {

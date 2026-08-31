@@ -2681,7 +2681,10 @@ async function syntheticAutonomousActionForWorkspace({ workspace, targetChannelI
     logThrottled(`synthetic_autonomous_skipped:${workspace?.id || workspace?.label}:live`, 30 * 60 * 1000, 'synthetic_autonomous_skipped', { workspace: workspace?.label || workspace?.id || null, reason: 'good_live_candidate_available', pendingCount: pending.length })
     return null
   }
-  if (shouldSkipCodexOpportunityScoutForLiveRejections(pending, rejectionReasons)) {
+  // Sebcastwall's queue contains historical/guarded candidates by design. Those
+  // records must not suppress a fresh evidence-backed scout; only a current
+  // candidate that survived validation (handled above) should block it.
+  if (!isSebcastwallWorkspace(workspace, profile) && shouldSkipCodexOpportunityScoutForLiveRejections(pending, rejectionReasons)) {
     logThrottled(`synthetic_autonomous_skipped:${workspace?.id || workspace?.label}:live-rejections`, 30 * 60 * 1000, 'synthetic_autonomous_skipped', {
       workspace: workspace?.label || workspace?.id || null,
       reason: 'live_rejections_waiting_recheck_or_guard',
@@ -2842,7 +2845,7 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
     })
     return null
   }
-  if (shouldSkipCodexOpportunityScoutForLiveRejections(context.pending || [], context.rejectionReasons || [])) {
+  if (!isSebcastwallWorkspace(workspace) && shouldSkipCodexOpportunityScoutForLiveRejections(context.pending || [], context.rejectionReasons || [])) {
     logThrottled(`codex_opportunity_skipped:${workspaceProfileKey(workspace, targetChannelId)}:live-rejections`, 60 * 60 * 1000, 'codex_opportunity_skipped', {
       workspace: workspace?.label || workspace?.id || null,
       reason: 'live_rejections_waiting_recheck_or_guard',
