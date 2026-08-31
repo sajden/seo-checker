@@ -69,7 +69,9 @@ const automationEnabled = env.SEO_AGENT_AUTONOMY_ENABLED !== 'false'
 const codeAutomationEnabled = env.SEO_AGENT_CODE_AUTOMATION_ENABLED === 'true'
 const autonomousCodeEnabled = env.SEO_AGENT_AUTONOMOUS_CODE_ENABLED === 'true'
 const selfRepairEnabled = env.SEO_AGENT_SELF_REPAIR_ENABLED === 'true'
-const autonomousCodePerWorkspacePerDay = Math.max(0, Number(env.SEO_AGENT_AUTONOMOUS_CODE_PER_WORKSPACE_PER_DAY || '1'))
+// An unset cap means no hard daily count limit. A positive value remains an
+// emergency throttle configured explicitly through the VPS environment.
+const autonomousCodePerWorkspacePerDay = Math.max(0, Number(env.SEO_AGENT_AUTONOMOUS_CODE_PER_WORKSPACE_PER_DAY || '0'))
 const maxPendingReviewsPerWorkspace = Math.max(1, Number(env.SEO_AGENT_MAX_PENDING_REVIEWS_PER_WORKSPACE || '3'))
 const opportunityScoutMinIntervalMs = Number(env.SEO_AGENT_OPPORTUNITY_SCOUT_MIN_INTERVAL_MS || String(90 * 60 * 1000))
 const opportunityScoutGrowthMinIntervalMs = Number(env.SEO_AGENT_OPPORTUNITY_SCOUT_GROWTH_MIN_INTERVAL_MS || String(60 * 60 * 1000))
@@ -4931,22 +4933,43 @@ function formatSeoReviewQueueMessage(workspace, targetChannelId) {
   const key = seoReviewQueueKey(workspace, targetChannelId)
   const queue = state.seoReviewQueue?.[key]
   const active = state.activeActionByWorkspace?.[key]
-  const items = (queue?.items || []).filter((item) => ['queued', 'active'].includes(String(item.status || '')))
-  const discovered = (queue?.items || []).filter((item) => item.status === 'discovered')
-  if (!items.length) return 'SEO-kön är tom för detta workspace. Agenten väntar på nya verifierade kandidater.'
+  const visibleStatuses = new Set(['queued', 'active', 'discovered', 'guarded', 'deprioritized'])
+  const items = (queue?.items || []).filter((item) => visibleStatuses.has(String(item.status || '')))
+  const counts = items.reduce((result, item) => {
+    const status = String(item.status || 'discovered')
+    result[status] = Number(result[status] || 0) + 1
+    return result
+  }, {})
+  if (!items.length) {
+    const noCandidate = state.noAutonomousCandidate?.[key]
+    const reasons = (noCandidate?.reasons || []).slice(0, 3).map((item) => humanNoActionReason(item?.reason || item)).filter(Boolean)
+    return [
+      'SEO-kön är tom för detta workspace.',
+      reasons.length ? `Senaste granskning:\n${reasons.map((reason) => `- ${reason}`).join('\n')}` : 'Agenten väntar på nästa färska datakörning.'
+    ].join('\n')
+  }
   const lines = items.slice(0, 10).map((item, index) => {
     const evidence = item.evidenceType ? ` · evidens: ${item.evidenceType}` : ''
-    const marker = active?.actionId === item.id ? 'AKTIV' : 'I KÖ'
-    return `${index + 1}. ${marker} · ${item.title}\n   ${item.targetUrl || 'mål-URL saknas'}${item.keyword ? ` · ${item.keyword}` : ''} · ${item.priority || 'medium'}${evidence}`
+    const marker = active?.actionId === item.id ? 'AKTIV' : queueStatusLabel(item.status)
+    const reason = item.guardReason || item.reviewReason
+    return `${index + 1}. ${marker} · ${item.title}\n   ${item.targetUrl || 'mål-URL saknas'}${item.keyword ? ` · ${item.keyword}` : ''} · ${item.priority || 'medium'}${evidence}${reason ? `\n   Orsak: ${humanNoActionReason(reason)}` : ''}`
   })
   return [
     `SEO-kö för ${queue.workspaceLabel || workspace?.label || 'workspace'}`,
-    `Verifierade kandidater i kön: ${items.length}${discovered.length ? ` · ${discovered.length} upptäckta väntar på evidensgrind` : ''}`,
+    `Kandidater: ${items.length} · redo: ${counts.queued || 0} · upptäckta: ${counts.discovered || 0} · stoppade: ${(counts.guarded || 0) + (counts.deprioritized || 0)}`,
     '',
     lines.join('\n'),
     '',
     active?.actionId ? 'En branch eller granskningskort är aktivt. Nästa kandidat går vidare när den är godkänd eller stoppad.' : 'Nästa kandidat kan förberedas som branch när den passerar alla grindar.'
   ].join('\n')
+}
+
+function queueStatusLabel(status) {
+  if (status === 'queued') return 'REDO'
+  if (status === 'active') return 'AKTIV'
+  if (status === 'guarded') return 'STOPPAD'
+  if (status === 'deprioritized') return 'BORTPRIORITERAD'
+  return 'UPPTÄCKT'
 }
 
 function humanNoActionReason(reason) {

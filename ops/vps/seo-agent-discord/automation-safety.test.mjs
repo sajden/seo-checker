@@ -23,6 +23,7 @@ test('autonomous code and self-repair require explicit opt-in', () => {
 })
 
 test('an autonomous daily limit of zero disables queueing instead of becoming unlimited', () => {
+  assert.match(workerSource, /SEO_AGENT_AUTONOMOUS_CODE_PER_WORKSPACE_PER_DAY \\|\\| '0'/)
   assert.match(workerSource, /if \(autonomousCodePerWorkspacePerDay <= 0\) return/)
   assert.doesNotMatch(workerSource, /autonomousCodePerWorkspacePerDay > 0 && usedToday/)
 })
