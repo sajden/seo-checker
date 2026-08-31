@@ -4718,6 +4718,7 @@ async function postPendingActions({ workspace, targetChannelId }) {
   for (const action of orderedPending) {
     const id = String(action.id || '')
     if (!id || recentlyPostedAction(id)) continue
+    if (isArchivedSeoQueueAction(action)) continue
     if (codeActionResultBlocks(action, workspace, targetChannelId)) continue
     if (await recoverActionAlreadyCommittedBeforeCard(action, workspace, targetChannelId)) continue
     const systemKey = systemClusterKey(action)
@@ -4913,6 +4914,13 @@ function queueTerminalStatus(ledgerStatus, resultStatus) {
   const ledger = String(ledgerStatus || '')
   if (['guarded', 'ignored', 'deprioritized', 'rejected', 'stopped'].includes(ledger)) return ledger
   return null
+}
+
+function isArchivedSeoQueueAction(action) {
+  const id = String(action?.id || '')
+  const target = normalizeStrategicUrl(action?.targetUrl || action?.url || '')
+  return (state.seoQueueArchive || []).some((item) => String(item?.id || '') === id
+    || (target && normalizeStrategicUrl(item?.targetUrl || '') === target))
 }
 
 function formatSeoReviewQueueMessage(workspace, targetChannelId) {
