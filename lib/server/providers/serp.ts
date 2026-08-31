@@ -11,6 +11,7 @@ import type {
 
 const googleProvider = "google_custom_search" as const;
 const braveProvider = "brave_search" as const;
+const dataForSeoProvider = "dataforseo" as const;
 const storageDir = getDataDir();
 const historyFile = path.join(storageDir, "serp-history.json");
 const maxChecksPerKeyword = 30;
@@ -46,8 +47,34 @@ type BraveSearchResponse = {
   };
 };
 
+type DataForSeoItem = {
+  type?: string;
+  rank_group?: number;
+  rank_absolute?: number;
+  title?: string;
+  url?: string;
+  description?: string;
+};
+
+type DataForSeoResponse = {
+  status_code?: number;
+  status_message?: string;
+  tasks?: Array<{
+    id?: string;
+    status_code?: number;
+    status_message?: string;
+    result?: Array<{
+      items?: DataForSeoItem[];
+      total_count?: number;
+    }>;
+  }>;
+};
+
 export async function compareSerp(input: SerpCompareRequest): Promise<SerpComparison> {
   const selectedProvider = selectProvider(input.provider);
+  if (selectedProvider === dataForSeoProvider) {
+    return await compareDataForSeoSerp(input);
+  }
   if (selectedProvider === braveProvider) {
     return await compareBraveSerp(input);
   }
@@ -56,11 +83,129 @@ export async function compareSerp(input: SerpCompareRequest): Promise<SerpCompar
     return await compareGoogleSerp(input);
   }
 
+  if (isDataForSeoProviderConfigured()) {
+    return await compareDataForSeoSerp(input);
+  }
+
   if (isBraveProviderConfigured()) {
     return await compareBraveSerp(input);
   }
 
   return await compareGoogleSerp(input);
+}
+
+async function compareDataForSeoSerp(input: SerpCompareRequest): Promise<SerpComparison> {
+  const login = process.env.DATAFORSEO_LOGIN?.trim();
+  const password = process.env.DATAFORSEO_PASSWORD?.trim();
+  const query = normalizeQuery(input.query);
+  const market = normalizeMarket(input.market);
+  const language = normalizeLanguage(input.language);
+  const ownDomain = normalizeDomain(input.ownDomain);
+  const checkedAt = new Date().toISOString();
+
+  if (!query) throw new Error("Query is required.");
+  if (!login || !password) {
+    return {
+      configured: false,
+      provider: dataForSeoProvider,
+      query,
+      market,
+      language,
+      ownDomain,
+      checkedAt,
+      ownRank: null,
+      results: [],
+      competitorResults: [],
+      observations: [
+        "DataForSEO är inte konfigurerat ännu.",
+        "Sätt DATAFORSEO_LOGIN och DATAFORSEO_PASSWORD i SEO Monitor-miljön."
+      ],
+      limitations: ["DataForSEO används bara när providern är konfigurerad och vald."]
+    };
+  }
+
+  const authorization = Buffer.from(`${login}:${password}`, "utf8").toString("base64");
+  const headers = {
+    authorization: `Basic ${authorization}`,
+    accept: "application/json",
+    "content-type": "application/json",
+    "user-agent": "seo-monitor/0.1 (+dataforseo serp comparison)"
+  };
+  const body = [{
+    keyword: query,
+    location_code: 2752,
+    language_code: language,
+    se_domain: "google.se",
+    device: "desktop",
+    depth: clampNumber(input.num, 1, 10, 10)
+  }];
+
+  const postResponse = await fetch("https://api.dataforseo.com/v3/serp/google/organic/task_post", {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body)
+  });
+  const postPayload = (await postResponse.json()) as DataForSeoResponse;
+  if (!postResponse.ok || (postPayload.status_code !== 20000 && postPayload.status_code !== 20100)) {
+    throw new Error(postPayload.status_message || `DataForSEO task_post failed with HTTP ${postResponse.status}.`);
+  }
+
+  const taskId = postPayload.tasks?.[0]?.id;
+  if (!taskId) throw new Error("DataForSEO did not return a task id.");
+
+  let payload: DataForSeoResponse | undefined;
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, attempt === 0 ? 2500 : 5000));
+    const resultResponse = await fetch(`https://api.dataforseo.com/v3/serp/google/organic/task_get/advanced/${encodeURIComponent(taskId)}`, {
+      headers
+    });
+    payload = (await resultResponse.json()) as DataForSeoResponse;
+    if (!resultResponse.ok) throw new Error(payload.status_message || `DataForSEO task_get failed with HTTP ${resultResponse.status}.`);
+    const task = payload.tasks?.[0];
+    if (task?.result?.length) break;
+    if (task?.status_code && task.status_code >= 40000 && task.status_code !== 40601 && task.status_code !== 40602) {
+      throw new Error(task.status_message || "DataForSEO task failed.");
+    }
+  }
+
+  const taskResult = payload?.tasks?.[0]?.result?.[0];
+  if (!taskResult) {
+    throw new Error("DataForSEO task did not become ready within the SERP polling window.");
+  }
+  const results = (taskResult?.items ?? [])
+    .filter((item) => item.type === "organic" && item.url)
+    .slice(0, clampNumber(input.num, 1, 10, 10))
+    .map((item, index): SerpResult => ({
+      rank: item.rank_absolute || item.rank_group || index + 1,
+      title: item.title?.trim() || item.url || "Untitled result",
+      link: item.url as string,
+      displayLink: displayLinkFromUrl(item.url as string),
+      snippet: item.description?.trim(),
+      isOwnDomain: ownDomain ? domainMatches(item.url as string, ownDomain) : false
+    }));
+  const ownRank = results.find((result) => result.isOwnDomain)?.rank ?? null;
+
+  return {
+    configured: true,
+    provider: dataForSeoProvider,
+    query,
+    market,
+    language,
+    ownDomain,
+    checkedAt,
+    totalResults: taskResult?.total_count ? String(taskResult.total_count) : undefined,
+    ownRank,
+    results,
+    competitorResults: results.filter((result) => !result.isOwnDomain),
+    observations: [
+      "Google Organic-resultat hämtades via DataForSEO för Sverige.",
+      ...buildObservations(results, ownRank, ownDomain)
+    ],
+    limitations: [
+      "Resultatet är en punktmätning och kan skilja sig från GSC:s genomsnittliga position.",
+      "Standard task_post är asynkront och används därför bara för utvalda sökord med cache mellan körningar."
+    ]
+  };
 }
 
 async function compareGoogleSerp(input: SerpCompareRequest): Promise<SerpComparison> {
@@ -238,10 +383,14 @@ async function compareBraveSerp(input: SerpCompareRequest): Promise<SerpComparis
 }
 
 export function isSerpProviderConfigured() {
-  return isBraveProviderConfigured() || Boolean(
+  return isDataForSeoProviderConfigured() || isBraveProviderConfigured() || Boolean(
     process.env.GOOGLE_CUSTOM_SEARCH_API_KEY?.trim() &&
     process.env.GOOGLE_CUSTOM_SEARCH_ENGINE_ID?.trim()
   );
+}
+
+function isDataForSeoProviderConfigured() {
+  return Boolean(process.env.DATAFORSEO_LOGIN?.trim() && process.env.DATAFORSEO_PASSWORD?.trim());
 }
 
 function isBraveProviderConfigured() {
@@ -435,7 +584,7 @@ function buildHistoryKey(input: { query: string; market: string; language: strin
 }
 
 function selectProvider(value: SerpCompareRequest["provider"]) {
-  if (value === braveProvider || value === googleProvider) return value;
+  if (value === dataForSeoProvider || value === braveProvider || value === googleProvider) return value;
   return "auto";
 }
 

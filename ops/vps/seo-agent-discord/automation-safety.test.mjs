@@ -71,6 +71,17 @@ test('Sebcastwall bypasses static goal gaps and uses the evidence-backed scout',
   )
 })
 
+test('Sebcastwall live actions require observed evidence before Discord or code work', () => {
+  assert.match(workerSource, /function sebcastwallObservedEvidenceCheck\(action\)/)
+  assert.match(workerSource, /if \(isSebcastwallWorkspace\(workspace\)\) \{\s+const observedEvidence = sebcastwallObservedEvidenceCheck\(action\)/)
+  assert.match(workerSource, /reason: 'missing_observed_evidence'/)
+})
+
+test('generic runtime rejection does not hide later evidence-backed batch actions', () => {
+  assert.match(workerSource, /Runtime selection is diagnostic only/)
+  assert.doesNotMatch(workerSource, /rejected: runtimeCurrent\.payload\?\.rejected\?\.slice\?\.\(0, 6\) \|\| \[\]\s+\}\)\s+return/)
+})
+
 test('policy-incompatible opportunity scouts cool down before Codex retries', () => {
   assert.match(workerSource, /previousScoutBlockedReason/)
   assert.match(workerSource, /previousScout\?\.status === 'no_policy_compatible_opportunity'/)

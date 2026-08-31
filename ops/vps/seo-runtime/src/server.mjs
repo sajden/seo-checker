@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 import { mergeJsonChanges } from '../../seo-agent-discord/json-state-merge.mjs'
 import { reviewCapacityCheck } from '../../seo-agent-discord/review-capacity-policy.mjs'
+import { isIndexingActionIdentity } from '../../seo-agent-discord/action-type-policy.mjs'
 
 const env = loadEnv(['/opt/ai-dashboard/apps/seo-runtime/.env', '/opt/ai-dashboard/apps/seo-agent-discord/.env', '/home/deploy/seo-agent-discord/.env'])
 const host = env.SEO_RUNTIME_HOST || '127.0.0.1'
@@ -1154,6 +1155,7 @@ function selectNextAction(workspaceKey, payload = {}) {
       workspaceKey,
       selectedActionId: selected?.action?.id || null,
       selectedAction: selected?.action || null,
+      acceptedActions: accepted.slice(0, 12).map((item) => item.action),
       review: selected ? publicCandidateReview(selected) : null,
       rejected: candidates
         .filter((item) => !item.ok)
@@ -1180,6 +1182,22 @@ function scoreActionCandidate(state, action, context) {
   const negatives = []
   let score = Number(action.priorityScore ?? action.score ?? NaN)
   if (!Number.isFinite(score)) score = 45
+
+  // SebCastwall's article/newsletter pipeline is maintained by separate
+  // agents. Indexing/redirect diagnostics are verification work, not change
+  // cards, and integration landing pages are currently outside the approved
+  // commercial focus. Keep these out of the Discord implementation queue.
+  if (isSebcastwallWorkspaceContext(context) && isSebcastwallNonActionableSeoWork(action, targetUrl)) {
+    return rejected(action, -100, sebcastwallNonActionableReason(action, targetUrl), [
+      'inte artikel/nyhetsbrev, redirect/indexeringskontroll eller integrationsbrus i SEO-ändringskön'
+    ])
+  }
+
+  if (isContentActionWithoutVerifiedSearchEvidence(action)) {
+    return rejected(action, -90, 'verified_search_evidence_required', [
+      'contentförslag måste ha verifierad GSC-, SERP-, Keyword Planner- eller crawl-evidens'
+    ])
+  }
 
   const reviewCapacity = reviewCapacityCheck({
     state,
@@ -1273,6 +1291,20 @@ function scoreActionCandidate(state, action, context) {
   }
 }
 
+function isContentActionWithoutVerifiedSearchEvidence(action) {
+  const text = actionText(action)
+  if (/indexering|url inspection|oauth|gsc-auth/.test(text) && !/title|h1|meta|copy|faq|content/.test(text)) return false
+  if (/crawl|http status|canonical|robots|sitemap|noindex|lighthouse|core web vitals/.test(text)) return false
+  const evidence = [action?.why, ...(Array.isArray(action?.evidence) ? action.evidence : [])]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase()
+  return !(/gsc|search console/.test(evidence) && /impression|klick|click|position|ctr|query|sökfråga/.test(evidence))
+    && !(/serp/.test(evidence) && /rank|topp|provider|konkurrent/.test(evidence))
+    && !(/keyword planner|monthly searches|sökningar\/mån|sökvolym/.test(evidence))
+    && !(/crawl/.test(evidence) && /issue|fel|status|canonical|robots/.test(evidence))
+}
+
 function publicCandidateReview(candidate) {
   return {
     score: candidate.score,
@@ -1359,8 +1391,10 @@ function ledgerForAction(state, action, context) {
   const workspaceKey = runtimeWorkspaceClusterKey(context.workspaceKey)
   const targetPath = normalizePath(action?.targetUrl || action?.url || '')
   const kind = runtimeActionKindForLearning(action)
+  const changeType = runtimeActionChangeType(action)
+  const keyword = normalize(action?.keyword || action?.title || '')
   if (targetPath && ['content', 'internal-links'].includes(kind)) {
-    const exactCluster = `${workspaceKey}:${targetPath}:${kind}`
+    const exactCluster = `${workspaceKey}:${targetPath}:${kind}:${changeType}:${keyword || 'no-keyword'}`
     const exactLedger = state.actionLedger?.[exactCluster]
     if (exactLedger && isBlockingLedger(exactLedger)) return exactLedger
   }
@@ -1372,10 +1406,9 @@ function ledgerForAction(state, action, context) {
   if (actionLedgers.length) {
     return actionLedgers[0]
   }
-  const keyword = normalize(action?.keyword || '')
   let fallbackLedger = null
   for (const ledger of Object.values(state.actionLedger || {})) {
-    if (targetPath && normalizePath(ledger?.targetUrl || '') === targetPath && ledgerKindMatchesAction(ledger, kind)) {
+    if (targetPath && normalizePath(ledger?.targetUrl || '') === targetPath && ledgerKindMatchesAction(ledger, kind) && normalize(ledger?.keyword || '') === keyword && runtimeActionChangeType(ledger) === changeType) {
       if (isBlockingLedger(ledger)) return ledger
       fallbackLedger = fallbackLedger || ledger
     }
@@ -1392,7 +1425,19 @@ function ledgerKindMatchesAction(ledger, kind) {
   if (!kind) return true
   const actionKind = runtimeActionKindForLearning(ledger)
   if (actionKind === 'general') return true
-  return actionKind === kind || (['content', 'internal-links'].includes(actionKind) && ['content', 'internal-links'].includes(kind))
+  return actionKind === kind
+}
+
+function runtimeActionChangeType(action) {
+  const text = actionText(action)
+  if (/title|ctr/.test(text)) return 'title-ctr'
+  if (/\bh1\b/.test(text)) return 'h1'
+  if (/\bh2\b/.test(text)) return 'h2'
+  if (/meta|description/.test(text)) return 'meta'
+  if (/faq|fraga|question/.test(text)) return 'faq'
+  if (/internlank|interna-lank|internal-link|internal-links|intern-lank|internlankning/.test(text)) return 'internal-links'
+  if (/copy|content|intro|lead|expand|rewrite|ranking|keyword/.test(text)) return 'content'
+  return runtimeActionKindForLearning(action)
 }
 
 function isBlockingLedger(ledger) {
@@ -1463,6 +1508,40 @@ function isGscOrOAuthNoise(action) {
   const isSeoContentWork = /title|h1|h2|meta|copy|faq|content|internlank|internal-link|schema/.test(operationalText)
   if (isSeoContentWork) return false
   return /gsc|search-console|url-inspection|oauth|token|not-connected|indexering-startsidan|kontrollera-indexering/.test(operationalText)
+}
+
+function isSebcastwallWorkspaceContext(context) {
+  return [
+    context?.workspace?.label,
+    context?.workspace?.id,
+    context?.workspace?.gscProperty,
+    context?.workspace?.repoFullName,
+    context?.workspaceKey
+  ].filter(Boolean).some((value) => normalize(value).includes('sebcastwall'))
+}
+
+function isSebcastwallNonActionableSeoWork(action, targetUrl) {
+  const text = normalize([
+    action?.id,
+    action?.title,
+    action?.type,
+    targetUrl
+  ].filter(Boolean).join(' '))
+  const path = normalizePath(targetUrl)
+  if (/^\/artiklar(?:\/|$)|^\/nyhetsbrev(?:\/|$)/.test(path)) return true
+  if (/artikel|articles|nyhetsbrev|newsletter/.test(text)) return true
+  if (isIndexingActionIdentity(action)) return true
+  if (/redirect|omdirig|indexering|indexing|url inspection|url-inspection|search console|gsc|canonical|sitemap|robots\.txt|noindex|discovered not indexed|page with redirect/.test(text)) return true
+  if (/^\/tjanster\/integrationer(?:\/|$)/.test(path)) return true
+  return false
+}
+
+function sebcastwallNonActionableReason(action, targetUrl) {
+  const path = normalizePath(targetUrl)
+  const text = normalize([action?.id, action?.title, action?.type].filter(Boolean).join(' '))
+  if (/^\/artiklar(?:\/|$)|^\/nyhetsbrev(?:\/|$)/.test(path) || /artikel|articles|nyhetsbrev|newsletter/.test(text)) return 'content_pipeline_not_seo_change_queue'
+  if (/^\/tjanster\/integrationer(?:\/|$)/.test(path)) return 'integration_service_outside_current_focus'
+  return 'verification_or_redirect_is_not_code_change'
 }
 
 function isNewPageActionText(text) {

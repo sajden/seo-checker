@@ -81,6 +81,7 @@ export async function recordSeoRunMemory(input: RecordRunInput) {
   const actionItems = upsertActionItems({
     existing: store.actionItems,
     projectSlug: input.projectSlug,
+    batchId: input.batch.id,
     actions: input.seoReview.topActions,
     crawlReport: input.crawlReport,
     ranAt: input.ranAt
@@ -188,6 +189,7 @@ function buildSnapshot(input: RecordRunInput): SeoMemorySnapshot {
 function upsertActionItems(input: {
   existing: SeoActionItem[];
   projectSlug: string;
+  batchId: string;
   actions: SeoReviewAction[];
   crawlReport: CrawlReport | null;
   ranAt: string;
@@ -197,6 +199,7 @@ function upsertActionItems(input: {
 
   for (const action of input.actions) {
     if (isMetaFollowupAction(action.title)) continue;
+    if (!hasVerifiedSearchEvidence(action)) continue;
     const key = actionKey({ ...action, projectSlug: input.projectSlug });
     seen.add(key);
     const existing = byKey.get(key);
@@ -220,6 +223,9 @@ function upsertActionItems(input: {
         why: action.why,
         expectedImpact: action.expectedImpact,
         evidence: action.evidence,
+        evidenceType: action.evidenceType,
+        evidenceRunAt: action.evidenceRunAt ?? input.ranAt,
+        evidenceBatchId: action.evidenceBatchId ?? input.batchId,
         targetUrl: action.targetUrl ?? existing.targetUrl,
         keyword: action.keyword ?? existing.keyword,
         lastSeenAt: input.ranAt,
@@ -243,6 +249,9 @@ function upsertActionItems(input: {
       why: action.why,
       expectedImpact: action.expectedImpact,
       evidence: action.evidence,
+      evidenceType: action.evidenceType,
+      evidenceRunAt: action.evidenceRunAt ?? input.ranAt,
+      evidenceBatchId: action.evidenceBatchId ?? input.batchId,
       targetUrl: action.targetUrl,
       keyword: action.keyword,
       firstSeenAt: input.ranAt,
@@ -393,16 +402,35 @@ function serpStatus(now: number | null, previous: number | null, delta: number |
 function actionKey(input: Pick<SeoActionItem, "projectSlug" | "title" | "targetUrl" | "keyword" | "action"> | (SeoReviewAction & { projectSlug: string })) {
   const target = normalizeUrlForActionKey(input.targetUrl ?? "");
   const kind = normalizeActionKindForKey(input.title, input.action);
-  if (target && (kind === "content" || kind === "internal-links")) {
-    return [input.projectSlug, target, kind].join("|");
-  }
-
   return [
     input.projectSlug,
     target,
     normalizeKeywordForActionKey(input.keyword ?? input.title),
-    kind
+    kind,
+    normalizeActionChangeTypeForKey(input.title, input.action)
   ].join("|");
+}
+
+function normalizeActionChangeTypeForKey(title: string, action: string) {
+  const text = normalizeText(`${title} ${action}`);
+  if (/title|ctr/.test(text)) return "title-ctr";
+  if (/\bh1\b/.test(text)) return "h1";
+  if (/\bh2\b/.test(text)) return "h2";
+  if (/meta|description/.test(text)) return "meta";
+  if (/faq|fraga|question/.test(text)) return "faq";
+  if (/internlank|interna lank|internal link/.test(text)) return "internal-links";
+  return "content";
+}
+
+function hasVerifiedSearchEvidence(action: Pick<SeoReviewAction, "evidence" | "evidenceType" | "why">) {
+  if (["gsc", "serp", "keyword_planner", "crawl", "mixed"].includes(action.evidenceType ?? "")) return true;
+  const evidence = [action.why, ...(action.evidence ?? [])].filter(Boolean).join(" ").toLowerCase();
+  return (
+    (/gsc|search console/.test(evidence) && /impression|klick|click|position|ctr|query|sökfråga/.test(evidence))
+    || (/serp/.test(evidence) && /rank|topp|provider|konkurrent/.test(evidence))
+    || (/keyword planner|monthly searches|sökningar\/mån|sökvolym/.test(evidence))
+    || (/crawl/.test(evidence) && /issue|fel|status|canonical|robots/.test(evidence))
+  );
 }
 
 function normalizeUrlForActionKey(value: string) {

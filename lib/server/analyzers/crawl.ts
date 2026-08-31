@@ -14,12 +14,19 @@ export async function crawlSite(siteUrl: string, maxPages = 12): Promise<CrawlRe
   const sitemapUrls = sitemapResponse.status === "fulfilled" && sitemapResponse.value.ok
     ? extractSitemapUrls(await sitemapResponse.value.text(), origin)
     : [];
+  // A non-positive limit means "full site": the sitemap is the authoritative
+  // page inventory, with a bounded fallback for sites without a sitemap.
+  const crawlLimit = maxPages > 0
+    ? maxPages
+    : sitemapUrls.length > 0
+      ? sitemapUrls.length
+      : 500;
   const queue = uniqueUrls([normalizedStartUrl, ...sitemapUrls]);
   const visited = new Set<string>();
   const pages: CrawledPage[] = [];
   const findings: CrawlFinding[] = [];
 
-  while (queue.length > 0 && visited.size < maxPages) {
+  while (queue.length > 0 && visited.size < crawlLimit) {
     const currentUrl = queue.shift();
     if (!currentUrl || visited.has(currentUrl)) {
       continue;
@@ -30,12 +37,44 @@ export async function crawlSite(siteUrl: string, maxPages = 12): Promise<CrawlRe
       await sleep(pageDelayMs);
     }
 
-    const response = await fetchWithRetry(currentUrl, {
-      redirect: "follow",
-      headers: {
-        "user-agent": "seo-monitor/0.1 (+internal audit)"
-      }
-    });
+    let response: Response;
+    try {
+      response = await fetchWithRetry(currentUrl, {
+        redirect: "follow",
+        headers: {
+          "user-agent": "seo-monitor/0.1 (+internal audit)"
+        }
+      });
+    } catch (error) {
+      // One unreachable URL must not invalidate the complete sitemap audit.
+      const message = error instanceof Error ? error.message : String(error);
+      pages.push({
+        url: currentUrl,
+        status: 0,
+        title: null,
+        metaDescription: null,
+        canonical: null,
+        h1Count: 0,
+        h1Text: null,
+        h2Texts: [],
+        wordCount: 0,
+        imageCount: 0,
+        structuredDataTypes: [],
+        lang: null,
+        robots: null,
+        internalLinks: []
+      });
+      findings.push({
+        id: `fetch-failed-${currentUrl}`,
+        severity: "warning",
+        category: "crawl",
+        title: "URL kunde inte hämtas",
+        summary: `Crawlen kunde inte hämta ${currentUrl}, men fortsatte med övriga sitemap-URL:er.`,
+        url: currentUrl,
+        evidence: [message]
+      });
+      continue;
+    }
 
     const contentType = response.headers.get("content-type") ?? "";
     const isHtml = contentType.includes("text/html");
@@ -81,7 +120,7 @@ export async function crawlSite(siteUrl: string, maxPages = 12): Promise<CrawlRe
       });
     }
 
-    if (!page.canonical) {
+    if (!page.canonical && !isIntentionalPrivateUrl(page.url)) {
       findings.push({
         id: `missing-canonical-${page.url}`,
         severity: "warning",
@@ -129,7 +168,7 @@ export async function crawlSite(siteUrl: string, maxPages = 12): Promise<CrawlRe
       });
     }
 
-    if (page.robots?.toLowerCase().includes("noindex")) {
+    if (page.robots?.toLowerCase().includes("noindex") && !isIntentionalPrivateUrl(page.url)) {
       findings.push({
         id: `noindex-${page.url}`,
         severity: "critical",
@@ -142,7 +181,7 @@ export async function crawlSite(siteUrl: string, maxPages = 12): Promise<CrawlRe
     }
 
     for (const nextUrl of page.internalLinks) {
-      if (!visited.has(nextUrl) && queue.length + visited.size < maxPages * 3) {
+      if (!visited.has(nextUrl) && queue.length + visited.size < crawlLimit * 3) {
         queue.push(nextUrl);
       }
     }
@@ -303,15 +342,27 @@ function normalizeUrl(siteUrl: string) {
   return `https://${trimmed}`;
 }
 
+function isIntentionalPrivateUrl(url: string) {
+  try {
+    return new URL(url).pathname.replace(/\/$/, "") === "/qr";
+  } catch {
+    return false;
+  }
+}
+
 async function fetchWithRetry(url: string, init: RequestInit) {
   const attempts = Math.max(1, Math.min(5, Number(process.env.CRAWL_FETCH_RETRIES ?? "3") || 3));
+  const timeoutMs = Math.max(1000, Number(process.env.CRAWL_FETCH_TIMEOUT_MS ?? "15000") || 15000);
   let lastResponse: Response | null = null;
   let lastError: unknown = null;
 
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     let response: Response;
     try {
-      response = await fetch(url, init);
+      response = await fetch(url, {
+        ...init,
+        signal: AbortSignal.timeout(timeoutMs)
+      });
     } catch (error) {
       lastError = error;
       if (attempt === attempts) {

@@ -113,10 +113,11 @@ export async function runBatch(batchId: string, options: RunBatchOptions = {}): 
     serpHistory: await readSerpHistory(),
     ownDomain: batch.siteUrl
   });
+  const serpEnabled = runPlan.serp || isAlwaysOnSerpWorkspace(projectSlug);
   const serpComparisons = await runSerpComparisons({
     keywords: serpKeywords,
     ownDomain: batch.siteUrl,
-    limit: runPlan.serp ? getSerpDailyKeywordLimit(profile) : 0,
+    limit: serpEnabled ? getSerpDailyKeywordLimit(profile) : 0,
     cacheTtlHours: getSerpCacheTtlHours()
   });
   const gscUrlInspections = await runGscUrlInspections({
@@ -390,16 +391,16 @@ function buildSeedKeywords(input: { siteUrl?: string; projectSlug?: string }): U
   }
   if (!projectSlug.includes("sebcastwall")) return [];
   return [
-    { query: "AI konsult företag", intent: "commercial", demandBucket: "unknown", competition: "unknown", targetUrl: `${base}/`, status: "targeted", source: "import", notes: "Auto-seedad av SEO Monitor som kommersiell huvudterm." },
-    { query: "AI automatisering företag", intent: "commercial", demandBucket: "unknown", competition: "unknown", targetUrl: `${base}/tjanster/ai-automatisering`, status: "targeted", source: "import", notes: "Auto-seedad av SEO Monitor." },
-    { query: "AI agenter företag", intent: "commercial", demandBucket: "unknown", competition: "unknown", targetUrl: `${base}/tjanster/ai-agenter`, status: "targeted", source: "import", notes: "Auto-seedad av SEO Monitor. Klustrar singular/plural som samma topic." },
-    { query: "apputveckling företag", intent: "commercial", demandBucket: "unknown", competition: "unknown", targetUrl: `${base}/tjanster/app-webbutveckling`, status: "targeted", source: "import", notes: "Auto-seedad av SEO Monitor." },
-    { query: "webbapp företag", intent: "commercial", demandBucket: "unknown", competition: "unknown", targetUrl: `${base}/tjanster/app-webbutveckling`, status: "targeted", source: "import", notes: "Auto-seedad av SEO Monitor." },
-    { query: "skräddarsydd webbapplikation", intent: "commercial", demandBucket: "unknown", competition: "unknown", targetUrl: `${base}/tjanster/app-webbutveckling`, status: "targeted", source: "import", notes: "Auto-seedad av SEO Monitor." },
-    { query: "interna verktyg företag", intent: "commercial", demandBucket: "unknown", competition: "unknown", targetUrl: `${base}/tjanster/interna-verktyg`, status: "targeted", source: "import", notes: "Auto-seedad av SEO Monitor." },
-    { query: "skräddarsydda interna system", intent: "commercial", demandBucket: "unknown", competition: "unknown", targetUrl: `${base}/tjanster/interna-verktyg`, status: "targeted", source: "import", notes: "Auto-seedad av SEO Monitor." },
-    { query: "Microsoft 365 automatisering", intent: "commercial", demandBucket: "unknown", competition: "unknown", targetUrl: `${base}/artiklar/ai-motesanteckningar-microsoft-365-utan-manuellt-efterarbete`, status: "targeted", source: "import", notes: "Auto-seedad av SEO Monitor." },
-    { query: "Power Automate konsult", intent: "commercial", demandBucket: "unknown", competition: "unknown", targetUrl: `${base}/artiklar/ai-motesanteckningar-microsoft-365-utan-manuellt-efterarbete`, status: "targeted", source: "import", notes: "Auto-seedad av SEO Monitor." }
+    { query: "datorhjälp hemma Bromma", intent: "commercial", demandBucket: "unknown", competition: "unknown", targetUrl: `${base}/tjanster/hem-it/dator-mac`, status: "targeted", source: "import", notes: "Strategiskt spår, inte efterfrågeevidens." },
+    { query: "wifi hjälp hemma Bromma", intent: "commercial", demandBucket: "unknown", competition: "unknown", targetUrl: `${base}/tjanster/hem-it/wifi-natverk`, status: "targeted", source: "import", notes: "Strategiskt spår, inte efterfrågeevidens." },
+    { query: "Hem-IT Bromma", intent: "commercial", demandBucket: "unknown", competition: "unknown", targetUrl: `${base}/tjanster/hem-it`, status: "targeted", source: "import", notes: "Strategiskt spår, inte efterfrågeevidens." },
+    { query: "webbutveckling företag", intent: "commercial", demandBucket: "unknown", competition: "unknown", targetUrl: `${base}/tjanster/webbutveckling`, status: "targeted", source: "import", notes: "Strategiskt spår, inte efterfrågeevidens." },
+    { query: "webbapplikation företag", intent: "commercial", demandBucket: "unknown", competition: "unknown", targetUrl: `${base}/tjanster/app-webbutveckling`, status: "targeted", source: "import", notes: "Strategiskt spår, inte efterfrågeevidens." },
+    { query: "apputveckling företag", intent: "commercial", demandBucket: "unknown", competition: "unknown", targetUrl: `${base}/tjanster/app-webbutveckling`, status: "targeted", source: "import", notes: "Strategiskt spår, inte efterfrågeevidens." },
+    { query: "mobilapputveckling Flutter", intent: "commercial", demandBucket: "unknown", competition: "unknown", targetUrl: `${base}/tjanster/mobilappar`, status: "targeted", source: "import", notes: "Strategiskt spår, inte efterfrågeevidens." },
+    { query: "kundapp utveckling", intent: "commercial", demandBucket: "unknown", competition: "unknown", targetUrl: `${base}/tjanster/mobilappar/kundappar`, status: "targeted", source: "import", notes: "Strategiskt spår, inte efterfrågeevidens." },
+    { query: "interna verktyg företag", intent: "commercial", demandBucket: "unknown", competition: "unknown", targetUrl: `${base}/tjanster/interna-verktyg`, status: "targeted", source: "import", notes: "Strategiskt spår, inte efterfrågeevidens." },
+    { query: "AI automatisering företag", intent: "commercial", demandBucket: "unknown", competition: "unknown", targetUrl: `${base}/tjanster/ai-automatisering`, status: "targeted", source: "import", notes: "Strategiskt spår, inte efterfrågeevidens." }
   ];
 }
 
@@ -1012,20 +1013,24 @@ async function runSerpComparisons(input: { keywords: string[]; ownDomain?: strin
   const selected = input.keywords.slice(0, input.limit);
   const comparisons: SerpComparison[] = [];
 
-  for (const query of selected) {
-    try {
-      comparisons.push(await compareSerpWithHistory({
-        query,
-        ownDomain: input.ownDomain,
-        market: "SE",
-        language: "sv",
-        num: 10,
-        provider: getSerpProvider(),
-        cacheTtlHours: input.cacheTtlHours
-      }));
-    } catch (error) {
-      comparisons.push(buildSerpFailureComparison(query, input.ownDomain, error));
-    }
+  for (let index = 0; index < selected.length; index += 3) {
+    const chunk = selected.slice(index, index + 3);
+    const chunkComparisons = await Promise.all(chunk.map(async (query) => {
+      try {
+        return await compareSerpWithHistory({
+          query,
+          ownDomain: input.ownDomain,
+          market: "SE",
+          language: "sv",
+          num: 10,
+          provider: getSerpProvider(),
+          cacheTtlHours: input.cacheTtlHours
+        });
+      } catch (error) {
+        return buildSerpFailureComparison(query, input.ownDomain, error);
+      }
+    }));
+    comparisons.push(...chunkComparisons);
   }
 
   return comparisons;
@@ -1056,7 +1061,8 @@ function buildSerpFailureComparison(query: string, ownDomain: string | undefined
 
 function diagnosticSerpProvider(): SerpComparison["provider"] {
   const provider = getSerpProvider();
-  if (provider === "brave_search" || provider === "google_custom_search") return provider;
+  if (provider === "dataforseo" || provider === "brave_search" || provider === "google_custom_search") return provider;
+  if (process.env.DATAFORSEO_LOGIN?.trim() && process.env.DATAFORSEO_PASSWORD?.trim()) return "dataforseo";
   return isSerpProviderConfigured() ? "brave_search" : "google_custom_search";
 }
 
@@ -1132,8 +1138,16 @@ function parsePositiveInteger(value: string | undefined, fallback: number, max: 
 
 function getSerpProvider() {
   const provider = process.env.SERP_PROVIDER?.trim();
-  if (provider === "brave_search" || provider === "google_custom_search") return provider;
+  if (provider === "dataforseo" || provider === "brave_search" || provider === "google_custom_search") return provider;
   return "auto";
+}
+
+function isAlwaysOnSerpWorkspace(projectSlug: string) {
+  const configured = String(process.env.SERP_ALWAYS_ON_PROJECT_SLUGS ?? "sebcastwall")
+    .split(",")
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean);
+  return configured.includes(projectSlug.trim().toLowerCase());
 }
 
 function findLastSerpCheck(

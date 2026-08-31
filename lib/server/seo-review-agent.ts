@@ -47,6 +47,10 @@ type SeoReviewInput = {
 
 export async function generateSeoReview(input: SeoReviewInput): Promise<SeoReview> {
   const fallback = buildFallbackReview(input);
+  // SEO Monitor runs in a container; code decisions and implementation belong
+  // to the VPS-hosted Codex runner used by the Discord worker. Do not silently
+  // fall back to a possibly stale/broken API key for the review itself.
+  if (process.env.SEO_REVIEW_USE_OPENAI_API !== "true") return fallback;
   const apiKey = process.env.OPENAI_API_KEY?.trim();
   if (!apiKey) return fallback;
 
@@ -249,11 +253,13 @@ function buildFallbackReview(input: SeoReviewInput): SeoReview {
   const serpActions = buildSerpActions(input);
   const memoryActions = buildMemoryActions(input);
   const gscSearchActions = buildGscSearchActions(input);
+  const consolidatedGscActions = consolidateGscActions(gscSearchActions);
   const aiReadinessActions = buildAiReadinessActions(input);
   const shouldSuppressAction = (action: SeoReviewAction) => isRepeatedOpenAction(action, input.seoMemory);
   const gscOpportunities = (input.gscQueryResult?.rows ?? [])
     .filter((row) => row.impressions >= 1 && row.position > 3)
     .filter((row) => !isProjectBrandedGscRow(row))
+    .filter((row) => !isArticleUrl(row.keys[0] ?? ""))
     .slice(0, 5);
   const plannedKeywords = input.keywordPlan.keywords.filter((keyword) => keyword.status !== "ignored");
   const articleAnalytics = (input.analyticsSummary?.pages ?? []).filter((page) => page.pagePath.startsWith("/artiklar/"));
@@ -263,7 +269,7 @@ function buildFallbackReview(input: SeoReviewInput): SeoReview {
   const topActions: SeoReviewAction[] = [];
   const indexingIssues = input.gscIndexCoverage.topIssues;
 
-  for (const action of gscSearchActions.slice(0, 4)) {
+  for (const action of consolidatedGscActions.slice(0, 4)) {
     topActions.push({
       ...action,
       rank: topActions.length + 1
@@ -277,7 +283,15 @@ function buildFallbackReview(input: SeoReviewInput): SeoReview {
     });
   }
 
-  for (const item of indexingIssues.slice(0, 3)) {
+  // A discovered URL is not, by itself, a code problem. Google may delay
+  // indexing a valid page for many reasons. Keep these cases out of the
+  // implementation queue unless inspection proves a concrete technical
+  // blocker; otherwise they become noisy Discord actions/branches.
+  const actionableIndexingIssues = indexingIssues.filter((item) =>
+    item.bucket !== "discovered_not_indexed" && item.bucket !== "unknown_to_google" && !isIntentionalPrivateUrl(item.url)
+  );
+
+  for (const item of actionableIndexingIssues.slice(0, 3)) {
     const action = {
       rank: topActions.length + 1,
       priority: item.priority === "critical" ? "critical" : item.priority === "high" ? "high" : "medium",
@@ -470,7 +484,7 @@ function buildFallbackReview(input: SeoReviewInput): SeoReview {
     ],
     contentOpportunities: gscOpportunities.length
       ? [
-          ...input.gscSearchOpportunities.slice(0, 8).map((item) =>
+          ...input.gscSearchOpportunities.filter((item) => !isArticleUrl(item.page)).slice(0, 8).map((item) =>
             `${item.query} på ${item.page}: ${item.recommendedAction}`
           ),
           ...gscOpportunities.map((row) => `Bygg ut innehåll för "${row.keys[1] ?? row.keys[0]}" med bättre svarsdjup och internlänkning.`)
@@ -728,6 +742,8 @@ function buildSerpActions(input: SeoReviewInput): SeoReviewAction[] {
           `Own rank: ${comparison.ownRank ?? "not top 10"}`,
           ...topCompetitors
         ],
+        evidenceType: "serp",
+        evidenceRunAt: comparison.checkedAt,
         targetUrl,
         keyword: comparison.query
       } satisfies SeoReviewAction;
@@ -735,7 +751,10 @@ function buildSerpActions(input: SeoReviewInput): SeoReviewAction[] {
 }
 
 function buildGscSearchActions(input: SeoReviewInput): SeoReviewAction[] {
-  return input.gscSearchOpportunities.slice(0, 8).map((item, index) => ({
+  return input.gscSearchOpportunities
+    .filter((item) => !isArticleUrl(item.page))
+    .slice(0, 8)
+    .map((item, index) => ({
     rank: index + 1,
     priority: item.priority,
     title: item.opportunityType === "striking_distance"
@@ -751,13 +770,57 @@ function buildGscSearchActions(input: SeoReviewInput): SeoReviewAction[] {
         ? "Kan få fler klick från impressions som redan finns."
         : "Kan göra sidan tillräckligt relevant för att senare bedömas för Ads-test.",
     evidence: item.evidence,
+    evidenceType: "gsc",
     targetUrl: item.page,
     keyword: item.query
-  }));
+    }));
+}
+
+function consolidateGscActions(actions: SeoReviewAction[]) {
+  const grouped = new Map<string, SeoReviewAction[]>();
+  for (const action of actions) {
+    const key = normalizeActionTarget(action.targetUrl) || `keyword:${normalizeKeywordCluster(action.keyword ?? action.title)}`;
+    const current = grouped.get(key) ?? [];
+    current.push(action);
+    grouped.set(key, current);
+  }
+
+  return [...grouped.values()].map((group) => {
+    if (group.length < 2 || !group[0].targetUrl) return group[0];
+
+    const targetUrl = group[0].targetUrl;
+    const keywords = [...new Set(group.map((action) => action.keyword).filter(Boolean) as string[])];
+    const isMicrosoftHub = /\/tjanster\/microsoft-365\/?$/i.test(targetUrl);
+    if (!isMicrosoftHub) {
+      return {
+        ...group[0],
+        title: `Samlad sidförbättring: ${shortPageName(targetUrl)}`,
+        why: `${group.map((action) => action.why).join(" ")} Flera GSC-signaler pekar mot samma sida och bör hanteras i en sammanhängande ändring.`,
+        action: `Gör en samlad uppdatering för ${keywords.join(", ")}: förbättra title, H1, intro, relevanta H2/FAQ och internlänkar utan keyword stuffing.`,
+        evidence: group.flatMap((action) => action.evidence).slice(0, 5),
+        evidenceType: "gsc",
+        evidenceRunAt: group.map((action) => action.evidenceRunAt).filter(Boolean).sort().at(-1),
+        keyword: keywords.join(", ")
+      } satisfies SeoReviewAction;
+    }
+
+    return {
+      ...group[0],
+      title: "Bygg ut Microsoft 365-klustret",
+      why: `${group.map((action) => action.why).join(" ")} Sökorden visar att huvudsidan behöver bära flera tydliga delintentioner.`,
+      action: `Gör Microsoft 365-sidan till en tydlig hubb för ${keywords.join(", ")}. Förbättra hubbens title, H1 och intro, och föreslå därefter separata undersidor för Teams/SharePoint, Planner/uppföljning och Power Automate endast där varje sida kan få eget, konkret innehåll. Länka hubben och undersidorna mellan varandra.`,
+      expectedImpact: "Bättre matchning mot flera bevisade kommersiella sökintentioner och en starkare intern ämnesstruktur.",
+      evidence: group.flatMap((action) => action.evidence).slice(0, 5),
+      evidenceType: "gsc",
+      evidenceRunAt: group.map((action) => action.evidenceRunAt).filter(Boolean).sort().at(-1),
+      keyword: keywords.join(", ")
+    } satisfies SeoReviewAction;
+  });
 }
 
 function buildAiReadinessActions(input: SeoReviewInput): SeoReviewAction[] {
   return input.aiSearchReadiness.pages
+    .filter((page) => !isIntentionalPrivateUrl(page.url) && !isArticleUrl(page.url))
     .filter((page) => page.score < 75)
     .slice(0, 5)
     .map((page, index) => {
@@ -779,6 +842,22 @@ function buildAiReadinessActions(input: SeoReviewInput): SeoReviewAction[] {
         targetUrl: page.url
       } satisfies SeoReviewAction;
     });
+}
+
+function isIntentionalPrivateUrl(url: string) {
+  try {
+    return new URL(url).pathname.replace(/\/$/, "") === "/qr";
+  } catch {
+    return false;
+  }
+}
+
+function isArticleUrl(url: string) {
+  try {
+    return new URL(url).pathname.replace(/\/$/, "").startsWith("/artiklar/");
+  } catch {
+    return false;
+  }
 }
 
 function buildMemoryActions(input: SeoReviewInput): SeoReviewAction[] {
@@ -904,16 +983,16 @@ function buildSuggestedKeywords(input: SeoReviewInput) {
   }
   if (!projectSlug.includes("sebcastwall")) return [];
   const raw = [
-    { query: "AI konsult företag", intent: "commercial", targetUrl: `${siteUrl}/` },
-    { query: "AI automatisering företag", intent: "commercial", targetUrl: `${siteUrl}/tjanster/ai-automatisering` },
-    { query: "AI agent företag", intent: "commercial", targetUrl: `${siteUrl}/tjanster/ai-agenter` },
-    { query: "AI agenter för företag", intent: "commercial", targetUrl: `${siteUrl}/tjanster/ai-agenter` },
-    { query: "Microsoft 365 automatisering", intent: "commercial", targetUrl: `${siteUrl}/artiklar/ai-motesanteckningar-microsoft-365-utan-manuellt-efterarbete` },
-    { query: "ChatGPT för företag", intent: "informational", targetUrl: `${siteUrl}/artiklar/chatgpt-for-foretag-kanslig-data` },
-    { query: "interna AI verktyg", intent: "commercial", targetUrl: `${siteUrl}/tjanster/interna-verktyg` },
-    { query: "systemintegration småföretag", intent: "commercial", targetUrl: `${siteUrl}/tjanster/integrationer` },
-    { query: "automatisera administration", intent: "informational", targetUrl: `${siteUrl}/tjanster/ai-automatisering` },
-    { query: "AI workflow automation", intent: "commercial", targetUrl: `${siteUrl}/tjanster/ai-automatisering` }
+    { query: "datorhjälp hemma Bromma", intent: "local_commercial", targetUrl: `${siteUrl}/tjanster/hem-it/dator-mac` },
+    { query: "wifi hjälp hemma Bromma", intent: "local_commercial", targetUrl: `${siteUrl}/tjanster/hem-it/wifi-natverk` },
+    { query: "Hem-IT Bromma", intent: "local_commercial", targetUrl: `${siteUrl}/tjanster/hem-it` },
+    { query: "webbutveckling företag", intent: "commercial", targetUrl: `${siteUrl}/tjanster/webbutveckling` },
+    { query: "webbapplikation företag", intent: "commercial", targetUrl: `${siteUrl}/tjanster/app-webbutveckling` },
+    { query: "apputveckling företag", intent: "commercial", targetUrl: `${siteUrl}/tjanster/app-webbutveckling` },
+    { query: "mobilapputveckling Flutter", intent: "commercial", targetUrl: `${siteUrl}/tjanster/mobilappar` },
+    { query: "kundapp utveckling", intent: "commercial", targetUrl: `${siteUrl}/tjanster/mobilappar/kundappar` },
+    { query: "interna verktyg företag", intent: "commercial", targetUrl: `${siteUrl}/tjanster/interna-verktyg` },
+    { query: "AI automatisering företag", intent: "commercial", targetUrl: `${siteUrl}/tjanster/ai-automatisering` }
   ];
 
   return raw.filter((item) => !existing.has(normalizeText(item.query))).slice(0, 10);

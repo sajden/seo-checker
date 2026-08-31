@@ -15,8 +15,10 @@ export async function POST(request: Request) {
   }
 
   const profile = resolveSeoRunProfile(request);
+  const requestedBatchId = new URL(request.url).searchParams.get("batchId")?.trim();
   const batches = (await listBatches()).filter((batch) =>
-    batch.enabled && [batch.sourceCadence, batch.crawlCadence, batch.gscCadence].includes("daily")
+    batch.enabled && [batch.sourceCadence, batch.crawlCadence, batch.gscCadence].includes("daily") &&
+    (!requestedBatchId || batch.id === requestedBatchId)
   );
   const results = [];
 

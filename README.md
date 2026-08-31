@@ -51,16 +51,21 @@ SEO Monitor använder i nuläget filbaserad lagring via `DATA_DIR`, inte Supabas
 
 ## Miljövariabler för SERP-jämförelse
 
-SERP-jämförelsen använder Google Custom Search JSON API i stället för att scrapa Google-resultat direkt.
+SERP-jämförelsen använder en konfigurerad provider i stället för att scrapa Google-resultat direkt. DataForSEO Google Organic rekommenderas för utvalda, faktiska Google-resultat; Brave eller Google Custom Search kan vara fallback.
 
+- `DATAFORSEO_LOGIN`
+- `DATAFORSEO_PASSWORD`
 - `GOOGLE_CUSTOM_SEARCH_API_KEY`
 - `GOOGLE_CUSTOM_SEARCH_ENGINE_ID`
 - `BRAVE_SEARCH_API_KEY`
-- `SERP_PROVIDER` valfri, `auto`, `brave_search` eller `google_custom_search`
+- `SERP_PROVIDER` valfri, `auto`, `dataforseo`, `brave_search` eller `google_custom_search`
 - `SERP_DAILY_KEYWORD_LIMIT` valfri, default `5`, max `10`
 - `SERP_CACHE_TTL_HOURS` valfri, default `48`, max `168`
+- `SERP_ALWAYS_ON_PROJECT_SLUGS` valfri, kommaseparerad lista; default `sebcastwall`
 
-SERP-providern väljs automatiskt: Brave används först om `BRAVE_SEARCH_API_KEY` finns, annars Google Custom Search om Google-nycklar finns. Manuell import fungerar utan provider. Daglig batch-körning väljer ett litet antal keywords från keyword-planen och GSC-data i stället för att slå alla keywords varje dag. Resultaten sparas i `DATA_DIR/serp-history.json`, återanvänds inom cache-fönstret och roteras så keywords som inte kollats nyligen får högre prioritet.
+Lägg credentials endast i VPS:ens secrets/.env och aldrig i Git, Discord eller frontend. SEO Monitor skapar Basic Authorization internt; spara inte ett färdigt Base64-värde som separat credential.
+
+SERP-providern väljs automatiskt i ordningen DataForSEO, Brave och Google Custom Search när credentials finns. Sätt `SERP_PROVIDER=dataforseo` för att göra valet explicit. DataForSEO använder Google Organic `task_post` med Sverige, svenska, desktop och djup 10. Manuell import fungerar utan provider. Batchen kör SERP på den normala profildagen och kör dessutom ett litet roterande SERP-urval för projekt i `SERP_ALWAYS_ON_PROJECT_SLUGS` (Sebcastwall som standard). Resultaten sparas i `DATA_DIR/serp-history.json`, återanvänds inom cache-fönstret och roteras så keywords som inte kollats nyligen får högre prioritet.
 
 ### Manuell SERP-import
 

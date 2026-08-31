@@ -203,7 +203,7 @@ export type SerpResult = {
 
 export type SerpComparison = {
   configured: boolean;
-  provider: "google_custom_search" | "brave_search" | "manual";
+  provider: "dataforseo" | "google_custom_search" | "brave_search" | "manual";
   query: string;
   market: string;
   language: string;
@@ -224,7 +224,7 @@ export type SerpCompareRequest = {
   market?: string;
   language?: string;
   num?: number;
-  provider?: "auto" | "brave_search" | "google_custom_search";
+  provider?: "auto" | "dataforseo" | "brave_search" | "google_custom_search";
 };
 
 export type ManualSerpImportRequest = {
@@ -263,6 +263,9 @@ export type SeoActionItem = {
   why: string;
   expectedImpact: string;
   evidence: string[];
+  evidenceType?: "gsc" | "serp" | "keyword_planner" | "crawl" | "mixed";
+  evidenceRunAt?: string;
+  evidenceBatchId?: string;
   targetUrl?: string;
   keyword?: string;
   firstSeenAt: string;
@@ -666,6 +669,9 @@ export type SeoReviewAction = {
   action: string;
   expectedImpact: string;
   evidence: string[];
+  evidenceType?: "gsc" | "serp" | "keyword_planner" | "crawl" | "mixed";
+  evidenceRunAt?: string;
+  evidenceBatchId?: string;
   targetUrl?: string;
   keyword?: string;
 };

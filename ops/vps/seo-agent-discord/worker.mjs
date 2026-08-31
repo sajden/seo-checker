@@ -27,6 +27,8 @@ const DISCORD_API = 'https://discord.com/api/v10'
 const token = required('DISCORD_BOT_TOKEN')
 const channelId = required('DISCORD_CHANNEL_ID')
 const allowedUserId = required('DISCORD_ALLOWED_USER_ID')
+const configuredArticleReviewChannelId = String(env.SEO_AGENT_ARTICLE_REVIEW_CHANNEL_ID || '').trim()
+const articleReviewChannelName = String(env.SEO_AGENT_ARTICLE_REVIEW_CHANNEL_NAME || 'artikelgranskning').trim()
 const platformApiUrl = (env.PLATFORM_API_URL || 'https://dashboard2-platform-api.sebastian-castwall.workers.dev').replace(/\/$/, '')
 const platformToken = env.PLATFORM_API_TOKEN || ''
 const platformRunnerId = env.SEO_AGENT_PLATFORM_RUNNER_ID || 'seo-agent-vps'
@@ -2271,6 +2273,10 @@ function autonomousCodeCandidateCheck(action, workspace, targetChannelId) {
   if (isWeakExactKeywordCoverageAction(action)) {
     return { ok: false, reason: 'keyword_coverage_lacks_search_evidence' }
   }
+  if (isSebcastwallWorkspace(workspace)) {
+    const observedEvidence = sebcastwallObservedEvidenceCheck(action)
+    if (!observedEvidence.ok) return observedEvidence
+  }
   const engagementCheck = engagementEvidenceCheck(action)
   if (!engagementCheck.ok) return engagementCheck
   const evidenceIntegrity = checkActionEvidenceIntegrity(action)
@@ -2300,6 +2306,27 @@ function autonomousCodeCandidateCheck(action, workspace, targetChannelId) {
   return { ok: true, reason: 'candidate' }
 }
 
+function sebcastwallObservedEvidenceCheck(action) {
+  const evidence = [action?.why, ...(Array.isArray(action?.evidence) ? action.evidence : [])]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase()
+  const structuredType = String(action?.evidenceType || action?.verifiedEvidence?.type || '').toLowerCase()
+  const hasGscMetrics = /\b(impressions?|klick|click|ctr|position)\b/.test(evidence)
+    && /\b(impressions?|position|ctr)\b/.test(evidence)
+  const hasPlannerMetrics = /keyword planner|sökvolym|monthly searches|avgmonthlysearches/.test(evidence)
+  const hasCrawlSignal = structuredType === 'crawl'
+    || /crawl|http-status|canonical|robots|saknas|missing|h1|meta description|readiness score/.test(evidence)
+  const hasTarget = Boolean(String(action?.targetUrl || action?.url || '').trim())
+  const hasKeywordForDemand = Boolean(String(action?.keyword || '').trim())
+  if (hasTarget && ((structuredType === 'gsc' && hasKeywordForDemand && hasGscMetrics)
+    || (hasKeywordForDemand && (hasGscMetrics || hasPlannerMetrics))
+    || hasCrawlSignal)) {
+    return { ok: true, reason: 'observed_evidence' }
+  }
+  return { ok: false, reason: 'missing_observed_evidence' }
+}
+
 function engagementEvidenceCheck(action) {
   const raw = [action?.why, ...(Array.isArray(action?.evidence) ? action.evidence : [])]
     .filter(Boolean)
@@ -2322,6 +2349,7 @@ function completedTargetHistoryCheck(action, workspace, targetChannelId) {
   if (!targetUrl) return { ok: true, reason: 'no_target_history' }
   const workspaceKey = workspaceProfileKey(workspace, targetChannelId)
   const keyword = normalizeKeywordCluster(action?.keyword || '')
+  const changeType = actionChangeType(action)
   const now = Date.now()
   const completed = Object.values(state.actionLedger || {})
     .filter((record) => String(record?.workspaceKey || '') === String(workspaceKey))
@@ -2333,12 +2361,16 @@ function completedTargetHistoryCheck(action, workspace, targetChannelId) {
       return completedEvents.map((event) => ({
         at: Date.parse(event?.at || ''),
         keyword: normalizeKeywordCluster(record?.keyword || ''),
+        changeType: actionChangeType(record),
         actionId: record?.actionId || null
       }))
     })
     .filter((item) => Number.isFinite(item.at))
     .sort((a, b) => b.at - a.at)
-  const latest = completed[0]
+  const latest = completed.find((item) => {
+    if (keyword && item.keyword) return keyword === item.keyword && (!item.changeType || item.changeType === changeType)
+    return !keyword && (!item.changeType || item.changeType === changeType)
+  })
   if (!latest) return { ok: true, reason: 'no_completed_target_history' }
   const ageMs = now - latest.at
   if (ageMs < completedTargetCooldownMs) {
@@ -2768,7 +2800,11 @@ async function syntheticAutonomousActionForWorkspace({ workspace, targetChannelI
 
 function buildWorkspaceGoalGapAction(workspace, targetChannelId = null, sourcePayload = null) {
   const profile = ensureWorkspaceProfile(workspace, targetChannelId)
-  const special = isSebcastwallWorkspace(workspace, profile) ? buildSebcastwallGoalGapAction(workspace, targetChannelId) : null
+  // Sebcastwall's static goal-gap candidates used to turn the strategy map
+  // into pseudo-evidence. Daily actions must come from the current SEO batch;
+  // keep the map for prioritisation only.
+  if (isSebcastwallWorkspace(workspace, profile)) return null
+  const special = null
   if (special) return special
   const keywordMap = ensureKeywordMap(workspace, targetChannelId)
     .filter((item) => item?.status !== 'done' && item?.status !== 'paused')
@@ -4534,7 +4570,11 @@ async function postPendingActions({ workspace, targetChannelId }) {
   }
   if (active) delete state.activeActionByWorkspace[activeKey]
   const pending = items.filter((item) => item && item.status === 'pending')
-  let orderedPending = prioritizeActionQueue(pending, workspace, targetChannelId)
+  // Runtime selection is diagnostic only. The Discord worker owns the final
+  // evidence/guard decision and must still inspect the rest of the fresh batch
+  // when the generic runtime scorer rejects its first candidates.
+  const orderedPending = prioritizeActionQueue(pending, workspace, targetChannelId)
+  const noActionReasons = []
   if (runtimeCurrent.ok) {
     const selectedId = String(runtimeCurrent.payload?.selectedActionId || '')
     if (!selectedId) {
@@ -4543,10 +4583,8 @@ async function postPendingActions({ workspace, targetChannelId }) {
         candidateCount: runtimeCurrent.payload?.candidateCount ?? pending.length,
         rejected: runtimeCurrent.payload?.rejected?.slice?.(0, 6) || []
       })
-      return
+      noActionReasons.push('runtime-scorern avvisade kandidaterna; worker fortsatte ändå med batchen')
     }
-    const selected = pending.find((item) => String(item?.id || '') === selectedId)
-    if (selected) orderedPending = [selected]
   } else {
     const runtimeSelection = await selectNextActionThroughRuntime({
       workspace,
@@ -4562,10 +4600,8 @@ async function postPendingActions({ workspace, targetChannelId }) {
           candidateCount: runtimeSelection.payload?.candidateCount ?? pending.length,
           rejected: runtimeSelection.payload?.rejected?.slice?.(0, 6) || []
         })
-        return
+        noActionReasons.push('runtime-scorern avvisade kandidaterna; worker fortsatte ändå med batchen')
       }
-      const selected = pending.find((item) => String(item?.id || '') === selectedId)
-      if (selected) orderedPending = [selected]
     }
   }
   for (const action of orderedPending) {
@@ -4585,6 +4621,23 @@ async function postPendingActions({ workspace, targetChannelId }) {
       log("skipped_unknown_volume_keyword_action", { id, keyword: enrichedAction.keyword || null })
       continue
     }
+    if (isSebcastwallWorkspace(workspace)) {
+      const observedEvidence = sebcastwallObservedEvidenceCheck(enrichedAction)
+      if (!observedEvidence.ok) {
+        recordActionLedger(enrichedAction, workspace, targetChannelId, 'deprioritized', {
+          reason: observedEvidence.reason,
+          source: 'observed_evidence_guard',
+          recheckAfter: isoDatePlusDays(14)
+        })
+        logThrottled(`action_card_missing_observed_evidence:${id}`, 6 * 60 * 60 * 1000, 'action_card_suppressed', {
+          id,
+          workspace: workspace?.label || workspace?.id || null,
+          reason: observedEvidence.reason
+        })
+        noActionReasons.push(`${enrichedAction.title || id}: saknar verifierad GSC-, Planner- eller crawl-evidens`)
+        continue
+      }
+    }
     const guard = shouldPostActionCard(enrichedAction, workspace, targetChannelId)
     if (!guard.ok) {
       if (guard.reason === 'repeatedly_guarded') {
@@ -4593,17 +4646,20 @@ async function postPendingActions({ workspace, targetChannelId }) {
       }
       rememberGuardedAction(enrichedAction, workspace, targetChannelId, guard.reason)
       logThrottled(`action_card_guarded:${id}:${guard.reason}`, 6 * 60 * 60 * 1000, 'action_card_guarded', { id, workspace: workspace?.label || workspace?.id || null, reason: guard.reason })
+      noActionReasons.push(`${enrichedAction.title || id}: ${guard.reason}`)
       continue
     }
     const review = reviewActionForPosting(enrichedAction, workspace, targetChannelId, actions.workspacePolicy)
     if (!review.ok) {
       rememberGuardedAction(enrichedAction, workspace, targetChannelId, review.reason)
       log('action_card_review_rejected', { id, workspace: workspace?.label || workspace?.id || null, reason: review.reason, score: review.score })
+      noActionReasons.push(`${enrichedAction.title || id}: ${review.reason}`)
       continue
     }
     if (shouldSuppressDecisionCard(enrichedAction, review, workspace, targetChannelId)) {
       rememberGuardedAction(enrichedAction, workspace, targetChannelId, 'autonomous_or_internal_not_decision_card')
       logThrottled(`action_card_suppressed:${id}`, 6 * 60 * 60 * 1000, 'action_card_suppressed', { id, workspace: workspace?.label || workspace?.id || null, reason: 'autonomous_or_internal_not_decision_card', recommendation: review.recommendation })
+      noActionReasons.push(`${enrichedAction.title || id}: inte ett beslutskort för kodändring`)
       continue
     }
     const message = await buildActionCardMessage(enrichedAction, actions.workspacePolicy, workspace, review, targetChannelId)
@@ -4655,6 +4711,18 @@ async function postPendingActions({ workspace, targetChannelId }) {
     }
     
     break
+  }
+  if (isSebcastwallWorkspace(workspace) && !state.activeActionByWorkspace[activeKey]) {
+    const reportKey = `seo-no-action:${activeKey}:${new Date().toISOString().slice(0, 10)}`
+    await sendOncePerDay(reportKey, targetChannelId, [
+      'SEO Monitor: ingen säker kodåtgärd hittades i senaste körningen.',
+      `Kandidater granskade: ${pending.length}.`,
+      'Endast färsk och spårbar GSC-, Keyword Planner- eller crawl-evidens får bli ett actionkort.',
+      noActionReasons.length
+        ? `Huvudskäl:\n${[...new Set(noActionReasons)].slice(0, 8).map((reason) => `- ${reason}`).join('\n')}`
+        : 'Inga kandidater återstod efter tidigare beslut och cooldowns.',
+      'Detta är en statusrapport, inte en föreslagen kodändring.'
+    ].join('\n'))
   }
 }
 
@@ -4797,12 +4865,12 @@ function prioritizeActionQueue(items, workspace = null, targetChannelId = null) 
     const text = String((item?.title || '') + ' ' + (item?.keyword || '') + ' ' + (item?.targetUrl || '') + ' ' + (item?.why || '') + ' ' + (item?.recommendedAction || '')).toLowerCase()
     const workspaceText = String(workspace?.label || workspace?.id || '').toLowerCase()
     const isSebcastwall = workspaceText.includes('sebcastwall')
-    const aiFit = /ai[- ]?agent|ai agenter|ai konsult|ai-konsult|ai automatisering|ai-automatisering|automation|app|webbutveckling|kodning|utbildning|kurs|workshop|internverktyg/.test(text)
+    const aiFit = /ai[- ]?agent|ai agenter|ai konsult|ai-konsult|ai automatisering|ai-automatisering|automation|app|webbutveckling|kodning|internverktyg/.test(text)
     const integrationHeavy = /integration|integrationskollen|fortnox|visma|bokföring|bokforing|faktura/.test(text)
     if (text.includes('kontrollera indexering') || text.includes('url inspection') || text.includes('oauth-tokenutbyte')) return 5
     if (text.includes('account status') || text.includes('help_outline') || text.includes('abicart klarna')) return 6
     if (isSebcastwall && integrationHeavy && !aiFit) return 7
-    if (isSebcastwall && /ny sida|new page|landningssida|serp-gap|opportunity|ai konsult|ai-konsult|utbildning|kurs|workshop/.test(text) && aiFit) return 0
+    if (isSebcastwall && /ny sida|new page|landningssida|serp-gap|opportunity|ai konsult|ai-konsult/.test(text) && aiFit) return 0
     if (text.includes('/tjanster/ai-agenter') || text.includes('ai agent') || text.includes('ai agenter') || text.includes('ai automatisering')) return 0
     if (text.includes('/tjanster/') || text.includes('/verktyg/')) return 1
     if (text.includes('serp-gap') || text.includes('täck keyword')) return 2
@@ -4814,12 +4882,6 @@ function prioritizeActionQueue(items, workspace = null, targetChannelId = null) 
     const terms = guidance.focusTerms || []
     const text = String((item?.title || '') + ' ' + (item?.keyword || '') + ' ' + (item?.targetUrl || '') + ' ' + (item?.why || '') + ' ' + (item?.recommendedAction || '')).toLowerCase()
     let score = terms.reduce((sum, term) => sum + (text.includes(term) ? 12 : 0), 0)
-    const wantsEducationOrCode = terms.some((term) => ['kodning', 'kod', 'utbildning', 'ai utbildning', 'kurs', 'workshop'].includes(term))
-    if (wantsEducationOrCode) {
-      if (/utbildning|kurs|workshop|kodning|kod|developer|utvecklare/.test(text)) score += 45
-      if (/bokföring|bokforing|faktura|fakturahantering|fortnox|visma|integration/.test(text)) score -= 70
-      if (/ai[- ]?agent|ai agenter|ai-automatisering|automation/.test(text)) score += 10
-    }
     return score
   }
   const score = (item) => {
@@ -4854,6 +4916,7 @@ async function processDiscordReplies() {
 async function processDiscordRepliesForChannel(targetChannelId) {
   const messages = await discordJson(`/channels/${targetChannelId}/messages?limit=20`)
   if (!Array.isArray(messages)) return
+  state.seenMessageIds = state.seenMessageIds || {}
   const sorted = messages.slice().reverse()
   for (const message of sorted) {
     const messageId = String(message.id || '')
@@ -4891,6 +4954,16 @@ async function rememberApprovedCodeAction(actionId, targetChannelId) {
 }
 
 async function syncContentReviewQueue() {
+  try {
+    await syncContentReviewQueueUnsafe()
+  } catch (error) {
+    if (!isDiscordUnknownMessageError(error)) throw error
+    const cleared = clearContentReviewCardMessageRefs()
+    log('content_review_discord_message_missing_suppressed', { cleared, error: error?.message || String(error) })
+  }
+}
+
+async function syncContentReviewQueueUnsafe() {
   const now = Date.now()
   if (state.lastContentReviewSyncAt && now - Date.parse(state.lastContentReviewSyncAt) < contentReviewEveryMs) return
   state.lastContentReviewSyncAt = new Date(now).toISOString()
@@ -4915,11 +4988,11 @@ async function syncContentReviewQueue() {
     contentAgentJson(newsletterAgentUrl, newsletterAgentToken, '/issues')
   ])
 
-  const article = (articlePayload.actions || [])
+  const articles = (articlePayload.actions || [])
     .filter((item) => item.actionType === 'review_article_draft' && item.status === 'pending')
-    .sort((left, right) => Number(right.quality?.score || 0) - Number(left.quality?.score || 0))[0]
-  const articlePublish = (articlePayload.actions || [])
-    .filter((item) => item.actionType === 'publish_article_draft' && item.status === 'pending')[0]
+    .sort((left, right) => Number(right.quality?.score || 0) - Number(left.quality?.score || 0)
+      || Date.parse(right.updatedAt || right.createdAt || 0) - Date.parse(left.updatedAt || left.createdAt || 0))
+    .slice(0, 2)
   const newsletter = (newsletterPayload.issues || [])
     .filter((item) => item.status === 'reviewing' && Number(item.editorialGate?.quality?.total || 0) >= 80)
     .sort((left, right) => Number(right.editorialGate?.quality?.total || 0) - Number(left.editorialGate?.quality?.total || 0))[0]
@@ -4927,8 +5000,7 @@ async function syncContentReviewQueue() {
     .filter((item) => item.status === 'approved' && item.publish?.status !== 'published')
     .sort((left, right) => Date.parse(right.approvedAt || 0) - Date.parse(left.approvedAt || 0))[0]
 
-  if (article) await postContentReviewCard('article', article)
-  if (articlePublish) await postContentReviewCard('article_publish', articlePublish)
+  for (const article of articles) await postContentReviewCard('article', article)
   if (newsletter) await postContentReviewCard('newsletter', newsletter)
   if (newsletterPublish) await postContentReviewCard('newsletter_publish', newsletterPublish, `newsletter_publish_${newsletterPublish.id}`)
 }
@@ -4936,29 +5008,92 @@ async function syncContentReviewQueue() {
 async function postContentReviewCard(type, item, cardId = item.id) {
   const id = String(cardId || '')
   if (!id) return
+  const targetChannelId = await contentReviewChannelFor(type)
   const content = formatContentReviewCard(type, item)
-  const contentHash = createHash('sha256').update(content).digest('hex')
+  const embeds = contentReviewEmbeds(type, item)
+  const contentHash = createHash('sha256').update(JSON.stringify({ content, embeds })).digest('hex')
   const existing = state.contentReviewCards[id]
   state.contentActionRefs[id] = { type, id: String(item.id || '') }
   state.messageToAction = state.messageToAction || {}
   if (existing?.messageId) {
     state.messageToAction[existing.messageId] = id
-    if (existing.contentHash === contentHash) return
-    await discordJson(`/channels/${channelId}/messages/${existing.messageId}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ content, components: contentReviewComponents(type) })
-    })
-    state.contentReviewCards[id] = {
-      ...existing,
-      contentHash,
-      refreshedAt: new Date().toISOString(),
-      status: 'posted'
+    const existingChannelId = String(existing.channelId || channelId)
+    if (existingChannelId === targetChannelId) {
+      if (existing.contentHash === contentHash) return
+      await discordJson(`/channels/${targetChannelId}/messages/${existing.messageId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ content, components: contentReviewComponents(type), embeds })
+      })
+      state.contentReviewCards[id] = {
+        ...existing,
+        channelId: targetChannelId,
+        contentHash,
+        refreshedAt: new Date().toISOString(),
+        status: 'posted'
+      }
+      return
     }
-    return
   }
-  const posted = await sendDiscordMessage(content, channelId, contentReviewComponents(type), { kind: 'action_card' })
-  state.contentReviewCards[id] = { type, messageId: posted.id, postedAt: new Date().toISOString(), contentHash, status: 'posted' }
+  const posted = await sendDiscordMessage(content, targetChannelId, contentReviewComponents(type), { kind: 'action_card', embeds })
+  state.contentReviewCards[id] = { type, channelId: targetChannelId, messageId: posted.id, postedAt: new Date().toISOString(), contentHash, status: 'posted' }
   state.messageToAction[posted.id] = id
+}
+
+function clearContentReviewCardMessageRefs() {
+  let cleared = 0
+  state.messageToAction = state.messageToAction || {}
+  for (const [id, card] of Object.entries(state.contentReviewCards || {})) {
+    if (card?.messageId) delete state.messageToAction[card.messageId]
+    delete state.contentReviewCards[id]
+    cleared += 1
+  }
+  state.contentActionRefs = {}
+  return cleared
+}
+
+function isDiscordUnknownMessageError(error) {
+  return /discord_404:\s*Unknown Message/.test(String(error?.message || error || ''))
+}
+
+async function contentReviewChannelFor(type) {
+  if (type !== 'article' && type !== 'article_publish') return channelId
+  if (configuredArticleReviewChannelId) return configuredArticleReviewChannelId
+  const cached = state.contentReviewChannels?.article
+  if (cached?.id) return String(cached.id)
+  if (!guildId || !articleReviewChannelName) return channelId
+
+  try {
+    const channels = await discordJson(`/guilds/${guildId}/channels`)
+    const existing = Array.isArray(channels)
+      ? channels.find((item) => item?.type === 0 && item?.name === articleReviewChannelName)
+      : null
+    if (existing?.id) {
+      state.contentReviewChannels = state.contentReviewChannels || {}
+      state.contentReviewChannels.article = { id: existing.id, name: articleReviewChannelName }
+      return String(existing.id)
+    }
+
+    const defaultChannel = Array.isArray(channels)
+      ? channels.find((item) => String(item?.id || '') === String(channelId))
+      : null
+    const created = await discordJson(`/guilds/${guildId}/channels`, {
+      method: 'POST',
+      body: JSON.stringify({
+        name: articleReviewChannelName,
+        type: 0,
+        parent_id: defaultChannel?.parent_id || undefined,
+        topic: 'Manuell granskning och publicering av artiklar för sebcastwall.se'
+      })
+    })
+    if (created?.id) {
+      state.contentReviewChannels = state.contentReviewChannels || {}
+      state.contentReviewChannels.article = { id: created.id, name: articleReviewChannelName }
+      return String(created.id)
+    }
+  } catch (error) {
+    log('article_review_channel_resolve_failed', { channel: articleReviewChannelName, error: error?.message || String(error) })
+  }
+  return channelId
 }
 
 function formatContentReviewCard(type, item) {
@@ -4968,19 +5103,62 @@ function formatContentReviewCard(type, item) {
   return formatNewsletterReviewCard(item)
 }
 
+function contentReviewEmbeds(type, item) {
+  if (type !== 'article') return []
+  const audience = String(item.audience || '').toUpperCase() === 'B2C' ? 'B2C' : 'B2B'
+  const category = Array.isArray(item.tags) && item.tags[0] ? String(item.tags[0]) : (audience === 'B2C' ? 'Hem-IT' : 'Företagsteknik')
+  const params = new URLSearchParams({
+    title: String(item.title || 'Praktisk teknikguide'),
+    category,
+    audience,
+    description: String(item.summary || '')
+  })
+  const imageUrl = `https://sebcastwall.se/api/articles/cover?${params.toString()}`
+  return [{
+    type: 'rich',
+    title: String(item.title || 'Praktisk teknikguide').slice(0, 256),
+    url: String(item.sourceUrl || 'https://sebcastwall.se/artiklar'),
+    image: { url: imageUrl }
+  }]
+}
+
 function formatArticleReviewCard(action) {
   const quality = Number(action.quality?.score || 0)
+  const primaryKeyword = String(action.keywordBrief?.primaryKeyword || action.preferredKeyword || '').trim()
+  const supportingKeywords = Array.isArray(action.keywordBrief?.supportingKeywords)
+    ? action.keywordBrief.supportingKeywords.map(String).filter(Boolean).slice(0, 4)
+    : []
+  const ranking = action.keywordBrief?.ranking && typeof action.keywordBrief.ranking === 'object'
+    ? action.keywordBrief.ranking
+    : null
+  const alternatives = Array.isArray(ranking?.alternatives)
+    ? ranking.alternatives.slice(0, 4).map((item) => `${item.keyword} (${item.searchVolume || 0}/mån, score ${item.score})`)
+    : []
+  const keywordMatch = action.keywordMatch?.passed === true
+    ? 'godkänd – rubrik, metadata, inledning och innehåll möter samma sökintention'
+    : 'saknas – godkänn inte innan artikelns sökords-/intentmatch har kontrollerats'
+  const searchIntent = describeArticleSearchIntent(action)
+  const readerGoal = String(action.summary || '').trim()
+  const demandEvidence = articleDemandEvidence(action)
+  const cta = articleCtaSummary(action)
   return [
     '**Artikel redo för granskning**',
     `ID: \`${action.id}\``,
     `**${action.title}**`,
-    action.preferredKeyword ? `Sökfras: ${action.preferredKeyword}` : '',
+    primaryKeyword ? `Primärt sökord (låst): ${primaryKeyword}` : '',
+    supportingKeywords.length ? `Stödfraser: ${supportingKeywords.join(', ')}` : '',
+    ranking?.score ? `Urvalspoäng: ${ranking.score}/100${ranking.position ? ` · position ${ranking.position}` : ''}` : '',
+    alternatives.length ? `Andra mätta alternativ: ${alternatives.join(' · ')}` : '',
+    `Sökords-/artikelmatch: ${keywordMatch}`,
+    searchIntent ? `Sökintention bakom frasen: ${searchIntent}` : '',
+    readerGoal ? `Artikeln hjälper läsaren att: ${readerGoal}` : '',
+    demandEvidence ? `Datastöd: ${demandEvidence}` : '',
+    cta ? `CTA: ${cta}` : '',
     `Kvalitet: ${quality}/100`,
-    action.summary ? `Varför: ${action.summary}` : '',
     action.quality?.summary ? `Granskning: ${action.quality.summary}` : '',
     action.sourceUrl ? `[Öppna hela utkastet](${action.sourceUrl})` : '',
     '',
-    'Godkänn sparar utkastet för nästa steg. Inget publiceras automatiskt.'
+    'Godkänn och publicera lägger ut artikeln direkt på sebcastwall.se. Skriv om och Avvisa publicerar ingenting.'
   ].filter(Boolean).join('\n').slice(0, 1900)
 }
 
@@ -5001,15 +5179,76 @@ function formatNewsletterReviewCard(issue) {
 }
 
 function formatArticlePublishCard(action) {
+  const searchIntent = describeArticleSearchIntent(action)
+  const primaryKeyword = String(action.keywordBrief?.primaryKeyword || action.preferredKeyword || '').trim()
   return [
     '**Artikel godkänd - redo att publiceras**',
     `ID: \`${action.id}\``,
     `**${action.title}**`,
-    action.preferredKeyword ? `Sökfras: ${action.preferredKeyword}` : '',
+    primaryKeyword ? `Primärt sökord (låst): ${primaryKeyword}` : '',
+    action.keywordMatch?.passed === true ? 'Sökords-/artikelmatch: godkänd' : 'Sökords-/artikelmatch: kontrollera före publicering',
+    searchIntent ? `Sökintention bakom frasen: ${searchIntent}` : '',
+    action.summary ? `Artikeln hjälper läsaren att: ${action.summary}` : '',
     action.sourceUrl ? `[Granska utkastet en sista gång](${action.sourceUrl})` : '',
     '',
     'Nästa knapp publicerar artikeln externt på sebcastwall.se.'
   ].filter(Boolean).join('\n').slice(0, 1900)
+}
+
+function describeArticleSearchIntent(action) {
+  const explicit = String(action.searchIntent || action.intent || action.demand?.intent || '').trim()
+  if (explicit === 'support_question') return 'informativ problemlösning – förstå och lösa ett konkret problem'
+  if (explicit === 'commercial_research') return 'kommersiell research – bedöma eller köpa en tjänst'
+  if (explicit === 'observed_organic') return 'observerad organisk efterfrågan – matcha en faktisk Google-sökning'
+  if (explicit === 'informational') return 'informationssökning – förstå och lösa en konkret uppgift'
+  if (explicit) return explicit
+  const keyword = String(action.preferredKeyword || '').toLowerCase()
+  if (!keyword) return ''
+  const local = /\b(stockholm|bromma|nära mig|i närheten)\b/i.test(keyword)
+  const service = /(hjälp|reparation|service|konsult|installera|installation|support)/i.test(keyword)
+  const problem = /\b(fungerar inte|startar inte|problem|fel|långsam|dåligt|svagt|hur|varför)\b/i.test(keyword)
+  if (local && service) return 'lokal kommersiell – hitta, jämföra eller boka hjälp'
+  if (problem) return 'informativ problemlösning – förstå och lösa ett konkret problem'
+  if (service) return 'kommersiell research – bedöma eller köpa en tjänst'
+  return 'informationssökning – förstå ämnet och välja nästa steg'
+}
+
+function articleDemandEvidence(action) {
+  const demand = action.demand && typeof action.demand === 'object' ? action.demand : null
+  if (demand) {
+    if (demand.status === 'needs_verification' || demand.source === 'manual_editorial_review') {
+      return 'exakt efterfrågan behöver verifieras före godkännande'
+    }
+    const source = String(action.demandSource || demand.source || '').replace(/^search-demand:/, '')
+    const parts = [
+      source ? `källa=${source}` : '',
+      demand.searchVolume ? `sökningar/mån=${demand.searchVolume}` : '',
+      demand.demandBucket ? `efterfrågan=${demand.demandBucket}` : '',
+      demand.competition ? `konkurrens=${demand.competition}` : ''
+    ].filter(Boolean)
+    if (parts.length) return parts.join(', ')
+  }
+  const evidence = Array.isArray(action.evidence) ? action.evidence.map(String) : []
+  const reasoning = evidence.find((item) => /^Reasoning:/i.test(item))
+  const value = reasoning ? reasoning.replace(/^Reasoning:\s*/i, '').trim() : ''
+  if (!value || /verifierat.*test|dynamisk efterfrågan/i.test(value)) {
+    return 'saknas i artikelunderlaget – begär konkret källa och mätvärde före godkännande'
+  }
+  return value
+}
+
+function articleCtaSummary(action) {
+  const body = String(action.body || '').toLowerCase()
+  const audience = String(action.audience || '').toLowerCase()
+  const topic = `${action.title || ''} ${action.preferredKeyword || ''}`.toLowerCase()
+  if (body.includes('/tjanster/hem-it') || body.includes('hem-it') || audience === 'b2c') {
+    return 'boka personlig Hem-IT-hjälp om egen felsökning inte räcker'
+  }
+  if (audience === 'b2b' || /sharepoint|microsoft 365|teams|onedrive|power automate/.test(topic)) {
+    return 'kontakta SebCastwall för hjälp med planering och genomförande'
+  }
+  if (body.includes('/kontakt') || body.includes('ta kontakt')) return 'kontakta SebCastwall för hjälp med nästa steg'
+  return ''
 }
 
 function formatNewsletterPublishCard(issue) {
@@ -5041,7 +5280,7 @@ function contentReviewComponents(type = 'article') {
   return [{
     type: 1,
     components: [
-      { type: 2, custom_id: 'content-decision:approved', label: 'Godkänn', style: 3 },
+      { type: 2, custom_id: 'content-decision:approved', label: type === 'article' ? 'Godkänn och publicera' : 'Godkänn', style: 3 },
       { type: 2, custom_id: 'content-decision:rewrite_requested', label: 'Skriv om', style: 1 },
       { type: 2, custom_id: 'content-decision:skipped', label: 'Avvisa', style: 4 }
     ]
@@ -5059,7 +5298,7 @@ async function decideContentReview(actionId, decision, operatorId) {
   })
   let response = null
   if (ref.type === 'article' || ref.type === 'article_publish') {
-    response = await contentAgentJson(articleAgentUrl, articleAgentToken, `/actions/${encodeURIComponent(ref.id)}/decision`, { method: 'POST', body })
+    response = await decideContentAgentAction(ref.id, decision, body)
   } else if (ref.type === 'newsletter_publish' && decision === 'approved') {
     response = await contentAgentJson(newsletterAgentUrl, newsletterAgentToken, `/issues/${encodeURIComponent(ref.id)}/approve`, {
       method: 'POST',
@@ -5082,7 +5321,7 @@ async function decideContentReview(actionId, decision, operatorId) {
   }
   saveState()
   const label = ref.type.startsWith('article') ? 'artikeln' : 'nyhetsbrevet'
-  if (decision === 'approved' && ref.type === 'article_publish') {
+  if (decision === 'approved' && (ref.type === 'article' || ref.type === 'article_publish')) {
     const publishedUrl = response?.executionResult?.publish?.publishedPath || response?.executionResult?.publish?.publicUrl || null
     return { summary: publishedUrl ? `Artikeln är publicerad: ${publishedUrl}` : 'Artikeln är publicerad på sebcastwall.se.' }
   }
@@ -5091,7 +5330,7 @@ async function decideContentReview(actionId, decision, operatorId) {
     const delivery = issue.delivery?.status === 'sent' ? ` Utskicket skickades till ${issue.delivery.recipientCount || 0} mottagare.` : ''
     return { summary: `Nyhetsbrevet är publicerat${issue.publish?.publicUrl ? `: ${issue.publish.publicUrl}` : '.'}${delivery}` }
   }
-  if (decision === 'approved') return { summary: `Innehållet i ${label} är godkänt. Ett separat publiceringskort kommer i kanalen; inget är publicerat eller skickat ännu.` }
+  if (decision === 'approved') return { summary: `Innehållet i ${label} är godkänt.` }
   if (decision === 'rewrite_requested') return { summary: `Omskrivning startad för ${label}. Ett nytt granskningskort kommer när kvalitetskontrollen är klar.` }
   if (ref.type.endsWith('_publish')) return { summary: `Publiceringen av ${label} väntar. Det godkända utkastet finns kvar.` }
   return { summary: `Avvisat: ${label} tas bort från den aktiva granskningskön.` }
@@ -5108,8 +5347,35 @@ async function contentAgentJson(baseUrl, agentToken, pathname, init = {}) {
     }
   })
   const payload = await response.json().catch(() => ({}))
-  if (!response.ok) throw new Error(payload.error || payload.message || `content_agent_${response.status}`)
+  if (!response.ok) {
+    const error = new Error(payload.message || payload.error || `content_agent_${response.status}`)
+    error.code = payload.error || `content_agent_${response.status}`
+    error.status = response.status
+    error.payload = payload
+    throw error
+  }
   return payload
+}
+
+async function decideContentAgentAction(actionId, decision, body) {
+  const pathname = `/actions/${encodeURIComponent(actionId)}/decision`
+  try {
+    return await contentAgentJson(articleAgentUrl, articleAgentToken, pathname, { method: 'POST', body })
+  } catch (initialError) {
+    // The downstream approval can complete before a proxy or response step
+    // fails. Retry the same idempotent decision once and accept the explicit
+    // "already decided" state instead of leaving Discord spinning forever.
+    try {
+      return await contentAgentJson(articleAgentUrl, articleAgentToken, pathname, { method: 'POST', body })
+    } catch (retryError) {
+      const actionStatus = String(retryError?.payload?.actionStatus || '')
+      if (retryError?.code === 'action_not_pending' && actionStatus === decision) {
+        log('content_decision_reconciled', { actionId, decision, initialError: initialError?.message || String(initialError) })
+        return { ok: true, reconciled: true, action: { id: actionId, status: actionStatus } }
+      }
+      throw initialError
+    }
+  }
 }
 
 function startDiscordInteractionClient() {
@@ -5218,8 +5484,11 @@ function startDiscordInteractionClient() {
       log('button_decision_saved', { actionId, decision, discordMessageId: interaction.message.id })
     } catch (error) {
       log('button_decision_failed', { error: error?.message || String(error) })
-      if (!interaction.replied && !interaction.deferred) {
-        await interaction.reply({ content: `Decision failed: ${error?.message || String(error)}`, flags: MessageFlags.Ephemeral }).catch(() => null)
+      const failureMessage = `Beslutet kunde inte bekräftas: ${error?.message || String(error)}. Kontrollera kortets status innan du klickar igen.`
+      if (interaction.deferred || interaction.replied) {
+        await interaction.editReply({ content: failureMessage }).catch(() => null)
+      } else {
+        await interaction.reply({ content: failureMessage, flags: MessageFlags.Ephemeral }).catch(() => null)
       }
     }
   })
@@ -8938,25 +9207,24 @@ function defaultWorkspaceProfile(workspace) {
       siteType: 'ai_technology_consultancy_and_local_home_it',
       audience: 'företag som köper AI, utveckling, digital marknadsföring eller Microsoft 365 samt privatpersoner som behöver Hem-IT i Bromma/Stockholm',
       goals: ['rank higher for valuable business searches', 'rank higher for local Hem-IT searches', 'increase qualified organic enquiries without changing the approved design'],
-      prefer: ['AI konsult', 'AI-genomgång', 'AI-agenter', 'AI-automation', 'AI-utbildning', 'webbutveckling', 'Flutter och mobilappar', 'interna verktyg', 'digital marknadsföring', 'Microsoft 365', 'Hem-IT Bromma', 'datorhjälp hemma', 'wifi hjälp'],
-      avoid: ['bookkeeping-only', 'generic integration-only', 'irrelevant imported queries', 'legacy route /tjanster', 'legacy route /tjanster/app-webbutveckling'],
+      prefer: ['Hem-IT', 'datorhjälp hemma', 'wifi hjälp', 'TV och teknik hemma', 'webbutveckling', 'webbapplikationer', 'apputveckling', 'mobilappar', 'Flutter', 'kundappar', 'interna verktyg', 'AI-automation', 'AI-agenter', 'AI-genomgång', 'Microsoft 365'],
+      avoid: ['bookkeeping-only', 'generic integration-only', 'irrelevant imported queries', 'Fortnox', 'Visma', 'integration-only', 'AI workshop', 'AI-konsult som generell fras'],
       positioningPolicy: 'Preserve the approved B2B and B2C structure. Integrations are supporting work, not the primary position.',
       designPolicy: 'Frozen: no CSS, layout, images, navigation, shared components, forms, CTA behavior, public prices, routes, redirects or public claims.',
       deliveryPolicy: 'Sebcastwall changes go to seo-agent/<action-id> review branches. Never autonomous push to main or production.',
       keywordMap: [
-        { keyword: 'AI konsult företag', targetUrl: 'https://sebcastwall.se/foretag', intent: 'commercial', priority: 'high' },
-        { keyword: 'AI agenter företag', targetUrl: 'https://sebcastwall.se/tjanster/ai-agenter', intent: 'commercial', priority: 'high' },
-        { keyword: 'AI automatisering företag', targetUrl: 'https://sebcastwall.se/tjanster/ai-automatisering', intent: 'commercial', priority: 'high' },
-        { keyword: 'AI utbildning företag', targetUrl: 'https://sebcastwall.se/tjanster/ai-utbildning', intent: 'commercial', priority: 'high' },
-        { keyword: 'AI workshop företag', targetUrl: 'https://sebcastwall.se/tjanster/ai-utbildning', intent: 'commercial', priority: 'high' },
+        { keyword: 'datorhjälp hemma Bromma', targetUrl: 'https://sebcastwall.se/tjanster/hem-it/dator-mac', intent: 'local_commercial', priority: 'high' },
+        { keyword: 'wifi hjälp hemma Bromma', targetUrl: 'https://sebcastwall.se/tjanster/hem-it/wifi-natverk', intent: 'local_commercial', priority: 'high' },
+        { keyword: 'Hem-IT Bromma', targetUrl: 'https://sebcastwall.se/tjanster/hem-it', intent: 'local_commercial', priority: 'high' },
         { keyword: 'webbutveckling företag', targetUrl: 'https://sebcastwall.se/tjanster/webbutveckling', intent: 'commercial', priority: 'high' },
-        { keyword: 'mobilapputveckling företag', targetUrl: 'https://sebcastwall.se/tjanster/mobilappar', intent: 'commercial', priority: 'high' },
+        { keyword: 'webbapplikation företag', targetUrl: 'https://sebcastwall.se/tjanster/app-webbutveckling', intent: 'commercial', priority: 'high' },
+        { keyword: 'apputveckling företag', targetUrl: 'https://sebcastwall.se/tjanster/app-webbutveckling', intent: 'commercial', priority: 'high' },
+        { keyword: 'mobilapputveckling Flutter', targetUrl: 'https://sebcastwall.se/tjanster/mobilappar', intent: 'commercial', priority: 'high' },
+        { keyword: 'kundapp utveckling', targetUrl: 'https://sebcastwall.se/tjanster/mobilappar/kundappar', intent: 'commercial', priority: 'high' },
         { keyword: 'interna verktyg företag', targetUrl: 'https://sebcastwall.se/tjanster/interna-verktyg', intent: 'commercial', priority: 'high' },
-        { keyword: 'Microsoft 365 konsult', targetUrl: 'https://sebcastwall.se/tjanster/microsoft-365', intent: 'commercial', priority: 'medium' },
-        { keyword: 'SEO konsult småföretag', targetUrl: 'https://sebcastwall.se/tjanster/digital-marknadsforing/seo', intent: 'commercial', priority: 'medium' },
-        { keyword: 'IT hjälp hemma Bromma', targetUrl: 'https://sebcastwall.se/tjanster/hem-it', intent: 'local_commercial', priority: 'high' },
-        { keyword: 'datorhjälp Bromma', targetUrl: 'https://sebcastwall.se/tjanster/hem-it/dator-mac', intent: 'local_commercial', priority: 'high' },
-        { keyword: 'wifi hjälp Bromma', targetUrl: 'https://sebcastwall.se/tjanster/hem-it/wifi-natverk', intent: 'local_commercial', priority: 'high' }
+        { keyword: 'AI automatisering företag', targetUrl: 'https://sebcastwall.se/tjanster/ai-automatisering', intent: 'commercial', priority: 'medium' },
+        { keyword: 'AI agenter företag', targetUrl: 'https://sebcastwall.se/tjanster/ai-agenter', intent: 'commercial', priority: 'medium' },
+        { keyword: 'Microsoft 365 automatisering', targetUrl: 'https://sebcastwall.se/tjanster/microsoft-365', intent: 'commercial', priority: 'low' }
       ],
       autonomy: 'autonomous_seo_review_branch'
     }
@@ -9310,7 +9578,7 @@ function decisionPromptForReview(recommendation) {
 }
 
 function rememberGuardedAction(action, workspace, targetChannelId, reason) {
-  recordActionLedger(action, workspace, targetChannelId, 'guarded', { reason })
+  recordActionLedger(action, workspace, targetChannelId, 'guarded', { reason, recheckAfter: isoDatePlusDays(7) })
   const key = actionLearningKey(action, workspace, targetChannelId)
   state.guardedActions[key] = { actionId: action.id || null, title: action.title || '', reason, at: new Date().toISOString() }
   rememberAgentLesson(`Guarded ${key}: ${reason}`)
@@ -9396,7 +9664,7 @@ function ledgerStatusForEvent(event, fallback = 'seen') {
 function defaultLedgerRecheck(status, nowIso) {
   const date = new Date(nowIso)
   if (status === 'completed' || status === 'rejected') date.setDate(date.getDate() + 90)
-  else if (status === 'ignored' || status === 'deprioritized' || status === 'guarded') date.setDate(date.getDate() + 45)
+  else if (status === 'ignored' || status === 'deprioritized' || status === 'guarded') date.setDate(date.getDate() + 7)
   else date.setDate(date.getDate() + 7)
   return date.toISOString().slice(0, 10)
 }
@@ -9410,8 +9678,20 @@ function actionLearningKey(action, workspace, targetChannelId) {
   const target = normalizeActionPath(action.targetUrl || action.url || action.path || '')
   const keyword = normalizeKeywordCluster(action.keyword || action.title || '')
   const kind = actionKindForLearning(action)
-  if (target && (kind === 'content' || kind === 'internal-links')) return `${workspaceKey}:${target}:${kind}`
-  return `${workspaceKey}:${target || 'no-path'}:${keyword || 'no-keyword'}:${kind}`
+  const changeType = actionChangeType(action)
+  return `${workspaceKey}:${target || 'no-path'}:${kind}:${changeType}:${keyword || 'no-keyword'}`
+}
+
+function actionChangeType(action) {
+  const text = actionText(action)
+  if (/title|ctr/.test(text)) return 'title-ctr'
+  if (/\bh1\b/.test(text)) return 'h1'
+  if (/\bh2\b/.test(text)) return 'h2'
+  if (/meta|description/.test(text)) return 'meta'
+  if (/faq|fraga|question/.test(text)) return 'faq'
+  if (/internlank|interna-lank|internal-link|internal-links|intern-lank|internlankning/.test(text)) return 'internal-links'
+  if (/copy|content|intro|lead|expand|rewrite|ranking|keyword/.test(text)) return 'content'
+  return actionKindForLearning(action)
 }
 
 function actionKindForLearning(action) {
@@ -9791,12 +10071,13 @@ function formatActionMessage(action, workspacePolicy, workspace, review = null) 
     : review?.expectedWork || (isCodeAction(action) ? 'gör en repoändring, bygger, committar och postar GitHub-länk' : 'hanterar kontrollen och markerar nästa steg')
   const risk = indexingCheck ? 'låg - kontrollen ändrar ingen kod eller design' : review?.risk || 'okänd'
   const recommendation = indexingCheck ? 'Kontrollera URL' : review?.recommendation || (isCodeAction(action) ? 'Review' : 'Review')
-  const score = !indexingCheck && Number.isFinite(Number(review?.score)) ? ` · score ${Math.round(Number(review.score))}` : ''
+  const decisionSummary = !indexingCheck ? formatDecisionSummary(action, review, workspace) : ''
   const codexDecision = review?.codexDecision ? `Codex-bedömning: ${review.codexDecision}${review.codexReason ? ` (${String(review.codexReason).slice(0, 140)})` : ''}` : ''
   const lines = [
     `Nästa SEO-kandidat för ${label}`,
     '',
-    `Jag rekommenderar: ${recommendation}${score}`,
+    `Jag rekommenderar: ${recommendation}`,
+    decisionSummary,
     codexDecision,
     `Kort: ${title}`,
     action.targetUrl ? `URL: ${action.targetUrl}` : '',
@@ -9819,6 +10100,72 @@ function formatActionMessage(action, workspacePolicy, workspace, review = null) 
       : `Det här är en kontroll, inte en kodaction. Skriv i chatten om den är hanterad, kan vänta eller behöver förklaras.`
   ]
   return lines.filter(Boolean).join('\n').slice(0, 1900)
+}
+
+function formatDecisionSummary(action, review, workspace) {
+  const priority = priorityLabelForReview(review?.score)
+  const evidence = evidenceStrengthForAction(action, workspace)
+  const impact = expectedSeoImpactForAction(action)
+  const affected = affectedUrlsForAction(action)
+  return [
+    `Prioritet: ${priority}`,
+    `Evidensstyrka: ${evidence}`,
+    `Förväntad effekt: ${impact}`,
+    `Påverkade URL:er: ${affected}`
+  ].join('\n')
+}
+
+function priorityLabelForReview(score) {
+  const value = Number(score)
+  if (!Number.isFinite(value)) return 'ej bedömd'
+  if (value >= 78) return 'hög'
+  if (value >= 55) return 'normal – kräver granskning'
+  if (value >= 40) return 'låg – bör normalt vänta'
+  return 'avråds'
+}
+
+function evidenceStrengthForAction(action, workspace) {
+  const source = String(action?.evidenceSource || '').toLowerCase()
+  const evidence = Array.isArray(action?.evidence) ? action.evidence : []
+  const readiness = workspace?.id ? state.workspaceReadiness?.[workspace.id] : null
+  const hasFreshBatch = Boolean(readiness?.batchAvailable && readiness?.lastRunAt)
+  const hasStructuredSearchEvidence = /gsc|serp|keyword.?planner|search.?console/.test(source)
+    || evidence.some((item) => /gsc|serp|keyword.?planner|search.?console/i.test(JSON.stringify(item)))
+  if (hasStructuredSearchEvidence && hasFreshBatch) return 'stark – verifierad sökdata finns'
+  if (hasFreshBatch) return 'medel – färsk SEO-batch finns, men ingen exakt query/volym är kopplad'
+  if (source || evidence.length) return 'svag – underlaget behöver verifieras'
+  return 'saknas – ingen spårbar evidens i kortet'
+}
+
+function expectedSeoImpactForAction(action) {
+  const kind = actionKindForLearning(action)
+  if (kind === 'internal-links') return 'kan förbättra intern relevans och upptäckbarhet; ingen rankinggaranti'
+  if (kind === 'content') return 'kan förbättra matchningen mot sökintention; beror på faktisk efterfrågan och kvalitet'
+  if (kind === 'title-ctr' || /ctr/i.test(String(action?.title || ''))) return 'kan höja klickfrekvensen om sökresultatet blir tydligare'
+  if (kind === 'new-page') return 'kan öppna en ny sökintention; kräver verklig efterfrågan och bra innehåll'
+  return 'möjlig SEO-förbättring, men ingen förutsägbar rankingeffekt'
+}
+
+function affectedUrlsForAction(action) {
+  const urls = []
+  const add = (value) => {
+    if (typeof value !== 'string' || !/^https?:\/\//i.test(value)) return
+    if (!urls.includes(value)) urls.push(value)
+  }
+  add(action?.targetUrl || action?.url)
+  for (const key of ['sourceUrl', 'sourceUrls', 'affectedUrl', 'affectedUrls']) {
+    const value = action?.[key]
+    if (Array.isArray(value)) value.forEach(add)
+    else add(value)
+  }
+  for (const item of Array.isArray(action?.evidence) ? action.evidence : []) {
+    if (item && typeof item === 'object') {
+      add(item.url); add(item.sourceUrl); add(item.targetUrl); add(item.affectedUrl)
+    }
+  }
+  if (!urls.length) return 'inga angivna ännu'
+  if (urls.length > 6) return `${urls.slice(0, 6).join(', ')} (+${urls.length - 6} till)`
+  return urls.join(', ')
 }
 
 function workspaceEvidenceLine(workspace) {
@@ -10060,7 +10407,7 @@ async function sendDiscordMessage(content, targetChannelId = channelId, componen
   const checked = await validateOutboundDiscordMessage(String(content ?? ''), targetChannelId, components, options)
   return discordJson(`/channels/${targetChannelId}/messages`, {
     method: 'POST',
-    body: JSON.stringify({ content: checked.content, ...(components.length ? { components } : {}) })
+    body: JSON.stringify({ content: checked.content, ...(components.length ? { components } : {}), ...(options.embeds?.length ? { embeds: options.embeds } : {}) })
   })
 }
 
@@ -10328,7 +10675,7 @@ function loadState() {
     return fallback
   }
   try {
-    const loaded = { postedSystemKeys: {}, messageToAction: {}, activeActionByWorkspace: {}, dailyRunDates: {}, workspaceRunDates: {}, onceMessages: {}, ...JSON.parse(readFileSync(statePath, 'utf8')) }
+    const loaded = { postedSystemKeys: {}, messageToAction: {}, seenMessageIds: {}, activeActionByWorkspace: {}, dailyRunDates: {}, workspaceRunDates: {}, onceMessages: {}, ...JSON.parse(readFileSync(statePath, 'utf8')) }
     stateBaseline = structuredClone(loaded)
     return loaded
   } catch {

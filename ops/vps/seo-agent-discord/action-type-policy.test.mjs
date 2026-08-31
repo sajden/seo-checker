@@ -17,3 +17,22 @@ test('ordinary content action remains a code action', () => {
     category: 'content'
   }), false)
 })
+
+test('GSC query content work is not misclassified as an indexing check', () => {
+  assert.equal(isIndexingActionIdentity({
+    id: 'seo_action_gsc_query_ctr',
+    title: 'Förbättra CTR: webbutveckling företag',
+    category: 'indexing',
+    action: 'Uppdatera title och meta för queryn.'
+  }), false)
+})
+
+test('GSC indexing issue label does not suppress a verified content action', () => {
+  assert.equal(isIndexingActionIdentity({
+    id: 'seo_action_gsc_query_title',
+    title: 'Lyft GSC-query: microsoft 365 konsult',
+    category: 'indexing',
+    issueType: 'gsc-indexing-issue',
+    recommendedAction: 'Förbättra title och meta för den observerade queryn.'
+  }), false)
+})
