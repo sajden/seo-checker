@@ -8763,9 +8763,14 @@ function buildStrategicSiteReview({ workspace, batch, keywordReview = {}, gscRow
     .slice(0, 10)
     .map((item) => ({ query: item.query, targetUrl: item.targetUrl, status: item.status, gscMatched: item.gscMatched === true }))
   const newPageCandidates = deriveStrategicNewPageCandidates(gscRows, scopedPages, host)
-  const operatorConfirmedPageCandidates = String(workspace?.repoFullName || '') === 'sajden/sebcastwall'
-    ? [{ path: '/tjanster/microsoft-365/planner', topic: 'Microsoft Planner', status: 'operator_confirmed', reason: 'Manuellt bekräftad affärs-/efterfrågesignal; behöver separat sidbrief och sökordsvalidering före publicering.' }]
-    : []
+  const operatorConfirmedPageCandidates = knownSiteFacts
+    .filter((fact) => fact?.kind === 'new_page_idea' && fact.verified === true && fact.path && fact.topic)
+    .map((fact) => ({
+      path: fact.path,
+      topic: fact.topic,
+      status: 'operator_confirmed',
+      reason: fact.reason || 'Manuellt bekräftad idé; behöver separat sidbrief och sökordsvalidering före publicering.'
+    }))
   const pageTypes = { service: 0, product: 0, tool: 0, article: 0, other: 0 }
   for (const page of pages) pageTypes[strategicPageType(page.url, host)]++
   return {
