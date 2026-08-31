@@ -4858,11 +4858,37 @@ async function postPendingActions({ workspace, targetChannelId }) {
       `Kandidater granskade: ${pending.length}.`,
       'Endast färsk och spårbar GSC-, Keyword Planner- eller crawl-evidens får bli ett actionkort.',
       noActionReasons.length
-        ? `Huvudskäl:\n${[...new Set(noActionReasons)].slice(0, 8).map((reason) => `- ${reason}`).join('\n')}`
+        ? `Huvudskäl:\n${[...new Set(noActionReasons)].slice(0, 8).map((reason) => `- ${humanNoActionReason(reason)}`).join('\n')}`
         : 'Inga kandidater återstod efter tidigare beslut och cooldowns.',
       'Detta är en statusrapport, inte en föreslagen kodändring.'
     ].join('\n'))
   }
+}
+
+function humanNoActionReason(reason) {
+  const text = String(reason || '').trim()
+  if (text === 'runtime-scorern avvisade kandidaterna; worker fortsatte ändå med batchen') {
+    return 'Urvalsmotorn valde inget första förslag; hela den färska batchen granskades ändå.'
+  }
+  const match = text.match(/^(.*?):\s*(.*)$/s)
+  if (!match) return text
+  const [, label, raw] = match
+  const message = raw === 'previously_ignored_waiting_recheck'
+    ? 'redan hanterat eller avvisat; väntar på ny evidens'
+    : raw === 'indexing_check_is_internal'
+      ? 'ren indexeringskontroll, inte en kodändring'
+      : raw === 'workspace_avoid_terms_without_preferred_context'
+        ? 'ligger utanför valt fokus just nu'
+        : raw === 'sebcastwall_noise_keyword'
+          ? 'ligger utanför valt fokus just nu'
+          : raw === 'repeatedly_guarded'
+            ? 'stoppad efter upprepade tidigare granskningar'
+            : raw === 'missing_observed_evidence'
+              ? 'saknar verifierad färsk evidens'
+              : raw === 'keyword_coverage_lacks_search_evidence'
+                ? 'saknar tillräcklig sökevidens för en trygg ändring'
+                : raw
+  return `${label}: ${message}`
 }
 
 async function autoRunGscInspectionForPostedAction(action, workspace, targetChannelId) {
