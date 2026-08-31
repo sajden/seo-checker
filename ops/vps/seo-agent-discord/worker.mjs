@@ -8646,7 +8646,7 @@ async function runDailyRankingReviews(workspaces) {
       ...review
     }
     saveState()
-    if (review.ok && shouldNotifyRankingReview(review)) {
+    if (review.ok && shouldNotifyRankingReview(review, workspace)) {
       await sendOncePerDay(`ranking-review:${key}:${today}`, targetChannelId, formatRankingReviewMessage(workspace, review))
     }
   }
@@ -8691,6 +8691,7 @@ async function buildRankingReview(workspace, targetChannelId) {
     })
     .slice(0, 5)
   const next = selectRankingReviewNextStep({ workspace, profile, keywordMap, actions, experiments: refreshedExperiments, staleKeywordTargets, weakLiveQueue, eligibleLiveActionCount, targetChannelId })
+  const strategicSiteReview = buildStrategicSiteReview({ workspace, batch, keywordReview: batch?.lastRunDetails?.keywordReview || {}, gscRows: batch?.lastRunDetails?.gscRows || [] })
   const batchRunAt = batch?.lastRunAt || batch?.lastRunSummary?.ranAt || null
   const batchSummary = batch?.lastRunSummary || {}
   return {
@@ -8716,8 +8717,118 @@ async function buildRankingReview(workspace, targetChannelId) {
     unmappedActionCount: unmappedActions.length,
     staleKeywordTargets,
     weakLiveQueue,
-    next
+    next,
+    strategicSiteReview
   }
+}
+
+function buildStrategicSiteReview({ workspace, batch, keywordReview = {}, gscRows = [] }) {
+  const pages = Array.isArray(batch?.lastRunDetails?.crawlPages) ? batch.lastRunDetails.crawlPages : []
+  const host = workspaceHost(workspace)
+  const scopedPages = pages.filter((page) => {
+    const path = safeUrlPath(page?.url, host)
+    return path && !path.startsWith('/artiklar')
+  })
+  const commercialPages = scopedPages.filter((page) => /^(\/tjanster|\/produkter|\/verktyg|\/privatpersoner|\/foretag)(\/|$)/.test(safeUrlPath(page?.url, host)))
+  const incoming = new Map(scopedPages.map((page) => [normalizeStrategicUrl(page?.url), 0]))
+  for (const page of scopedPages) {
+    for (const link of Array.isArray(page?.internalLinks) ? page.internalLinks : []) {
+      const target = normalizeStrategicUrl(link)
+      if (incoming.has(target)) incoming.set(target, incoming.get(target) + 1)
+    }
+  }
+  const duplicateTitles = duplicateStrategicValues(commercialPages, (page) => String(page?.title || '').trim())
+  const technicalConcerns = scopedPages
+    .filter((page) => Number(page?.status || 0) !== 200 || (page?.canonical && normalizeStrategicUrl(page.canonical) !== normalizeStrategicUrl(page.url)))
+    .slice(0, 8)
+    .map((page) => ({ url: page.url, issue: Number(page?.status || 0) !== 200 ? `HTTP ${page.status}` : 'canonical avviker från URL' }))
+  const thinPages = commercialPages
+    .filter((page) => Number(page?.wordCount || 0) > 0 && Number(page.wordCount) < 300)
+    .sort((a, b) => Number(a.wordCount) - Number(b.wordCount))
+    .slice(0, 8)
+    .map((page) => ({ url: page.url, wordCount: Number(page.wordCount) }))
+  const orphanPages = commercialPages
+    .filter((page) => normalizeStrategicUrl(page.url) !== normalizeStrategicUrl(`https://${host}/`) && incoming.get(normalizeStrategicUrl(page.url)) === 0)
+    .slice(0, 8)
+    .map((page) => page.url)
+  const gaps = (Array.isArray(keywordReview.opportunities) ? keywordReview.opportunities : [])
+    .filter((item) => ['missing', 'weak'].includes(String(item?.status || '')))
+    .slice(0, 10)
+    .map((item) => ({ query: item.query, targetUrl: item.targetUrl, status: item.status, gscMatched: item.gscMatched === true }))
+  const newPageCandidates = deriveStrategicNewPageCandidates(gscRows, scopedPages, host)
+  const pageTypes = { service: 0, product: 0, tool: 0, article: 0, other: 0 }
+  for (const page of pages) pageTypes[strategicPageType(page.url, host)]++
+  return {
+    pageCount: pages.length,
+    scopedPageCount: scopedPages.length,
+    commercialPageCount: commercialPages.length,
+    pageTypes,
+    technicalConcerns,
+    duplicateTitles,
+    thinPages,
+    orphanPages,
+    keywordGaps: gaps,
+    newPageCandidates,
+    priority: technicalConcerns.length ? 'fix_technical_first' : newPageCandidates.length ? 'validate_new_page_opportunities' : gaps.length ? 'improve_existing_pages_first' : 'monitor'
+  }
+}
+
+function deriveStrategicNewPageCandidates(gscRows, pages, host) {
+  const knownPaths = new Set(pages.map((page) => safeUrlPath(page?.url, host)).filter(Boolean))
+  const candidates = new Map()
+  for (const row of Array.isArray(gscRows) ? gscRows : []) {
+    const query = String(row?.keys?.[1] || row?.query || '').trim().toLowerCase()
+    const page = String(row?.keys?.[0] || row?.page || '').trim()
+    if (!query || !page || Number(row?.impressions || 0) < 3) continue
+    const path = safeUrlPath(page, host)
+    if (!path || /\/artiklar(?:\/|$)/.test(path)) continue
+    const terms = query.split(/\s+/).filter((term) => term.length >= 5 && !strategicStopWords.has(term))
+    const missingTerms = terms.filter((term) => !path.toLowerCase().includes(term))
+    if (missingTerms.length < 1 || terms.length < 2) continue
+    const candidatePath = `${path.replace(/\/$/, '')}/${slugifyStrategicTerm(missingTerms.slice(-2).join('-'))}`
+    if (knownPaths.has(candidatePath) || candidates.has(candidatePath)) continue
+    candidates.set(candidatePath, { path: candidatePath, query, sourceUrl: page, impressions: Number(row.impressions || 0), position: Number(row.position || 0), reason: 'GSC-query visar en specifik underintention som inte motsvarar en befintlig URL.' })
+  }
+  return [...candidates.values()].sort((a, b) => b.impressions - a.impressions).slice(0, 5)
+}
+
+const strategicStopWords = new Set(['konsult', 'företag', 'stockholm', 'hjälp', 'med', 'för', 'och', 'till', 'från', 'utan', 'samt', 'the', 'with', 'for'])
+
+function strategicPageType(url, host) {
+  const path = safeUrlPath(url, host)
+  if (path.startsWith('/artiklar')) return 'article'
+  if (path.startsWith('/tjanster')) return 'service'
+  if (path.startsWith('/produkter')) return 'product'
+  if (path.startsWith('/verktyg')) return 'tool'
+  return 'other'
+}
+
+function safeUrlPath(value, host) {
+  try {
+    const url = new URL(String(value || ''), `https://${host || 'localhost'}`)
+    if (host && url.hostname !== host) return ''
+    return url.pathname || '/'
+  } catch { return '' }
+}
+
+function normalizeStrategicUrl(value) {
+  try {
+    const url = new URL(String(value || ''))
+    return `${url.origin}${url.pathname.replace(/\/$/, '') || '/'}`.toLowerCase()
+  } catch { return String(value || '').replace(/\/$/, '').toLowerCase() }
+}
+
+function duplicateStrategicValues(items, getter) {
+  const groups = new Map()
+  for (const item of items) {
+    const value = getter(item)
+    if (value) groups.set(value, [...(groups.get(value) || []), item.url])
+  }
+  return [...groups.entries()].filter(([, urls]) => urls.length > 1).slice(0, 5).map(([value, urls]) => ({ value, urls }))
+}
+
+function slugifyStrategicTerm(value) {
+  return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '').toLowerCase()
 }
 
 function selectRankingReviewNextStep({ workspace, profile, keywordMap, actions, experiments, staleKeywordTargets, weakLiveQueue, eligibleLiveActionCount, targetChannelId }) {
@@ -8771,8 +8882,9 @@ function selectRankingReviewNextStep({ workspace, profile, keywordMap, actions, 
   }
 }
 
-function shouldNotifyRankingReview(review) {
+function shouldNotifyRankingReview(review, workspace) {
   if (!review?.ok) return false
+  if (String(workspace?.repoFullName || '') === 'sajden/sebcastwall') return true
   if (review.pendingFollowups?.length) return true
   return false
 }
@@ -8780,6 +8892,17 @@ function shouldNotifyRankingReview(review) {
 function formatRankingReviewMessage(workspace, review) {
   const next = review.next || {}
   const outcomes = review.outcomeReview?.reviewed?.slice(0, 3) || []
+  const strategic = review.strategicSiteReview || {}
+  const typeSummary = Object.entries(strategic.pageTypes || {}).filter(([, count]) => count).map(([type, count]) => `${type} ${count}`).join(', ')
+  const strategicLines = [
+    typeSummary ? `Sajtstruktur: ${strategic.pageCount} URL:er (${typeSummary}).` : '',
+    strategic.technicalConcerns?.length ? `Tekniskt: ${strategic.technicalConcerns.length} URL:er kräver kontroll.` : 'Tekniskt: inga crawl-/canonicalfel i underlaget.',
+    strategic.duplicateTitles?.length ? `Dubbletter: ${strategic.duplicateTitles.length} titelgrupper.` : '',
+    strategic.thinPages?.length ? `Tunna kommersiella sidor: ${strategic.thinPages.slice(0, 3).map((item) => `${item.url} (${item.wordCount} ord)`).join(', ')}.` : '',
+    strategic.orphanPages?.length ? `Möjligt isolerade tjänste-/produktsidor: ${strategic.orphanPages.slice(0, 3).join(', ')}.` : '',
+    strategic.keywordGaps?.length ? `Keywordluckor att utreda: ${strategic.keywordGaps.slice(0, 4).map((item) => `${item.query} → ${item.targetUrl}`).join(' · ')}.` : '',
+    strategic.newPageCandidates?.length ? `Nya sidkandidater: ${strategic.newPageCandidates.slice(0, 3).map((item) => `${item.path} (${item.query}, ${item.impressions} visningar)`).join(' · ')}.` : 'Nya sidor: ingen GSC-stödd sidlucka verifierad i denna körning.'
+  ].filter(Boolean)
   return [
     `Daglig SEO-review för ${workspace?.label || workspace?.id || 'workspace'}`,
     next.status === 'research_candidate' ? '**Status: research-kandidat — inget jobb, ingen branch och ingen kodändring har skapats.**' : '',
@@ -8787,6 +8910,7 @@ function formatRankingReviewMessage(workspace, review) {
     review.batchRunAt ? `Dataunderlag: SEO-körning ${formatDateTime(review.batchRunAt)} · GSC ${review.gscRowCount} rader · crawl ${review.crawlPageCount} sidor.` : 'Dataunderlag: ingen färsk SEO-batch kunde verifieras.',
     review.pendingFollowups?.length ? `Uppföljning redo: ${review.pendingFollowups.map((item) => `${item.keyword || item.title}${item.commit ? ` (${item.commit})` : ''}`).join(', ')}` : '',
     outcomes.length ? `Experiment-utvärdering: ${outcomes.map((item) => `${item.outcome}: ${item.keyword || item.targetUrl}`).join(' | ')}` : '',
+    ...strategicLines,
     `${next.type === 'keyword_gap' ? 'Research-kandidat' : 'Nästa steg'}: ${next.title || 'inget säkert'}`,
     next.targetUrl ? `URL: ${next.targetUrl}` : '',
     next.keyword ? `Keyword: ${next.keyword}` : '',
