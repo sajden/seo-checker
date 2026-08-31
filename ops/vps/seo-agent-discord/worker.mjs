@@ -6266,7 +6266,8 @@ async function handleChatMessage(content, message, targetChannelId) {
   if (/^(ranking|rankning|keyword map|keyword-map|keywords?|experiment|seo experiment)$/i.test(trimmed)) {
     const workspace = workspaceForChannel(targetChannelId)
     const review = await buildRankingReview(workspace, targetChannelId).catch((error) => ({ ok: false, error: error?.message || String(error) }))
-    await sendDiscordMessage(review.ok ? formatRankingReviewMessage(workspace, review) : `Kunde inte bygga ranking-review: ${review.error || 'okänt fel'}`, targetChannelId)
+    if (review.ok) await sendStrategicRankingReport(workspace, review, targetChannelId)
+    else await sendDiscordMessage(`Kunde inte bygga ranking-review: ${review.error || 'okänt fel'}`, targetChannelId)
     return
   }
   if (/^(lärdomar|lardomar|lessons?|minne|memory|ledger)$/i.test(trimmed)) {
@@ -8649,7 +8650,7 @@ async function runDailyRankingReviews(workspaces) {
     }
     saveState()
     if (review.ok && shouldNotifyRankingReview(review, workspace)) {
-      await sendOncePerDay(`ranking-review:${key}:${today}`, targetChannelId, formatRankingReviewMessage(workspace, review))
+      await sendStrategicRankingReport(workspace, review, targetChannelId, `ranking-review:${key}:${today}`)
     }
   }
 }
@@ -8759,6 +8760,9 @@ function buildStrategicSiteReview({ workspace, batch, keywordReview = {}, gscRow
     .slice(0, 10)
     .map((item) => ({ query: item.query, targetUrl: item.targetUrl, status: item.status, gscMatched: item.gscMatched === true }))
   const newPageCandidates = deriveStrategicNewPageCandidates(gscRows, scopedPages, host)
+  const operatorConfirmedPageCandidates = String(workspace?.repoFullName || '') === 'sajden/sebcastwall'
+    ? [{ path: '/tjanster/microsoft-365/planner', topic: 'Microsoft Planner', status: 'operator_confirmed', reason: 'Manuellt bekräftad affärs-/efterfrågesignal; behöver separat sidbrief och sökordsvalidering före publicering.' }]
+    : []
   const pageTypes = { service: 0, product: 0, tool: 0, article: 0, other: 0 }
   for (const page of pages) pageTypes[strategicPageType(page.url, host)]++
   return {
@@ -8772,6 +8776,7 @@ function buildStrategicSiteReview({ workspace, batch, keywordReview = {}, gscRow
     orphanPages,
     keywordGaps: gaps,
     newPageCandidates,
+    operatorConfirmedPageCandidates,
     priority: technicalConcerns.length ? 'fix_technical_first' : newPageCandidates.length ? 'validate_new_page_opportunities' : gaps.length ? 'improve_existing_pages_first' : 'monitor'
   }
 }
@@ -8905,6 +8910,7 @@ function formatRankingReviewMessage(workspace, review) {
     strategic.orphanPages?.length ? `Möjligt isolerade tjänste-/produktsidor: ${strategic.orphanPages.slice(0, 3).join(', ')}.` : '',
     strategic.keywordGaps?.length ? `Keywordluckor att utreda: ${strategic.keywordGaps.slice(0, 4).map((item) => `${item.query} → ${item.targetUrl}`).join(' · ')}.` : '',
     strategic.newPageCandidates?.length ? `Nya sidkandidater: ${strategic.newPageCandidates.slice(0, 3).map((item) => `${item.path} (${item.query}, ${item.impressions} visningar)`).join(' · ')}.` : 'Nya sidor: ingen GSC-stödd sidlucka verifierad i denna körning.'
+    ,strategic.operatorConfirmedPageCandidates?.length ? `Manuellt bekräftad sididé: ${strategic.operatorConfirmedPageCandidates.map((item) => `${item.path} (${item.topic})`).join(' · ')}. Kräver separat sidbrief.` : ''
   ].filter(Boolean)
   return [
     `Daglig SEO-review för ${workspace?.label || workspace?.id || 'workspace'}`,
@@ -8921,6 +8927,78 @@ function formatRankingReviewMessage(workspace, review) {
     next.nextAction ? `Vad händer nu: ${next.nextAction}` : '',
     'GSC/API-kontroller rate-limtas; ett separat förslag postas först när agenten har en konkret ändring och tillräckligt underlag.'
   ].filter(Boolean).join('\n').slice(0, 1900)
+}
+
+async function sendStrategicRankingReport(workspace, review, targetChannelId, onceKey = '') {
+  const summary = formatRankingReviewMessage(workspace, review)
+  const pdfPath = await createStrategicRankingReportPdf(workspace, review).catch((error) => {
+    log('strategic_report_pdf_failed', { workspace: workspace?.repoFullName || workspace?.label || null, error: error?.message || String(error) })
+    return null
+  })
+  if (!pdfPath) return onceKey ? sendOncePerDay(onceKey, targetChannelId, summary) : sendDiscordMessage(summary, targetChannelId)
+  const message = await sendDiscordFile(summary, targetChannelId, pdfPath, 'seo-strategic-report')
+  if (onceKey) {
+    state.onceMessages = state.onceMessages || {}
+    state.onceMessages[onceKey] = { channelId: targetChannelId, messageId: message.id, sentAt: new Date().toISOString(), attachment: pdfPath }
+  }
+  return message
+}
+
+async function createStrategicRankingReportPdf(workspace, review) {
+  const { execFile } = await import('node:child_process')
+  const { promisify } = await import('node:util')
+  const exec = promisify(execFile)
+  const reportsDir = join(stateDir, 'reports')
+  mkdirSync(reportsDir, { recursive: true })
+  const stamp = new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 14)
+  const base = join(reportsDir, `seo-strategic-${slugifyStrategicTerm(workspace?.repoFullName || workspace?.label || 'workspace')}-${stamp}`)
+  const htmlPath = `${base}.html`
+  const pdfPath = `${base}.pdf`
+  writeFileSync(htmlPath, strategicReportHtml(workspace, review), 'utf8')
+  await exec('/usr/bin/google-chrome', ['--headless', '--no-sandbox', '--disable-gpu', '--no-pdf-header-footer', `--print-to-pdf=${pdfPath}`, `file://${htmlPath}`], { timeout: 2 * 60 * 1000, maxBuffer: 2 * 1024 * 1024 })
+  unlinkSync(htmlPath)
+  return pdfPath
+}
+
+async function sendDiscordFile(content, targetChannelId, filePath, kind = 'report') {
+  const checked = await validateOutboundDiscordMessage(String(content || ''), targetChannelId, [], { kind })
+  const form = new FormData()
+  form.append('payload_json', JSON.stringify({ content: checked.content }))
+  form.append('files[0]', new Blob([readFileSync(filePath)], { type: 'application/pdf' }), filePath.split('/').pop())
+  const response = await fetch(`${DISCORD_API}/channels/${targetChannelId}/messages`, { method: 'POST', headers: { authorization: `Bot ${token}`, 'user-agent': 'DiscordBot (https://sebcastwall.se, 0.1)' }, body: form })
+  const text = await response.text()
+  if (!response.ok) throw new Error(`discord_${response.status}: ${text.slice(0, 500)}`)
+  return JSON.parse(text)
+}
+
+function strategicReportHtml(workspace, review) {
+  const strategic = review.strategicSiteReview || {}
+  const rows = (items, render) => items?.length ? `<table><tbody>${items.map(render).join('')}</tbody></table>` : '<p class="muted">Inga verifierade fynd i denna körning.</p>'
+  const link = (value) => {
+    const text = escapeStrategicHtml(value)
+    return /^https?:\/\//.test(String(value || '')) ? `<a href="${text}">${text}</a>` : text
+  }
+  const technicalRows = rows(strategic.technicalConcerns, (x) => `<tr><td>${link(x.url)}</td><td>${escapeStrategicHtml(x.issue)}</td></tr>`)
+  const duplicateRows = rows(strategic.duplicateTitles, (x) => `<tr><td>Dubblettitel</td><td>${escapeStrategicHtml(x.value)}<br>${x.urls.map(link).join('<br>')}</td></tr>`)
+  const orphanRows = rows((strategic.orphanPages || []).map((url) => ({ url })), (x) => `<tr><td>Isolerad sida</td><td>${link(x.url)}</td></tr>`)
+  const gapRows = rows(strategic.keywordGaps, (x) => `<tr><td>${escapeStrategicHtml(x.query)}</td><td>${link(x.targetUrl)}<br>Status: ${escapeStrategicHtml(x.status)} · GSC-match: ${x.gscMatched ? 'ja' : 'nej'}</td></tr>`)
+  const newPageRows = rows(strategic.newPageCandidates, (x) => `<tr><td>${escapeStrategicHtml(x.path)}</td><td>${escapeStrategicHtml(x.query)}<br>${x.impressions} visningar · position ${Number(x.position || 0).toFixed(1)}<br>${escapeStrategicHtml(x.reason)}</td></tr>`)
+  const confirmedPageRows = rows(strategic.operatorConfirmedPageCandidates, (x) => `<tr><td>${escapeStrategicHtml(x.path)}</td><td>${escapeStrategicHtml(x.topic)}<br><b>Manuellt bekräftad idé.</b> ${escapeStrategicHtml(x.reason)}</td></tr>`)
+  return `<!doctype html><html lang="sv"><head><meta charset="utf-8"><title>Strategisk SEO-rapport</title><style>
+  @page{size:A4;margin:18mm}body{font-family:Arial,sans-serif;color:#17202a;font-size:11px;line-height:1.45}h1{font-size:25px;margin:0 0 4px}h2{font-size:16px;border-bottom:2px solid #1f6feb;padding-bottom:4px;margin-top:22px}h3{font-size:12px;margin-bottom:3px}.meta,.muted{color:#5f6b76}.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:16px 0}.card{border:1px solid #d8dee4;border-radius:6px;padding:9px}.value{font-size:19px;font-weight:bold;display:block}table{width:100%;border-collapse:collapse;margin:7px 0 12px}td{border-bottom:1px solid #e5e7eb;padding:6px 4px;vertical-align:top}td:first-child{width:34%;font-weight:bold}a{color:#0969da;word-break:break-word}.priority{background:#fff4cc;border-left:4px solid #d4a72c;padding:9px;margin:10px 0}.footer{margin-top:25px;border-top:1px solid #d8dee4;padding-top:8px;font-size:9px;color:#5f6b76}
+  </style></head><body><h1>Strategisk SEO-rapport</h1><div class="meta">${escapeStrategicHtml(workspace?.label || workspace?.repoFullName || 'workspace')} · ${escapeStrategicHtml(formatDateTime(new Date().toISOString()))}</div>
+  <div class="grid"><div class="card"><span class="value">${strategic.pageCount || 0}</span>crawlade URL:er</div><div class="card"><span class="value">${strategic.commercialPageCount || 0}</span>kommersiella sidor</div><div class="card"><span class="value">${review.gscRowCount || 0}</span>GSC-rader</div><div class="card"><span class="value">${review.liveActionCount || 0}</span>live-actions</div></div>
+  <div class="priority"><b>Prioritering:</b> ${escapeStrategicHtml(strategic.priority || 'monitor')}<br>Rapporten ger rekommendationer. Den skapar ingen branch eller ändrar webbplatsen.</div>
+  <h2>1. Sammanfattning</h2><p>Dataunderlag: ${escapeStrategicHtml(review.batchRunAt ? formatDateTime(review.batchRunAt) : 'saknas')} · crawl ${review.crawlPageCount || 0} sidor · ${review.gscRowCount || 0} GSC-rader.</p>
+  <h2>2. Tekniska och strukturella fynd</h2>${technicalRows}${duplicateRows}${orphanRows}
+  <h2>3. Befintliga sidor att utreda</h2>${gapRows}
+  <h2>4. Nya sidkandidater</h2>${newPageRows}${confirmedPageRows}
+  <h2>5. Nästa beslut</h2><p><b>${escapeStrategicHtml(review.next?.title || 'Ingen säker rekommendation')}</b></p><p>${escapeStrategicHtml(review.next?.reason || 'Väntar på bättre evidens.')}</p>
+  <div class="footer">Källor: intern crawl, Google Search Console och sparad keyword-review. Sökord från artikelsidor används inte som underlag för tjänsteändringar. Nya sidkandidater kräver separat sidbrief och validering.</div></body></html>`
+}
+
+function escapeStrategicHtml(value) {
+  return String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 }
 
 async function evaluateDueSeoExperiments({ workspace, targetChannelId, actions, experiments, batch }) {
