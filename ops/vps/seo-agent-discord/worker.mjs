@@ -4869,7 +4869,9 @@ function syncSeoReviewCandidateQueue(workspace, targetChannelId, items) {
     const ledger = ledgerByActionId.get(id)
     const result = resultByActionId[id]
     const terminalStatus = queueTerminalStatus(ledger?.status, result?.status)
-    const verified = Boolean(action.evidenceType || action.evidence || action.evidenceSource || action.evidenceRunAt || action.keywordMetrics)
+    const guard = terminalStatus ? { ok: false, reason: terminalStatus } : shouldPostActionCard(action, workspace, targetChannelId)
+    const review = guard.ok ? reviewActionForPosting(action, workspace, targetChannelId, '') : { ok: false, reason: guard.reason }
+    const queueStatus = terminalStatus || (!guard.ok ? 'guarded' : (review.ok ? (old?.status === 'active' ? 'active' : 'queued') : 'discovered'))
     nextItems.push({
       id,
       title: action.title || old?.title || 'SEO-förslag',
@@ -4880,7 +4882,9 @@ function syncSeoReviewCandidateQueue(workspace, targetChannelId, items) {
       learningWeight: Number(old?.learningWeight || 0),
       evidenceType: action.evidenceType || old?.evidenceType || '',
       evidenceRunAt: action.evidenceRunAt || old?.evidenceRunAt || '',
-      status: terminalStatus || (old?.status === 'active' ? 'active' : (verified ? 'queued' : 'discovered')),
+      status: queueStatus,
+      guardReason: guard.ok ? null : guard.reason,
+      reviewReason: review.ok ? null : review.reason,
       firstSeenAt: old?.firstSeenAt || new Date().toISOString(),
       lastSeenAt: new Date().toISOString()
     })
