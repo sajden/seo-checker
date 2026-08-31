@@ -128,6 +128,12 @@ test('configured production deploy is verified before main is pushed', () => {
   assert.match(promoterSource, /process\.env\.CLOUDFLARE_API_TOKEN/)
 })
 
+test('Discord approval promotes prepared review branches automatically', () => {
+  assert.match(workerSource, /state\.codeActionResults\[actionId\] = \{ \.\.\.record, status: 'promotion_running'/)
+  assert.match(workerSource, /const promotion = await promoteReviewReadyAction\(actionId, record\.result \|\| \{\}, action\)/)
+  assert.doesNotMatch(workerSource, /if \(record\.result\?\.preparedBeforeReview\) \{\s+state\.codeActionResults\[actionId\] = \{ \.\.\.record, status: 'approved_for_merge'/)
+})
+
 test('Parkeringspolaren map rendering is verified before main is pushed', () => {
   const visualIndex = promoterSource.indexOf('verifyCriticalProductionExperience(repoFullName)')
   const pushIndex = promoterSource.indexOf("await run('git', ['push', 'origin', `HEAD:${baseBranch}`]")

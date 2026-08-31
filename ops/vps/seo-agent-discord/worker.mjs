@@ -4157,7 +4157,7 @@ function compactPreparedReviewMessage(action, workspace, review, result) {
     quality.ok ? 'Build/kvalitetsgrind: godkänd' : 'Build/kvalitetsgrind: se resultatet ovan',
     review?.why ? `Varför: ${String(review.why).slice(0, 280)}` : '',
     '',
-    'Granska diffen. Approve lämnar branchen redo för din merge. Stop raderar branchen och ändringen går inte vidare.'
+    'Granska diffen. Approve mergar branchen och deployar production efter säkerhetskontroller. Stop raderar branchen och ändringen går inte vidare.'
   ].filter(Boolean).join('\n').slice(0, 1900)
 }
 
@@ -4256,26 +4256,6 @@ async function decideSeoReview(actionId, decision, targetChannelId, operatorId) 
       publicMessage: cleanup.ok
         ? `Stoppad och raderad: ${posted.title || actionId}. Main och production är orörda.`
         : `Stoppad: ${posted.title || actionId}. Branchen finns kvar eftersom raderingen misslyckades: ${cleanup.error}`,
-      removeButtons: true
-    }
-  }
-
-  if (record.result?.preparedBeforeReview) {
-    state.codeActionResults[actionId] = { ...record, status: 'approved_for_merge', operatorApprovedAt: now, operatorId: operatorId || null }
-    recordActionLedger(action, workspace, targetChannelId, 'operator_approved', {
-      commit: record.result?.commit || null,
-      deliveryBranch: record.result?.deliveryBranch || null,
-      source: 'discord_review_branch_ready'
-    })
-    saveState()
-    return {
-      summary: `Godkänd. Branchen är redo för din merge: ${record.result.deliveryBranch}`,
-      publicMessage: [
-        `Godkänd för merge: ${posted.title || actionId}.`,
-        `Branch: ${record.result.deliveryBranch}`,
-        record.result.reviewUrl ? `Diff: ${record.result.reviewUrl}` : '',
-        'Main och production är fortfarande orörda tills du mergar branchen.'
-      ].filter(Boolean).join('\n'),
       removeButtons: true
     }
   }
@@ -8203,7 +8183,7 @@ async function recoverUncertainRuntimeApprovedQueue(uncertainty) {
         completedResult.diffStat ? `Diff:\n\`\`\`\n${String(completedResult.diffStat).slice(0, 1200)}\n\`\`\`` : '',
         '',
         requiresReview
-          ? 'Review-branchen är klar. Main och production är orörda tills du väljer Godkänn ändringen.'
+          ? 'Review-branchen är klar. Godkänn ändringen för automatisk merge till main och production-deploy efter säkerhetskontroller.'
           : 'Jag fick ett osäkert runtime-svar, men hittade den färdiga SEO Agent-committen i repot och tog bort actionen från kön.'
       ].filter(Boolean).join('\n'), targetChannelId, requiresReview ? reviewReadyComponents() : rollbackComponents(), { kind: 'code_result' })
       state.messageToAction = state.messageToAction || {}
