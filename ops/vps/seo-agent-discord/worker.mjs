@@ -1865,7 +1865,6 @@ async function maybePrepareAutonomousCodeWork(workspaces) {
 
 async function maybeQueueAutonomousCodeActions(workspaces) {
   if (!automationEnabled || !autonomousCodeEnabled || !codeAutomationEnabled || state.codeActionRunning) return
-  if (autonomousCodePerWorkspacePerDay <= 0) return
   const today = new Date().toISOString().slice(0, 10)
   state.autonomousCodeRuns = state.autonomousCodeRuns || {}
   for (const workspace of autonomousWorkspaceOrder(workspaces)) {
@@ -1890,7 +1889,7 @@ async function maybeQueueAutonomousCodeActions(workspaces) {
     }
     const runKey = `${workspace.id || workspace.label || workspace.repoFullName}:${today}`
     const usedToday = Number(state.autonomousCodeRuns[runKey]?.count || 0)
-    if (usedToday >= autonomousCodePerWorkspacePerDay) {
+    if (autonomousCodePerWorkspacePerDay > 0 && usedToday >= autonomousCodePerWorkspacePerDay) {
       logThrottled(`autonomous_daily_limit:${runKey}`, 30 * 60 * 1000, 'autonomous_daily_limit', {
         workspace: workspace.label || workspace.id || null,
         usedToday,
