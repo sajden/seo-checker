@@ -8587,6 +8587,7 @@ function ensureAutonomousAgentState() {
   state.rankingReviews = state.rankingReviews || {}
   state.agentLessons = state.agentLessons || []
   state.guardedActions = state.guardedActions || {}
+  state.siteKnowledge = state.siteKnowledge || {}
   state.repoCommitSync = state.repoCommitSync || {}
   migrateExistingStateToActionLedger()
 }
@@ -8741,8 +8742,10 @@ function buildStrategicSiteReview({ workspace, batch, keywordReview = {}, gscRow
     }
   }
   const duplicateTitles = duplicateStrategicValues(commercialPages, (page) => String(page?.title || '').trim())
+  const knownSiteFacts = siteKnowledgeFor(workspace)
   const technicalConcerns = scopedPages
     .filter((page) => Number(page?.status || 0) !== 200 || (page?.canonical && normalizeStrategicUrl(page.canonical) !== normalizeStrategicUrl(page.url)))
+    .filter((page) => !isKnownIntentionalCanonicalAlias(page, knownSiteFacts))
     .slice(0, 8)
     .map((page) => ({ url: page.url, issue: Number(page?.status || 0) !== 200 ? `HTTP ${page.status}` : 'canonical avviker från URL' }))
   const thinPages = commercialPages
@@ -8777,8 +8780,23 @@ function buildStrategicSiteReview({ workspace, batch, keywordReview = {}, gscRow
     keywordGaps: gaps,
     newPageCandidates,
     operatorConfirmedPageCandidates,
+    knownSiteFacts,
     priority: technicalConcerns.length ? 'fix_technical_first' : newPageCandidates.length ? 'validate_new_page_opportunities' : gaps.length ? 'improve_existing_pages_first' : 'monitor'
   }
+}
+
+function siteKnowledgeFor(workspace) {
+  const key = workspaceProfileKey(workspace, null)
+  return Array.isArray(state.siteKnowledge?.[key]) ? state.siteKnowledge[key] : []
+}
+
+function isKnownIntentionalCanonicalAlias(page, facts) {
+  const pageUrl = normalizeStrategicUrl(page?.url)
+  const canonicalUrl = normalizeStrategicUrl(page?.canonical)
+  return facts.some((fact) => fact?.kind === 'intentional_canonical_alias'
+    && normalizeStrategicUrl(fact.sourceUrl) === pageUrl
+    && normalizeStrategicUrl(fact.targetUrl) === canonicalUrl
+    && fact.verified === true)
 }
 
 function deriveStrategicNewPageCandidates(gscRows, pages, host) {
@@ -8906,6 +8924,7 @@ function formatRankingReviewMessage(workspace, review) {
     typeSummary ? `Sajtstruktur: ${strategic.pageCount} URL:er (${typeSummary}).` : '',
     strategic.technicalConcerns?.length ? `Tekniskt: ${strategic.technicalConcerns.length} URL:er kräver kontroll.` : 'Tekniskt: inga crawl-/canonicalfel i underlaget.',
     strategic.duplicateTitles?.length ? `Dubbletter: ${strategic.duplicateTitles.length} titelgrupper.` : '',
+    strategic.knownSiteFacts?.length ? `Kända undantag i minnet: ${strategic.knownSiteFacts.length}.` : '',
     strategic.thinPages?.length ? `Tunna kommersiella sidor: ${strategic.thinPages.slice(0, 3).map((item) => `${item.url} (${item.wordCount} ord)`).join(', ')}.` : '',
     strategic.orphanPages?.length ? `Möjligt isolerade tjänste-/produktsidor: ${strategic.orphanPages.slice(0, 3).join(', ')}.` : '',
     strategic.keywordGaps?.length ? `Keywordluckor att utreda: ${strategic.keywordGaps.slice(0, 4).map((item) => `${item.query} → ${item.targetUrl}`).join(' · ')}.` : '',
@@ -8984,6 +9003,7 @@ function strategicReportHtml(workspace, review) {
   const gapRows = rows(strategic.keywordGaps, (x) => `<tr><td>${escapeStrategicHtml(x.query)}</td><td>${link(x.targetUrl)}<br>Status: ${escapeStrategicHtml(x.status)} · GSC-match: ${x.gscMatched ? 'ja' : 'nej'}</td></tr>`)
   const newPageRows = rows(strategic.newPageCandidates, (x) => `<tr><td>${escapeStrategicHtml(x.path)}</td><td>${escapeStrategicHtml(x.query)}<br>${x.impressions} visningar · position ${Number(x.position || 0).toFixed(1)}<br>${escapeStrategicHtml(x.reason)}</td></tr>`)
   const confirmedPageRows = rows(strategic.operatorConfirmedPageCandidates, (x) => `<tr><td>${escapeStrategicHtml(x.path)}</td><td>${escapeStrategicHtml(x.topic)}<br><b>Manuellt bekräftad idé.</b> ${escapeStrategicHtml(x.reason)}</td></tr>`)
+  const knownFactRows = rows(strategic.knownSiteFacts, (x) => `<tr><td>${escapeStrategicHtml(x.sourceUrl)}</td><td>${escapeStrategicHtml(x.kind)} → ${escapeStrategicHtml(x.targetUrl)}<br>Verifierad: ${escapeStrategicHtml(x.verifiedAt || 'ja')}</td></tr>`)
   return `<!doctype html><html lang="sv"><head><meta charset="utf-8"><title>Strategisk SEO-rapport</title><style>
   @page{size:A4;margin:18mm}body{font-family:Arial,sans-serif;color:#17202a;font-size:11px;line-height:1.45}h1{font-size:25px;margin:0 0 4px}h2{font-size:16px;border-bottom:2px solid #1f6feb;padding-bottom:4px;margin-top:22px}h3{font-size:12px;margin-bottom:3px}.meta,.muted{color:#5f6b76}.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:16px 0}.card{border:1px solid #d8dee4;border-radius:6px;padding:9px}.value{font-size:19px;font-weight:bold;display:block}table{width:100%;border-collapse:collapse;margin:7px 0 12px}td{border-bottom:1px solid #e5e7eb;padding:6px 4px;vertical-align:top}td:first-child{width:34%;font-weight:bold}a{color:#0969da;word-break:break-word}.priority{background:#fff4cc;border-left:4px solid #d4a72c;padding:9px;margin:10px 0}.footer{margin-top:25px;border-top:1px solid #d8dee4;padding-top:8px;font-size:9px;color:#5f6b76}
   </style></head><body><h1>Strategisk SEO-rapport</h1><div class="meta">${escapeStrategicHtml(workspace?.label || workspace?.repoFullName || 'workspace')} · ${escapeStrategicHtml(formatDateTime(new Date().toISOString()))}</div>
@@ -8993,7 +9013,8 @@ function strategicReportHtml(workspace, review) {
   <h2>2. Tekniska och strukturella fynd</h2>${technicalRows}${duplicateRows}${orphanRows}
   <h2>3. Befintliga sidor att utreda</h2>${gapRows}
   <h2>4. Nya sidkandidater</h2>${newPageRows}${confirmedPageRows}
-  <h2>5. Nästa beslut</h2><p><b>${escapeStrategicHtml(review.next?.title || 'Ingen säker rekommendation')}</b></p><p>${escapeStrategicHtml(review.next?.reason || 'Väntar på bättre evidens.')}</p>
+  <h2>5. Bekräftade site-facts</h2>${knownFactRows}
+  <h2>6. Nästa beslut</h2><p><b>${escapeStrategicHtml(review.next?.title || 'Ingen säker rekommendation')}</b></p><p>${escapeStrategicHtml(review.next?.reason || 'Väntar på bättre evidens.')}</p>
   <div class="footer">Källor: intern crawl, Google Search Console och sparad keyword-review. Sökord från artikelsidor används inte som underlag för tjänsteändringar. Nya sidkandidater kräver separat sidbrief och validering.</div></body></html>`
 }
 
