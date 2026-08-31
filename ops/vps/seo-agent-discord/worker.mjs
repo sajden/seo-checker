@@ -4088,6 +4088,79 @@ async function runCodexAction(action) {
   return { ok: true, stdout: text.slice(-4000) }
 }
 
+async function prepareCodeActionForReview(action, workspace, targetChannelId) {
+  const actionId = String(action?.id || '')
+  if (!actionId || !workspace?.repoFullName) return { ok: false, error: 'missing_action_or_repo' }
+  const existing = state.codeActionResults?.[actionId]
+  if (existing?.status === 'review_ready' && existing.result?.deliveryBranch) {
+    return { ok: true, result: existing.result, reused: true }
+  }
+  if (state.codeActionRunning) return { ok: false, error: 'another_code_action_is_running' }
+  state.codeActionRunning = { actionId, startedAt: new Date().toISOString(), source: 'prepare_before_review' }
+  recordActionLedger(action, workspace, targetChannelId, 'coding_started', { source: 'prepare_before_review' })
+  saveState()
+  try {
+    const result = await runCodexAction({
+      ...action,
+      repoFullName: workspace.repoFullName,
+      branch: workspace.branch || action.branch || 'main'
+    })
+    if (!result?.requiresReview || !result.deliveryBranch || !result.reviewUrl) {
+      throw new Error('prepare_review_branch_missing')
+    }
+    const preparedResult = { ...result, repoFullName: workspace.repoFullName, preparedBeforeReview: true }
+    state.codeActionResults[actionId] = {
+      status: 'review_ready',
+      reviewReadyAt: new Date().toISOString(),
+      result: preparedResult
+    }
+    recordActionLedger(action, workspace, targetChannelId, 'review_ready', {
+      commit: result.commit || null,
+      diffStat: result.diffStat || null,
+      repoFullName: workspace.repoFullName,
+      deliveryBranch: result.deliveryBranch,
+      source: 'prepare_before_review'
+    })
+    saveState()
+    return { ok: true, result: preparedResult }
+  } catch (error) {
+    state.codeActionResults[actionId] = {
+      status: 'failed',
+      failedAt: new Date().toISOString(),
+      error: error?.message || String(error),
+      failure: classifyCodeActionFailure(error)
+    }
+    recordActionLedger(action, workspace, targetChannelId, 'failed', {
+      error: error?.message || String(error),
+      source: 'prepare_before_review'
+    })
+    clearActiveAction(actionId)
+    saveState()
+    return { ok: false, error: error?.message || String(error) }
+  } finally {
+    state.codeActionRunning = null
+    saveState()
+  }
+}
+
+function compactPreparedReviewMessage(action, workspace, review, result) {
+  const quality = result?.quality || {}
+  return [
+    `SEO-diff redo för granskning · ${workspace?.label || action.title || 'workspace'}`,
+    `Ändring: ${action.title || 'SEO-ändring'}`,
+    `URL: ${result?.reviewContext?.targetUrl || action.targetUrl || action.url || 'saknas'}`,
+    result?.reviewContext?.keyword ? `Keyword: ${result.reviewContext.keyword}` : '',
+    `Branch: ${result.deliveryBranch}`,
+    result.reviewUrl ? `Diff: ${result.reviewUrl}` : '',
+    result.commit ? `Commit: ${result.commit}` : '',
+    result.diffStat ? `Omfattning: ${String(result.diffStat).trim().replace(/\n/g, ' · ').slice(0, 500)}` : '',
+    quality.ok ? 'Build/kvalitetsgrind: godkänd' : 'Build/kvalitetsgrind: se resultatet ovan',
+    review?.why ? `Varför: ${String(review.why).slice(0, 280)}` : '',
+    '',
+    'Granska diffen. Approve lämnar branchen redo för din merge. Stop raderar branchen och ändringen går inte vidare.'
+  ].filter(Boolean).join('\n').slice(0, 1900)
+}
+
 function codeDeliveryLines(result = {}) {
   if (!result.requiresReview) return []
   const context = result.reviewContext || {}
@@ -4112,9 +4185,36 @@ function reviewReadyComponents() {
     type: 1,
     components: [
       { type: 2, custom_id: 'seo-review:approved', label: 'Godkänn ändringen', style: 3 },
-      { type: 2, custom_id: 'seo-review:rejected', label: 'Avvisa ändringen', style: 4 }
+      { type: 2, custom_id: 'seo-review:rejected', label: 'Stoppa och radera branch', style: 4 }
     ]
   }]
+}
+
+async function deletePreparedReviewBranch(result = {}) {
+  const branch = String(result.deliveryBranch || '').trim()
+  const repoDir = String(result.repoDir || '').trim()
+  const repoFullName = String(result.repoFullName || '').trim()
+  const baseBranch = String(result.baseBranch || 'main').trim() || 'main'
+  if (!/^seo-agent\/[A-Za-z0-9._/-]+$/.test(branch)) return { ok: false, error: 'invalid_review_branch' }
+  if (!/^\/[A-Za-z0-9._/-]+$/.test(repoDir) || !repoDir.includes('/seo-agent-workspaces/')) return { ok: false, error: 'invalid_review_repo_dir' }
+  if (!/^[^/]+\/[^/]+$/.test(repoFullName)) return { ok: false, error: 'invalid_review_repo' }
+  const { execFile } = await import('node:child_process')
+  const { promisify } = await import('node:util')
+  const exec = promisify(execFile)
+  const envWithPath = { ...process.env, PATH: `${process.env.HOME || '/home/deploy'}/.npm-global/bin:${process.env.HOME || '/home/deploy'}/.local/bin:${process.env.PATH || ''}` }
+  const run = (args) => exec('git', args, { cwd: repoDir, env: envWithPath, timeout: 2 * 60 * 1000, maxBuffer: 2 * 1024 * 1024 })
+  try {
+    await run(['checkout', baseBranch])
+    await run(['push', 'origin', '--delete', branch]).catch((error) => {
+      if (!/remote ref does not exist|remote branch .* not found/i.test(String(error?.stderr || error?.message || error))) throw error
+    })
+    await run(['branch', '-D', branch]).catch((error) => {
+      if (!/branch .* not found/i.test(String(error?.stderr || error?.message || error))) throw error
+    })
+    return { ok: true, branch }
+  } catch (error) {
+    return { ok: false, branch, error: String(error?.stderr || error?.message || error).trim().slice(0, 500) }
+  }
 }
 
 async function decideSeoReview(actionId, decision, targetChannelId, operatorId) {
@@ -4137,17 +4237,45 @@ async function decideSeoReview(actionId, decision, targetChannelId, operatorId) 
     keyword: posted.keyword || record.result?.reviewContext?.keyword || ''
   }
   if (!approved) {
+    const cleanup = record.result?.preparedBeforeReview
+      ? await deletePreparedReviewBranch(record.result)
+      : { ok: true, skipped: true }
     state.codeActionResults[actionId] = { ...record, status: 'rejected', rejectedAt: now, operatorId: operatorId || null }
     recordActionLedger(action, workspace, targetChannelId, 'rejected', {
       commit: record.result?.commit || null,
       deliveryBranch: record.result?.deliveryBranch || record.result?.branch || null,
+      cleanup: cleanup.ok ? 'review_branch_deleted' : `review_branch_delete_failed:${cleanup.error}`,
       source: 'discord_review'
     })
     clearActiveAction(actionId)
     saveState()
     return {
-      summary: 'Review-ändringen är avvisad och kommer inte att gå till produktion.',
-      publicMessage: `Avvisad: ${posted.title || actionId}. Branchen sparas som historik men kommer inte att publiceras.`,
+      summary: cleanup.ok
+        ? 'Stoppad. Review-branchen och den förberedda ändringen är raderade; main och produktion är orörda.'
+        : `Stoppad, men branchen kunde inte raderas automatiskt: ${cleanup.error}`,
+      publicMessage: cleanup.ok
+        ? `Stoppad och raderad: ${posted.title || actionId}. Main och production är orörda.`
+        : `Stoppad: ${posted.title || actionId}. Branchen finns kvar eftersom raderingen misslyckades: ${cleanup.error}`,
+      removeButtons: true
+    }
+  }
+
+  if (record.result?.preparedBeforeReview) {
+    state.codeActionResults[actionId] = { ...record, status: 'approved_for_merge', operatorApprovedAt: now, operatorId: operatorId || null }
+    recordActionLedger(action, workspace, targetChannelId, 'operator_approved', {
+      commit: record.result?.commit || null,
+      deliveryBranch: record.result?.deliveryBranch || null,
+      source: 'discord_review_branch_ready'
+    })
+    saveState()
+    return {
+      summary: `Godkänd. Branchen är redo för din merge: ${record.result.deliveryBranch}`,
+      publicMessage: [
+        `Godkänd för merge: ${posted.title || actionId}.`,
+        `Branch: ${record.result.deliveryBranch}`,
+        record.result.reviewUrl ? `Diff: ${record.result.reviewUrl}` : '',
+        'Main och production är fortfarande orörda tills du mergar branchen.'
+      ].filter(Boolean).join('\n'),
       removeButtons: true
     }
   }
@@ -4662,12 +4790,23 @@ async function postPendingActions({ workspace, targetChannelId }) {
       noActionReasons.push(`${enrichedAction.title || id}: inte ett beslutskort för kodändring`)
       continue
     }
-    const message = await buildActionCardMessage(enrichedAction, actions.workspacePolicy, workspace, review, targetChannelId)
+    let preparedResult = null
+    if (isCodeAction(enrichedAction) && workspace?.repoFullName) {
+      const prepared = await prepareCodeActionForReview(enrichedAction, workspace, targetChannelId)
+      if (!prepared.ok) {
+        noActionReasons.push(`${enrichedAction.title || id}: kunde inte förbereda diff (${prepared.error})`)
+        continue
+      }
+      preparedResult = prepared.result
+    }
+    const message = preparedResult
+      ? compactPreparedReviewMessage(enrichedAction, workspace, review, preparedResult)
+      : await buildActionCardMessage(enrichedAction, actions.workspacePolicy, workspace, review, targetChannelId)
     if (!message) {
       recordActionLedger(enrichedAction, workspace, targetChannelId, 'guarded', { systemKey, guard: 'codex_action_card_blocked', review })
       continue
     }
-    const posted = await sendDiscordMessage(message, targetChannelId, actionComponents(enrichedAction))
+    const posted = await sendDiscordMessage(message, targetChannelId, preparedResult ? reviewReadyComponents() : actionComponents(enrichedAction))
     const runtimePosted = await markActionPostedThroughRuntime({
       action: enrichedAction,
       workspace,
@@ -4799,7 +4938,7 @@ function activeActionStillOpen(active, items) {
   if (!actionId) return false
   const codeResult = state.codeActionResults?.[actionId]
   if (codeResult && ['completed', 'failed', 'rejected'].includes(String(codeResult.status))) return false
-  if (codeResult && ['review_ready', 'operator_approved', 'promotion_running'].includes(String(codeResult.status))) return true
+  if (codeResult && ['review_ready', 'operator_approved', 'approved_for_merge', 'promotion_running'].includes(String(codeResult.status))) return true
   const posted = state.postedActionIds?.[actionId]
   if (posted?.messageId && !posted?.handledAt) return true
   const item = items.find((candidate) => String(candidate?.id || '') === actionId)
