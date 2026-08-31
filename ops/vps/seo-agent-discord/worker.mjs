@@ -4871,6 +4871,7 @@ function syncSeoReviewCandidateQueue(workspace, targetChannelId, items) {
       keyword: action.keyword || old?.keyword || '',
       priority: action.priority || old?.priority || 'medium',
       priorityScore: action.priorityScore ?? action.score ?? old?.priorityScore ?? null,
+      learningWeight: Number(old?.learningWeight || 0),
       evidenceType: action.evidenceType || old?.evidenceType || '',
       evidenceRunAt: action.evidenceRunAt || old?.evidenceRunAt || '',
       status: old?.status === 'active' ? 'active' : 'queued',
@@ -4884,7 +4885,7 @@ function syncSeoReviewCandidateQueue(workspace, targetChannelId, items) {
     }
   }
   nextItems.sort((a, b) => {
-    const score = (item) => Number.isFinite(Number(item.priorityScore)) ? Number(item.priorityScore) : -Infinity
+    const score = (item) => (Number.isFinite(Number(item.priorityScore)) ? Number(item.priorityScore) : -Infinity) + Number(item.learningWeight || 0)
     return score(b) - score(a) || Date.parse(a.firstSeenAt || '') - Date.parse(b.firstSeenAt || '')
   })
   state.seoReviewQueue[key] = {
@@ -9175,12 +9176,36 @@ async function evaluateDueSeoExperiments({ workspace, targetChannelId, actions, 
         }
       })
     }
+    applyExperimentOutcomeToSeoQueue(outcomeRecord)
     if (['improved', 'declined', 'mixed'].includes(outcomeRecord.outcome)) rememberExperimentLesson(outcomeRecord)
     reviewed.push(outcomeRecord)
   }
   return {
     reviewed,
     dueCount: dueExperiments.length
+  }
+}
+
+function applyExperimentOutcomeToSeoQueue(outcome) {
+  const workspaceKey = String(outcome?.workspaceKey || '')
+  const targetUrl = normalizeStrategicUrl(outcome?.targetUrl || '')
+  const keyword = normalizeKeywordCluster(outcome?.keyword || '')
+  const delta = outcome?.outcome === 'improved' ? 20 : outcome?.outcome === 'declined' ? -20 : -5
+  for (const queue of Object.values(state.seoReviewQueue || {})) {
+    if (workspaceKey && !String(queue.workspaceId || '').includes(workspaceKey.split(':').pop())) continue
+    queue.items = (queue.items || []).map((item) => {
+      const sameAction = outcome.actionId && String(item.id) === String(outcome.actionId)
+      const sameTarget = targetUrl && normalizeStrategicUrl(item.targetUrl || '') === targetUrl
+      const sameKeyword = keyword && normalizeKeywordCluster(item.keyword || '') === keyword
+      if (!sameAction && !sameTarget && !sameKeyword) return item
+      return {
+        ...item,
+        learningWeight: Number(item.learningWeight || 0) + delta,
+        lastOutcome: outcome.outcome,
+        lastOutcomeAt: outcome.reviewedAt || new Date().toISOString()
+      }
+    })
+    queue.updatedAt = new Date().toISOString()
   }
 }
 
@@ -10125,8 +10150,26 @@ function recordActionLedger(action, workspace, targetChannelId, event, meta = {}
       ...(existing.events || [])
     ].slice(0, 20)
   }
+  updateSeoReviewQueueDecision(action.id || existing.actionId, event, workspace, targetChannelId)
   if (event === 'completed') rememberAgentLesson(`Completed ${key}${meta.commit ? ` in ${meta.commit}` : ''}`)
   if (event === 'failed') rememberAgentLesson(`Failed ${key}: ${String(meta.error || 'unknown').slice(0, 160)}`)
+}
+
+function updateSeoReviewQueueDecision(actionId, event, workspace, targetChannelId) {
+  const id = String(actionId || '')
+  if (!id || !state.seoReviewQueue) return
+  const key = seoReviewQueueKey(workspace, targetChannelId)
+  const queue = state.seoReviewQueue[key]
+  if (!queue?.items) return
+  const status = event === 'completed' ? 'completed'
+    : ['approved', 'operator_approved', 'coding_started'].includes(event) ? 'active'
+      : ['rejected', 'ignored', 'skipped', 'deprioritized', 'stopped', 'guarded'].includes(event) ? event
+        : null
+  if (!status) return
+  queue.items = queue.items.map((item) => String(item.id) === id
+    ? { ...item, status, decisionAt: new Date().toISOString(), decisionEvent: event }
+    : item)
+  queue.updatedAt = new Date().toISOString()
 }
 
 function ledgerStatusForEvent(event, fallback = 'seen') {
