@@ -4917,7 +4917,8 @@ async function syncContentReviewQueue() {
     contentAgentJson(newsletterAgentUrl, newsletterAgentToken, '/issues')
   ])
 
-  const articles = (articlePayload.actions || [])
+  const articleActions = Array.isArray(articlePayload.actions) ? articlePayload.actions : null
+  const articles = (articleActions || [])
     .filter((item) => item.actionType === 'review_article_draft' && item.status === 'pending')
     .sort((left, right) => Number(right.quality?.score || 0) - Number(left.quality?.score || 0)
       || Date.parse(right.updatedAt || right.createdAt || 0) - Date.parse(left.updatedAt || left.createdAt || 0))
@@ -4928,6 +4929,35 @@ async function syncContentReviewQueue() {
   const newsletterPublish = (newsletterPayload.issues || [])
     .filter((item) => item.status === 'approved' && item.publish?.status !== 'published')
     .sort((left, right) => Date.parse(right.approvedAt || 0) - Date.parse(left.approvedAt || 0))[0]
+
+  // Discord messages are persistent, while the article-agent action list is
+  // the source of truth. Remove cards whose action is no longer pending so a
+  // rejected or already-decided draft cannot remain in the review channel or
+  // appear in the active review queue forever.
+  if (articleActions) {
+    const pendingArticleIds = new Set(articles.map((item) => String(item.id || '')))
+    for (const [cardId, card] of Object.entries(state.contentReviewCards)) {
+      if (card?.type !== 'article' && card?.type !== 'article_publish') continue
+      const actionRef = state.contentActionRefs?.[cardId]
+      const articleId = String(actionRef?.id || cardId)
+      if (pendingArticleIds.has(articleId)) continue
+
+      if (card.messageId && card.channelId) {
+        await discordJson(`/channels/${card.channelId}/messages/${card.messageId}`, {
+          method: 'DELETE'
+        }).catch((error) => log('stale_content_review_delete_failed', {
+          cardId,
+          messageId: card.messageId,
+          error: error?.message || String(error)
+        }))
+      }
+      if (card.messageId) delete state.messageToAction?.[card.messageId]
+      delete state.contentActionRefs?.[cardId]
+      delete state.contentReviewCards[cardId]
+      log('stale_content_review_removed', { cardId, articleId, previousStatus: card.status || 'posted' })
+    }
+    saveState()
+  }
 
   for (const article of articles) await postContentReviewCard('article', article)
   if (newsletter) await postContentReviewCard('newsletter', newsletter)
