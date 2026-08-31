@@ -93,6 +93,7 @@ const technicalCheckPageLimit = Number(env.SEO_AGENT_TECHNICAL_CHECK_PAGE_LIMIT 
 const codexCli = env.CODEX_CLI || `${env.HOME || '/home/deploy'}/.npm-global/bin/codex`
 const stateDir = '/home/deploy/seo-agent-discord/state'
 const strategicStopWords = new Set(['konsult', 'företag', 'stockholm', 'hjälp', 'med', 'för', 'och', 'till', 'från', 'utan', 'samt', 'the', 'with', 'for'])
+const strategicGeographicTerms = new Set(['stockholm', 'täby', 'skövde', 'sundsvall', 'uppsala', 'göteborg', 'malmö', 'sverige', 'bromma', 'solna', 'nacka', 'danderyd'])
 const statePath = join(stateDir, 'state.json')
 const stateLockPath = `${statePath}.lock`
 const agentSpecFiles = ['AGENTS.md', 'SKILLS.md', 'TOOLS.md', 'POLICIES.md', 'MEMORY.md']
@@ -8754,6 +8755,7 @@ function buildStrategicSiteReview({ workspace, batch, keywordReview = {}, gscRow
     .map((page) => page.url)
   const gaps = (Array.isArray(keywordReview.opportunities) ? keywordReview.opportunities : [])
     .filter((item) => ['missing', 'weak'].includes(String(item?.status || '')))
+    .filter((item) => !/\/artiklar(?:\/|$)/i.test(String(item?.targetUrl || '')))
     .slice(0, 10)
     .map((item) => ({ query: item.query, targetUrl: item.targetUrl, status: item.status, gscMatched: item.gscMatched === true }))
   const newPageCandidates = deriveStrategicNewPageCandidates(gscRows, scopedPages, host)
@@ -8784,8 +8786,10 @@ function deriveStrategicNewPageCandidates(gscRows, pages, host) {
     const path = safeUrlPath(page, host)
     if (!path || /\/artiklar(?:\/|$)/.test(path)) continue
     const terms = query.split(/\s+/).filter((term) => term.length >= 5 && !strategicStopWords.has(term))
+    const geographicTerms = terms.filter((term) => strategicGeographicTerms.has(term))
     const missingTerms = terms.filter((term) => !path.toLowerCase().includes(term))
     if (missingTerms.length < 1 || terms.length < 2) continue
+    if (geographicTerms.length && missingTerms.filter((term) => !strategicGeographicTerms.has(term)).length < 2) continue
     const candidatePath = `${path.replace(/\/$/, '')}/${slugifyStrategicTerm(missingTerms.slice(-2).join('-'))}`
     if (knownPaths.has(candidatePath) || candidates.has(candidatePath)) continue
     candidates.set(candidatePath, { path: candidatePath, query, sourceUrl: page, impressions: Number(row.impressions || 0), position: Number(row.position || 0), reason: 'GSC-query visar en specifik underintention som inte motsvarar en befintlig URL.' })
