@@ -47,6 +47,7 @@ const noVncAuthPassword = env.SEO_AGENT_NOVNC_AUTH_PASSWORD || ''
 const pollMs = Number(env.SEO_AGENT_POLL_MS || '60000')
 const dailyHourUtc = Number(env.SEO_AGENT_DAILY_HOUR_UTC || '4')
 const runCheckEveryMs = Number(env.SEO_AGENT_RUN_CHECK_MS || '900000')
+const workspaceSeoRunEveryMs = Number(env.SEO_AGENT_WORKSPACE_RUN_MS || String(4 * 60 * 60 * 1000))
 const integrationDoctorEveryMs = Number(env.SEO_AGENT_INTEGRATION_DOCTOR_MS || String(12 * 60 * 60 * 1000))
 const gscIssueCheckEveryMs = Number(env.SEO_AGENT_GSC_ISSUE_CHECK_MS || String(6 * 60 * 60 * 1000))
 const repoCommitSyncEveryMs = Number(env.SEO_AGENT_REPO_COMMIT_SYNC_MS || String(15 * 60 * 1000))
@@ -888,12 +889,15 @@ async function ensureDailyRunsForWorkspaces(workspaces) {
       await sendOncePerDay(`readiness-setup:${workspace.id}:${setupSignature}`, targetChannelId, formatReadinessMessage(workspace, readiness))
       continue
     }
-    if (readiness.lastRunDate === today) continue
-    const runStateKey = `${workspace.id}:${today}`
-    const previousRun = state.workspaceRunDates?.[runStateKey]
+    const recentRuns = Object.entries(state.workspaceRunDates || {})
+      .filter(([key]) => key.startsWith(`${workspace.id}:`))
+      .map(([, value]) => value)
+      .filter((value) => value?.at)
+      .sort((a, b) => Date.parse(b.at || '') - Date.parse(a.at || ''))
+    const previousRun = recentRuns[0]
     const previousRunAt = Date.parse(previousRun?.at || '')
-    if (previousRun?.status === 'started' && previousRun.runId) continue
-    if (previousRun?.status === 'failed' && Number.isFinite(previousRunAt) && Date.now() - previousRunAt < 15 * 60 * 1000) continue
+    if (Number.isFinite(previousRunAt) && Date.now() - previousRunAt < workspaceSeoRunEveryMs) continue
+    const runStateKey = `${workspace.id}:${now.toISOString().slice(0, 13)}`
     try {
       const response = await fetchPlatformJson('/api/platform/runs', {
         method: 'POST',
@@ -6172,6 +6176,7 @@ async function fetchRuntimeTickAdvice() {
         dailyHourUtc,
         intervals: {
           runCheckMs: runCheckEveryMs,
+          workspaceSeoRunMs: workspaceSeoRunEveryMs,
           integrationDoctorMs: integrationDoctorEveryMs,
           gscIssueCheckMs: gscIssueCheckEveryMs,
           repoCommitSyncMs: repoCommitSyncEveryMs,
