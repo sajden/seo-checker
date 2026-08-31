@@ -405,7 +405,7 @@ async function tick() {
 
 async function reconcileInterruptedPromotions(workspaces) {
   const interrupted = Object.entries(state.codeActionResults || {})
-    .filter(([, record]) => ['promotion_running', 'operator_approved'].includes(String(record?.status || '')))
+    .filter(([, record]) => ['promotion_running', 'operator_approved', 'approved_for_merge'].includes(String(record?.status || '')))
   if (!interrupted.length) return
   const { execFile } = await import('node:child_process')
   const { promisify } = await import('node:util')
