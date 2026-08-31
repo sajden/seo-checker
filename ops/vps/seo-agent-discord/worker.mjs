@@ -92,6 +92,7 @@ const technicalCheckEveryMs = Number(env.SEO_AGENT_TECHNICAL_CHECK_MS || String(
 const technicalCheckPageLimit = Number(env.SEO_AGENT_TECHNICAL_CHECK_PAGE_LIMIT || '12')
 const codexCli = env.CODEX_CLI || `${env.HOME || '/home/deploy'}/.npm-global/bin/codex`
 const stateDir = '/home/deploy/seo-agent-discord/state'
+const strategicStopWords = new Set(['konsult', 'företag', 'stockholm', 'hjälp', 'med', 'för', 'och', 'till', 'från', 'utan', 'samt', 'the', 'with', 'for'])
 const statePath = join(stateDir, 'state.json')
 const stateLockPath = `${statePath}.lock`
 const agentSpecFiles = ['AGENTS.md', 'SKILLS.md', 'TOOLS.md', 'POLICIES.md', 'MEMORY.md']
@@ -8791,8 +8792,6 @@ function deriveStrategicNewPageCandidates(gscRows, pages, host) {
   }
   return [...candidates.values()].sort((a, b) => b.impressions - a.impressions).slice(0, 5)
 }
-
-const strategicStopWords = new Set(['konsult', 'företag', 'stockholm', 'hjälp', 'med', 'för', 'och', 'till', 'från', 'utan', 'samt', 'the', 'with', 'for'])
 
 function strategicPageType(url, host) {
   const path = safeUrlPath(url, host)
