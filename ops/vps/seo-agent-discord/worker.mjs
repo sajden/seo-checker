@@ -4857,6 +4857,8 @@ function syncSeoReviewCandidateQueue(workspace, targetChannelId, items) {
   const key = seoReviewQueueKey(workspace, targetChannelId)
   const previous = state.seoReviewQueue[key] || { items: [] }
   const previousById = new Map((previous.items || []).map((item) => [String(item.id), item]))
+  const ledgerByActionId = new Map(Object.values(state.actionLedger || {}).map((record) => [String(record.actionId || ''), record]))
+  const resultByActionId = state.codeActionResults || {}
   const pendingIds = new Set()
   const nextItems = []
   for (const action of Array.isArray(items) ? items : []) {
@@ -4864,6 +4866,10 @@ function syncSeoReviewCandidateQueue(workspace, targetChannelId, items) {
     if (!id || action?.status !== 'pending') continue
     pendingIds.add(id)
     const old = previousById.get(id)
+    const ledger = ledgerByActionId.get(id)
+    const result = resultByActionId[id]
+    const terminalStatus = queueTerminalStatus(ledger?.status, result?.status)
+    const verified = Boolean(action.evidenceType || action.evidence || action.evidenceSource || action.evidenceRunAt || action.keywordMetrics)
     nextItems.push({
       id,
       title: action.title || old?.title || 'SEO-förslag',
@@ -4874,14 +4880,14 @@ function syncSeoReviewCandidateQueue(workspace, targetChannelId, items) {
       learningWeight: Number(old?.learningWeight || 0),
       evidenceType: action.evidenceType || old?.evidenceType || '',
       evidenceRunAt: action.evidenceRunAt || old?.evidenceRunAt || '',
-      status: old?.status === 'active' ? 'active' : 'queued',
+      status: terminalStatus || (old?.status === 'active' ? 'active' : (verified ? 'queued' : 'discovered')),
       firstSeenAt: old?.firstSeenAt || new Date().toISOString(),
       lastSeenAt: new Date().toISOString()
     })
   }
   for (const old of previous.items || []) {
     if (!pendingIds.has(String(old.id)) && ['queued', 'active'].includes(String(old.status || ''))) {
-      nextItems.push({ ...old, status: 'not_in_latest_batch' })
+      nextItems.push({ ...old, status: 'stale' })
     }
   }
   nextItems.sort((a, b) => {
@@ -4897,11 +4903,20 @@ function syncSeoReviewCandidateQueue(workspace, targetChannelId, items) {
   }
 }
 
+function queueTerminalStatus(ledgerStatus, resultStatus) {
+  const result = String(resultStatus || '')
+  if (['completed', 'deployment_failed'].includes(result)) return result === 'completed' ? 'completed' : 'failed'
+  const ledger = String(ledgerStatus || '')
+  if (['guarded', 'ignored', 'deprioritized', 'rejected', 'stopped'].includes(ledger)) return ledger
+  return null
+}
+
 function formatSeoReviewQueueMessage(workspace, targetChannelId) {
   const key = seoReviewQueueKey(workspace, targetChannelId)
   const queue = state.seoReviewQueue?.[key]
   const active = state.activeActionByWorkspace?.[key]
   const items = (queue?.items || []).filter((item) => ['queued', 'active'].includes(String(item.status || '')))
+  const discovered = (queue?.items || []).filter((item) => item.status === 'discovered')
   if (!items.length) return 'SEO-kön är tom för detta workspace. Agenten väntar på nya verifierade kandidater.'
   const lines = items.slice(0, 10).map((item, index) => {
     const evidence = item.evidenceType ? ` · evidens: ${item.evidenceType}` : ''
@@ -4910,7 +4925,7 @@ function formatSeoReviewQueueMessage(workspace, targetChannelId) {
   })
   return [
     `SEO-kö för ${queue.workspaceLabel || workspace?.label || 'workspace'}`,
-    `Kandidater i kön: ${items.length}`,
+    `Verifierade kandidater i kön: ${items.length}${discovered.length ? ` · ${discovered.length} upptäckta väntar på evidensgrind` : ''}`,
     '',
     lines.join('\n'),
     '',
