@@ -18,6 +18,7 @@ import { exactTargetFromRecords, validateExactInspection } from './gsc-exact-url
 import { buildRankingOpportunities, rankingEngineVersion, rankingHypothesisForOpportunity } from './ranking-engine.mjs'
 import { isIndexingActionIdentity } from './action-type-policy.mjs'
 import { classifySeoTrack, trackContract } from './seo-track-policy.mjs'
+import { validateSeoDiff } from './seo-diff-policy.mjs'
 
 const env = loadEnv([
   '/home/deploy/.hermes/.env',
@@ -3985,6 +3986,16 @@ async function recoverQueuedActionAlreadyCommitted(entry, workspace, targetChann
     return null
   })
   if (!commit?.commit) return false
+  const contract = validateRecoveredSeoAgentCommit(commit, entry)
+  if (!contract.ok) {
+    log('approved_queue_existing_action_id_commit_rejected', {
+      actionId: entry.id,
+      repoFullName,
+      commit: commit.commit,
+      reason: contract.reason
+    })
+    return false
+  }
   const workspaceLabel = workspace?.label || entry.workspaceSlug || repoFullName
   const completedResult = {
     commit: commit.commit,
@@ -4045,6 +4056,16 @@ async function recoverActionAlreadyCommittedBeforeCard(action, workspace, target
     return null
   })
   if (!commit?.commit) return false
+  const contract = validateRecoveredSeoAgentCommit(commit, action)
+  if (!contract.ok) {
+    log('action_card_existing_action_id_commit_rejected', {
+      actionId,
+      repoFullName,
+      commit: commit.commit,
+      reason: contract.reason
+    })
+    return false
+  }
   const completedResult = {
     commit: commit.commit,
     fullCommit: commit.fullCommit || commit.commit,
@@ -8532,6 +8553,8 @@ async function findSeoAgentCommitForAction(actionId, repoFullName, branch) {
     if (!body.includes(needle) && !record.includes(needle)) continue
     const shortResult = await exec('git', ['rev-parse', '--short', fullCommit], { cwd: repoDir, env: envWithPath, timeout: 60 * 1000, maxBuffer: 1024 * 1024 })
     const statResult = await exec('git', ['show', '--stat', '--oneline', '--format=', fullCommit], { cwd: repoDir, env: envWithPath, timeout: 60 * 1000, maxBuffer: 4 * 1024 * 1024 })
+    const diffResult = await exec('git', ['diff', `${fullCommit}^`, fullCommit, '--', '.'], { cwd: repoDir, env: envWithPath, timeout: 60 * 1000, maxBuffer: 10 * 1024 * 1024 })
+    const filesResult = await exec('git', ['diff', '--name-only', `${fullCommit}^`, fullCommit, '--', '.'], { cwd: repoDir, env: envWithPath, timeout: 60 * 1000, maxBuffer: 2 * 1024 * 1024 })
     const refsResult = await exec('git', [
       'for-each-ref',
       '--contains',
@@ -8545,10 +8568,20 @@ async function findSeoAgentCommitForAction(actionId, repoFullName, branch) {
       committedAt: ts ? new Date(Number(ts) * 1000).toISOString() : '',
       subject: subject || '',
       diffStat: String(statResult.stdout || '').trim(),
+      diff: String(diffResult.stdout || ''),
+      changedFiles: String(filesResult.stdout || '').split('\n').map((file) => file.trim()).filter(Boolean),
       remoteRefs: String(refsResult.stdout || '').split('\n').map((ref) => ref.trim()).filter(Boolean)
     }
   }
   return null
+}
+
+function validateRecoveredSeoAgentCommit(commit, action) {
+  return validateSeoDiff({
+    action,
+    diff: commit?.diff || '',
+    changedFiles: commit?.changedFiles || []
+  })
 }
 
 async function findRecentSeoAgentCommit(repoFullName, branch, sinceMs) {
