@@ -63,7 +63,7 @@ function scoreRow(row, options = {}) {
   return Math.round(positionPotential + impressionValue + ctrValue + businessValue + trendValue)
 }
 
-function compactRow(row) {
+function compactRow(row, options = {}) {
   const page = row?.page || row?.keys?.[0]
   const query = row?.query || row?.keys?.[1]
   if (!page || !query) return null
@@ -79,21 +79,30 @@ function compactRow(row) {
     position,
     intent: intentForQuery(query),
     actionType: actionTypeForRow(row),
-    score: scoreRow(row),
+    score: scoreRow(row, options),
     reason: position <= 10
       ? 'Sidan ligger redan på sida 1 men tappar klick mot förväntad CTR.'
       : 'Sidan har verifierad synlighet men ligger på position 8–30 och kan förbättras.'
   }
 }
 
-export function buildRankingOpportunities({ rows = [], opportunities = [], minImpressions = 10, max = 20 } = {}) {
+export function buildRankingOpportunities({ rows = [], opportunities = [], trends = [], analyticsPages = [], minImpressions = 10, max = 20 } = {}) {
   const source = [
     ...(Array.isArray(rows) ? rows : []),
     ...(Array.isArray(opportunities) ? opportunities : [])
   ]
   const unique = new Map()
+  const trendByQuery = new Map((Array.isArray(trends) ? trends : []).map((item) => [normalizeText(item.query), item]))
+  const analyticsByPage = new Map((Array.isArray(analyticsPages) ? analyticsPages : []).map((item) => [normalizeUrl(item.pagePath || item.url), item]))
   for (const item of source) {
-    const row = compactRow(item)
+    const query = item?.query || item?.keys?.[1]
+    const page = item?.page || item?.keys?.[0]
+    const trend = trendByQuery.get(normalizeText(query))
+    const analytics = analyticsByPage.get(normalizeUrl(page))
+    const row = compactRow(item, {
+      trendValue: trend && number(trend.impressionsDelta) > 0 ? 5 : trend && number(trend.positionDelta) < 0 ? 8 : 0,
+      businessValue: analytics && number(analytics.conversions) > 0 ? 6 : 0
+    })
     if (!row || row.impressions < minImpressions) continue
     if (row.position < 4 || row.position > 30) continue
     const key = `${normalizeUrl(row.page)}|${normalizeText(row.query)}`

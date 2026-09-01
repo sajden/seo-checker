@@ -85,6 +85,28 @@ function compactCrawlSignal(item) {
   return { url: item.url, issues }
 }
 
+function compactAnalyticsPage(item) {
+  if (!item?.pagePath && !item?.url) return null
+  return {
+    pagePath: item.pagePath || item.url,
+    views: Number(item.views || 0),
+    reads30s: Number(item.reads30s || 0),
+    conversions: Number(item.conversions || 0),
+    readRate: Number(item.readRate || 0),
+    scroll50Rate: Number(item.scroll50Rate || 0)
+  }
+}
+
+function compactTrend(item) {
+  if (!item?.query) return null
+  return {
+    query: item.query,
+    impressionsDelta: Number(item.impressionsDelta || 0),
+    ctrDelta: Number(item.ctrDelta || 0),
+    positionDelta: Number(item.positionDelta || 0)
+  }
+}
+
 export function buildOpportunityEvidenceContext(batch) {
   const details = batch?.lastRunDetails || {}
   const gscRows = (Array.isArray(details.gscRows) ? details.gscRows : [])
@@ -108,6 +130,8 @@ export function buildOpportunityEvidenceContext(batch) {
   const rankingOpportunities = buildRankingOpportunities({
     rows: gscRows,
     opportunities: gscOpportunities,
+    trends: (Array.isArray(details.seoMemory?.gscTrends) ? details.seoMemory.gscTrends : []).map(compactTrend).filter(Boolean),
+    analyticsPages: (Array.isArray(details.analyticsSummary?.pages) ? details.analyticsSummary.pages : []).map(compactAnalyticsPage).filter(Boolean),
     minImpressions: 10,
     max: 20
   }).map((item) => ({ ...item, hypothesis: rankingHypothesisForOpportunity(item) }))
@@ -118,6 +142,17 @@ export function buildOpportunityEvidenceContext(batch) {
     gscOpportunities,
     pageOpportunities,
     crawlSignals,
+    analyticsSummary: details.analyticsSummary ? {
+      available: Boolean(details.analyticsSummary.available),
+      days: Number(details.analyticsSummary.days || 0),
+      totals: details.analyticsSummary.totals || null,
+      pages: (details.analyticsSummary.pages || []).map(compactAnalyticsPage).filter(Boolean).slice(0, 40)
+    } : null,
+    seoMemory: details.seoMemory ? {
+      generatedAt: details.seoMemory.generatedAt || null,
+      gscTrends: (details.seoMemory.gscTrends || []).map(compactTrend).filter(Boolean).slice(0, 40),
+      serpTrends: (details.seoMemory.serpTrends || []).slice(0, 40)
+    } : null,
     rankingEngine: rankingEngineVersion(),
     rankingOpportunities,
     keywordPlanner: [],
