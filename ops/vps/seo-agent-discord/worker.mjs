@@ -4844,16 +4844,26 @@ async function postPendingActions({ workspace, targetChannelId }) {
     break
   }
   if (isSebcastwallWorkspace(workspace) && !state.activeActionByWorkspace[activeKey]) {
+    const dailyReportKey = `ranking-review:${activeKey}:${new Date().toISOString().slice(0, 10)}`
     const reportKey = `seo-no-action:${activeKey}:${new Date().toISOString().slice(0, 10)}`
-    await sendOncePerDay(reportKey, targetChannelId, [
-      'SEO Monitor: ingen säker kodåtgärd hittades i senaste körningen.',
-      `Kandidater granskade: ${pending.length}.`,
-      'Endast färsk och spårbar GSC-, Keyword Planner- eller crawl-evidens får bli ett actionkort.',
-      noActionReasons.length
-        ? `Huvudskäl:\n${[...new Set(noActionReasons)].slice(0, 8).map((reason) => `- ${humanNoActionReason(reason)}`).join('\n')}`
-        : 'Inga kandidater återstod efter tidigare beslut och cooldowns.',
-      'Detta är en statusrapport, inte en föreslagen kodändring.'
-    ].join('\n'))
+    // The daily strategic report already contains the no-action explanation.
+    // Do not send a second wall of repeated URLs/text in the same channel.
+    if (!state.onceMessages?.[dailyReportKey]) {
+      await sendOncePerDay(reportKey, targetChannelId, [
+        'SEO Monitor: ingen säker kodåtgärd hittades i senaste körningen.',
+        `Kandidater granskade: ${pending.length}.`,
+        'Endast färsk och spårbar GSC-, Keyword Planner- eller crawl-evidens får bli ett actionkort.',
+        noActionReasons.length
+          ? `Huvudskäl:\n${[...new Set(noActionReasons)].slice(0, 8).map((reason) => `- ${humanNoActionReason(reason)}`).join('\n')}`
+          : 'Inga kandidater återstod efter tidigare beslut och cooldowns.',
+        'Detta är en statusrapport, inte en föreslagen kodändring.'
+      ].join('\n'))
+    } else {
+      logThrottled(`seo-no-action-suppressed:${activeKey}`, 6 * 60 * 60 * 1000, 'seo_no_action_report_suppressed', {
+        workspace: workspace?.label || workspace?.id || null,
+        reason: 'daily_strategic_report_already_sent'
+      })
+    }
   }
 }
 
@@ -8840,6 +8850,7 @@ async function buildRankingReview(workspace, targetChannelId) {
     batchRunAt,
     gscRowCount: Number(batchSummary.gscRawRows || batchSummary.gscRows || batch?.lastRunDetails?.gscRawRows || 0),
     crawlPageCount: Number(batchSummary.crawlPagesChecked || batch?.lastRunDetails?.crawlPagesChecked || 0),
+    serpComparisonCount: Number(batchSummary.serpComparisons || batch?.lastRunDetails?.serpComparisons?.length || 0),
     experimentCount: experiments.length,
     pendingFollowups: pendingFollowups.slice(0, 5).map((item) => ({
       id: item.id,
@@ -9073,7 +9084,7 @@ function formatRankingReviewMessage(workspace, review) {
     `Daglig SEO-review för ${workspace?.label || workspace?.id || 'workspace'}`,
     next.status === 'research_candidate' ? '**Status: research-kandidat — inget jobb, ingen branch och ingen kodändring har skapats.**' : '',
     `Keyword-map: ${review.keywordMapCount} mål · Historiska experiment: ${review.experimentCount} · Live-actions: ${review.liveActionCount} (${review.eligibleLiveActionCount} godkända av quality gate)`,
-    review.batchRunAt ? `Dataunderlag: SEO-körning ${formatDateTime(review.batchRunAt)} · GSC ${review.gscRowCount} rader · crawl ${review.crawlPageCount} sidor.` : 'Dataunderlag: ingen färsk SEO-batch kunde verifieras.',
+    review.batchRunAt ? `Dataunderlag: SEO-körning ${formatDateTime(review.batchRunAt)} · GSC ${review.gscRowCount} rader · crawl ${review.crawlPageCount} sidor · SERP ${review.serpComparisonCount || 0} jämförelser.` : 'Dataunderlag: ingen färsk SEO-batch kunde verifieras.',
     review.pendingFollowups?.length ? `Uppföljning redo: ${review.pendingFollowups.map((item) => `${item.keyword || item.title}${item.commit ? ` (${item.commit})` : ''}`).join(', ')}` : '',
     outcomes.length ? `Experiment-utvärdering: ${outcomes.map((item) => `${item.outcome}: ${item.keyword || item.targetUrl}`).join(' | ')}` : '',
     ...strategicLines,
