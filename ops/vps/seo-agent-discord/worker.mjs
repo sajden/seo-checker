@@ -8848,7 +8848,7 @@ function ensureAutonomousAgentState() {
 }
 
 function reopenRankingActionsAfterPolicyFix() {
-  const migrationVersion = 'ranking-evidence-policy-v4'
+  const migrationVersion = 'ranking-evidence-policy-v5'
   if (state.rankingPolicyMigrationVersion === migrationVersion) return
   const now = new Date().toISOString()
   let reopened = 0
@@ -8860,7 +8860,8 @@ function reopenRankingActionsAfterPolicyFix() {
     const oldPolicyGuard = (ledger?.events || []).some((event) => [
       'workspace_avoid_terms_without_preferred_context',
       'indexing_check_is_internal',
-      'autonomous_or_internal_not_decision_card'
+      'autonomous_or_internal_not_decision_card',
+      'sebcastwall_m365_support_only'
     ].includes(String(event?.reason || '')))
     const failedDiffGate = Object.values(state.codeActionResults || {}).some((result) =>
       String(result?.status || '') === 'failed'
@@ -10111,8 +10112,10 @@ function shouldPostActionCard(action, workspace, targetChannelId) {
     if (!isMeasuredRanking && /\b(abicart|klarna|fortnox|fortknox|visma|business-central|business central|mailchimp|monday|zendesk|account-status|help-outline)\b/.test(text)) {
       return { ok: false, reason: 'sebcastwall_noise_keyword' }
     }
-    const focus = sebcastwallPrimaryFocusPolicy(action)
-    if (!focus.ok) return focus
+    if (!isMeasuredRanking) {
+      const focus = sebcastwallPrimaryFocusPolicy(action)
+      if (!focus.ok) return focus
+    }
   }
   if (action.keyword) {
     const words = String(action.keyword).trim().split(/\s+/).filter(Boolean).length
@@ -10187,7 +10190,7 @@ function reviewActionForPosting(action, workspace, targetChannelId, workspacePol
     score -= 40
     negatives.push(`drar mot lågprioriterat spår: ${avoidedHits.slice(0, 3).join(', ')}`)
   }
-  if (isSebcastwallWorkspace(workspace, profile)) {
+  if (isSebcastwallWorkspace(workspace, profile) && !isMeasuredRanking) {
     const focus = sebcastwallPrimaryFocusPolicy(action)
     if (!focus.ok) {
       score -= 55
