@@ -1995,12 +1995,14 @@ function autonomousCandidateAlreadyQueuedOrRunning(action, workspace, targetChan
   if (state.codeActionRunning?.actionId === actionId) return true
   if (state.approvedCodeActionQueue?.[actionId]) return true
   const workspaceKey = activeWorkspaceActionKey(workspace, targetChannelId)
+  const candidateTarget = action?.targetUrl || action?.url || ''
   for (const queued of Object.values(state.approvedCodeActionQueue || {})) {
     if (!queued) continue
     if (queued.id === actionId) return true
-    if ((queued.channelId || '') === targetChannelId) return true
-    const queuedRepo = String(queued.repoFullName || '')
-    if (queuedRepo && queuedRepo === String(workspace?.repoFullName || '')) return true
+    // Several different target URLs may wait in the queue. Only prevent the
+    // same target from being queued twice; the runner still executes one
+    // branch at a time through processQueuedApprovedCodeAction().
+    if (candidateTarget && sameSeoUrl(queued.targetUrl || queued.url || '', candidateTarget)) return true
   }
   if (state.codeActionRunning?.workspaceKey === workspaceKey) return true
   return Object.values(state.actionLedger || {}).some((record) => {
