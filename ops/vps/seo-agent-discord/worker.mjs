@@ -550,7 +550,16 @@ async function maybeStartDailySeoRuns() {
 async function listWorkspaces() {
   try {
     const payload = await fetchPlatformJson('/api/platform/seo-monitor/workspaces')
-    return Array.isArray(payload.workspaces) ? payload.workspaces : []
+    const workspaces = Array.isArray(payload.workspaces) ? payload.workspaces : []
+    if (workspaces.length) return workspaces
+    const fallback = configuredWorkspaceFallbacks()
+    if (!fallback.length) return []
+    logThrottled('workspace_list_empty_fallback', 15 * 60 * 1000, 'workspace_list_fallback', {
+      reason: 'platform_returned_empty_workspace_list',
+      workspaceCount: fallback.length,
+      source: 'SEO_AGENT_WORKSPACE_CHANNELS'
+    })
+    return fallback
   } catch (error) {
     const fallback = configuredWorkspaceFallbacks()
     if (!fallback.length) throw error
