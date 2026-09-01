@@ -2077,14 +2077,23 @@ function codeActionLedgerCooldownBlocks(action, cooldownMs = 24 * 60 * 60 * 1000
   for (const record of Object.values(state.actionLedger || {})) {
     if (record?.actionId !== actionId) continue
     const events = Array.isArray(record.events) ? record.events : []
+    const latestReopenAt = events.reduce((latest, event) => {
+      if (!String(event?.event || '').startsWith('reopened_after_ranking_policy_fix')) return latest
+      const at = Date.parse(event?.at || '')
+      return at > latest ? at : latest
+    }, 0)
     for (const event of events) {
       const name = String(event?.event || '')
       if (!['completed', 'deprioritized', 'failed', 'reverted'].includes(name)) continue
       const at = Date.parse(event?.at || '')
+      if (latestReopenAt && at <= latestReopenAt) continue
       if (at && now - at < cooldownMs) return true
     }
     const lastEventAt = Date.parse(record.lastEventAt || '')
-    if (lastEventAt && now - lastEventAt < cooldownMs && ['completed', 'failed', 'deprioritized', 'reverted'].includes(String(record.status || ''))) {
+    if ((!latestReopenAt || lastEventAt > latestReopenAt)
+      && lastEventAt
+      && now - lastEventAt < cooldownMs
+      && ['completed', 'failed', 'deprioritized', 'reverted'].includes(String(record.status || ''))) {
       return true
     }
   }
