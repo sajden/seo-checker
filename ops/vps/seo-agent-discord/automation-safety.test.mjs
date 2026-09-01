@@ -306,6 +306,14 @@ test('ranking reviews distinguish research ideas from actual code work', () => {
   assert.doesNotMatch(workerSource, /if \(review\.weakLiveQueue && review\.next\?\.type === 'keyword_gap'\) return true/)
 })
 
+test('verified ranking actions outrank autonomous Codex deprioritization', () => {
+  assert.match(workerSource, /function isVerifiedRankingAction\(action\)/)
+  assert.match(workerSource, /function isAutonomousRankingDeprioritization\(action, event\)/)
+  assert.match(workerSource, /isAutonomousCodexSafe\(codexBrief, enrichedAction\)/)
+  assert.match(workerSource, /isVerifiedRankingAction\(action\) && codexBrief\.recommendation === 'Deprioritize'/)
+  assert.match(workerSource, /ranking-evidence-policy-v7/)
+})
+
 test('Swedish SEO copy does not preserve awkward English grammar for exact match', () => {
   assert.match(runnerSource, /använder inte engelsk plural/)
   assert.match(runnerSource, /Do not preserve English plural forms/)

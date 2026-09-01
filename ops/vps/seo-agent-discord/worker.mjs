@@ -2085,11 +2085,14 @@ function codeActionLedgerCooldownBlocks(action, cooldownMs = 24 * 60 * 60 * 1000
     for (const event of events) {
       const name = String(event?.event || '')
       if (!['completed', 'deprioritized', 'failed', 'reverted'].includes(name)) continue
+      if (isAutonomousRankingDeprioritization(action, event)) continue
       const at = Date.parse(event?.at || '')
       if (latestReopenAt && at <= latestReopenAt) continue
       if (at && now - at < cooldownMs) return true
     }
     const lastEventAt = Date.parse(record.lastEventAt || '')
+    const latestEvent = events[0] || null
+    if (isAutonomousRankingDeprioritization(action, latestEvent)) continue
     if ((!latestReopenAt || lastEventAt > latestReopenAt)
       && lastEventAt
       && now - lastEventAt < cooldownMs
@@ -2098,6 +2101,19 @@ function codeActionLedgerCooldownBlocks(action, cooldownMs = 24 * 60 * 60 * 1000
     }
   }
   return false
+}
+
+function isVerifiedRankingAction(action) {
+  return action?.track === 'ranking'
+    || action?.actionType === 'ranking_content'
+    || action?.evidenceSource === 'gsc'
+}
+
+function isAutonomousRankingDeprioritization(action, event) {
+  return isVerifiedRankingAction(action)
+    && String(event?.event || '') === 'deprioritized'
+    && String(event?.source || '') === 'autonomous_live_candidate'
+    && /^codex:deprioritize/i.test(String(event?.reason || ''))
 }
 
 function codeActionSameIdCooldownBlocks(action, cooldownMs = 24 * 60 * 60 * 1000) {
@@ -2279,7 +2295,7 @@ async function chooseAutonomousCodeAction(actions, workspace, targetChannelId, w
       log('autonomous_codex_brief_failed', { actionId: enrichedAction.id, workspace: workspace?.label || workspace?.id || null, error: error?.message || String(error) })
       return null
     })
-    if (!isAutonomousCodexSafe(codexBrief)) {
+    if (!isAutonomousCodexSafe(codexBrief, enrichedAction)) {
       rejectionReasons.push({ id: enrichedAction.id, title: enrichedAction.title || enrichedAction.id, reason: `codex:${codexBrief?.recommendation || codexBrief?.decision || 'blocked'}` })
       rememberCodexRejectedAction(enrichedAction, workspace, targetChannelId, codexBrief, 'autonomous_live_candidate')
       continue
@@ -2357,7 +2373,10 @@ function autonomousCodeCandidateCheck(action, workspace, targetChannelId) {
   const cluster = actionLearningKey(action, workspace, targetChannelId)
   const ledger = state.actionLedger?.[cluster]
   if (ledger?.status === 'completed' && !isLedgerRecheckDue(ledger)) return { ok: false, reason: 'already_completed_waiting_recheck' }
-  if (ledger?.status === 'deprioritized' && !isLedgerRecheckDue(ledger)) return { ok: false, reason: 'recently_deprioritized_waiting_recheck' }
+  if (ledger?.status === 'deprioritized' && !isLedgerRecheckDue(ledger)
+    && !isAutonomousRankingDeprioritization(action, (ledger.events || [])[0])) {
+    return { ok: false, reason: 'recently_deprioritized_waiting_recheck' }
+  }
   if (ledger?.status === 'ignored' && !isLedgerRecheckDue(ledger)) return { ok: false, reason: 'recently_ignored_waiting_recheck' }
   if (ledger?.status === 'rejected' && !isLedgerRecheckDue(ledger)) return { ok: false, reason: 'recently_rejected_waiting_recheck' }
   return { ok: true, reason: 'candidate' }
@@ -2821,7 +2840,7 @@ async function syntheticAutonomousActionForWorkspace({ workspace, targetChannelI
     log('synthetic_autonomous_codex_brief_failed', { workspace: workspace?.label || workspace?.id || null, error: error?.message || String(error) })
     return null
   })
-  if (!isAutonomousCodexSafe(codexBrief)) {
+  if (!isAutonomousCodexSafe(codexBrief, action)) {
     logThrottled(`synthetic_autonomous_skipped:${workspace?.id || workspace?.label}:${action.id}:codex`, 30 * 60 * 1000, 'synthetic_autonomous_skipped', {
       workspace: workspace?.label || workspace?.id || null,
       actionId: action.id,
@@ -3579,11 +3598,12 @@ function isAutonomousReviewSafe(review) {
   return /^låg\b/i.test(String(review.risk || ''))
 }
 
-function isAutonomousCodexSafe(codexBrief) {
+function isAutonomousCodexSafe(codexBrief, action = null) {
   if (!codexBrief) return false
   if (!['allow', 'rewrite'].includes(codexBrief.decision)) return false
   if (codexBrief.decision === 'rewrite' && !/^https:\/\//i.test(String(codexBrief.targetUrl || ''))) return false
-  if (codexBrief.recommendation && codexBrief.recommendation !== 'Approve') return false
+  if (codexBrief.recommendation && codexBrief.recommendation !== 'Approve'
+    && !(isVerifiedRankingAction(action) && codexBrief.recommendation === 'Deprioritize')) return false
   if (codexBrief.risk && !/^låg\b/i.test(String(codexBrief.risk))) return false
   return true
 }
@@ -8890,7 +8910,7 @@ function ensureAutonomousAgentState() {
 }
 
 function reopenRankingActionsAfterPolicyFix() {
-  const migrationVersion = 'ranking-evidence-policy-v6'
+  const migrationVersion = 'ranking-evidence-policy-v7'
   if (state.rankingPolicyMigrationVersion === migrationVersion) return
   const now = new Date().toISOString()
   let reopened = 0
@@ -8906,7 +8926,10 @@ function reopenRankingActionsAfterPolicyFix() {
       'sebcastwall_m365_support_only'
     ].includes(String(event?.reason || '')))
     const oldRankingDeprioritization = String(ledger?.status || '') === 'deprioritized'
-      && (ledger?.events || []).some((event) => String(event?.reason || '').includes('uttryckligen nedprioriterat'))
+      && (ledger?.events || []).some((event) => (
+        String(event?.reason || '').includes('uttryckligen nedprioriterat')
+        || isAutonomousRankingDeprioritization({ track: 'ranking', actionType: 'ranking_content', evidenceSource: 'gsc' }, event)
+      ))
     const failedDiffGate = Object.values(state.codeActionResults || {}).some((result) =>
       String(result?.status || '') === 'failed'
       && String(result?.error || '').includes('ranking_diff_missing_expected_seo_surface')
@@ -10792,7 +10815,7 @@ function actionCardBriefCacheKey(action, workspace, targetChannelId, review = nu
   const payload = JSON.stringify({
     // Bump when the brief contract changes so stale blocks cannot suppress a
     // verified ranking action after a policy correction.
-    briefPolicyVersion: 'ranking-surface-v2',
+    briefPolicyVersion: 'ranking-surface-v3',
     workspaceKey: workspaceProfileKey(workspace, targetChannelId),
     actionId: action?.id || '',
     title: action?.title || '',
