@@ -17,6 +17,7 @@ import { attachBatchEvidenceProvenance, checkActionEvidenceIntegrity } from './a
 import { exactTargetFromRecords, validateExactInspection } from './gsc-exact-url-policy.mjs'
 import { buildRankingOpportunities, rankingEngineVersion, rankingHypothesisForOpportunity } from './ranking-engine.mjs'
 import { isIndexingActionIdentity } from './action-type-policy.mjs'
+import { classifySeoTrack, trackContract } from './seo-track-policy.mjs'
 
 const env = loadEnv([
   '/home/deploy/.hermes/.env',
@@ -3106,6 +3107,8 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
         ctr: evidenceCheck.evidence.ctr,
         position: evidenceCheck.evidence.position
       } : null,
+      track: classifySeoTrack({ ...suggestion, evidenceType: suggestion.evidenceType || evidenceCheck.evidence.type, keyword, targetUrl }),
+      trackContract: trackContract(classifySeoTrack({ ...suggestion, evidenceType: suggestion.evidenceType || evidenceCheck.evidence.type, keyword, targetUrl })),
       workspaceSlug: workspace?.label || host,
       projectSlug: repoFullName,
       synthetic: true,
@@ -10746,6 +10749,7 @@ function formatActionMessage(action, workspacePolicy, workspace, review = null) 
     `Kort: ${title}`,
     action.targetUrl ? `URL: ${action.targetUrl}` : '',
     action.keyword ? `${showKeywordAsSearchTerm ? 'Keyword' : 'Focus'}: ${action.keyword}` : '',
+    action.track ? `Spår: ${action.track}` : '',
     showKeywordAsSearchTerm ? formatKeywordMetricsLine(action) : '',
     String(action.actionType || '').startsWith('ranking_') && action.rankingMetrics
       ? `Rankingdata: position ${Number(action.rankingMetrics.position || 0).toFixed(1)} · ${Number(action.rankingMetrics.impressions || 0)} impressions · ${Number(action.rankingMetrics.clicks || 0)} klick · CTR ${(Number(action.rankingMetrics.ctr || 0) * 100).toFixed(2)}%`
