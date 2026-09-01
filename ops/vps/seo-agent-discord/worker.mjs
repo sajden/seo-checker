@@ -10790,6 +10790,9 @@ async function runCodexActionCardBrief({ action, workspace, workspacePolicy, rev
 
 function actionCardBriefCacheKey(action, workspace, targetChannelId, review = null) {
   const payload = JSON.stringify({
+    // Bump when the brief contract changes so stale blocks cannot suppress a
+    // verified ranking action after a policy correction.
+    briefPolicyVersion: 'ranking-surface-v2',
     workspaceKey: workspaceProfileKey(workspace, targetChannelId),
     actionId: action?.id || '',
     title: action?.title || '',
