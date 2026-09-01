@@ -5210,7 +5210,9 @@ function prioritizeActionQueue(items, workspace = null, targetChannelId = null) 
     const value = Number(item?.priorityScore ?? item?.score ?? NaN)
     const base = Number.isFinite(value) ? value : null
     const boost = guidanceScore(item)
-    return base === null ? (boost ? 50 + boost : null) : base + boost
+    const rankingBoost = isSebcastwall && isEvidenceBackedRankingAction(item) ? 35 : 0
+    const genericPenalty = isSebcastwall && !isEvidenceBackedRankingAction(item) && !item?.keyword ? -20 : 0
+    return base === null ? (boost || rankingBoost || genericPenalty ? 50 + boost + rankingBoost + genericPenalty : null) : base + boost + rankingBoost + genericPenalty
   }
   return [...items].sort((a, b) => {
     const aScore = score(a)
@@ -5222,6 +5224,14 @@ function prioritizeActionQueue(items, workspace = null, targetChannelId = null) 
     if (byType) return byType
     return priorityWeight(String(a?.priority || 'medium')) - priorityWeight(String(b?.priority || 'medium'))
   })
+}
+
+function isEvidenceBackedRankingAction(action = {}) {
+  const text = `${action.title || ''} ${action.category || ''} ${action.source || ''}`.toLowerCase()
+  return Boolean(action.keyword) && (
+    action.evidenceType === 'gsc'
+    || /gsc[- ]query|förbättra ctr|forbattra ctr|täck keyword|tack keyword|serp-gap|ranking/.test(text)
+  )
 }
 
 async function processDiscordReplies() {
