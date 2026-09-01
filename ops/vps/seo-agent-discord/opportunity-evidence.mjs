@@ -1,3 +1,5 @@
+import { buildRankingOpportunities, rankingEngineVersion, rankingHypothesisForOpportunity } from './ranking-engine.mjs'
+
 function normalizeUrl(value) {
   const raw = String(value || '').trim()
   if (!raw) return ''
@@ -103,6 +105,12 @@ export function buildOpportunityEvidenceContext(batch) {
     .map(compactCrawlSignal)
     .filter(Boolean)
     .slice(0, 20)
+  const rankingOpportunities = buildRankingOpportunities({
+    rows: gscRows,
+    opportunities: gscOpportunities,
+    minImpressions: 10,
+    max: 20
+  }).map((item) => ({ ...item, hypothesis: rankingHypothesisForOpportunity(item) }))
 
   return {
     runAt: batch?.lastRunAt || batch?.lastRunSummary?.ranAt || null,
@@ -110,12 +118,15 @@ export function buildOpportunityEvidenceContext(batch) {
     gscOpportunities,
     pageOpportunities,
     crawlSignals,
+    rankingEngine: rankingEngineVersion(),
+    rankingOpportunities,
     keywordPlanner: [],
     counts: {
       gscRows: gscRows.length,
       gscOpportunities: gscOpportunities.length,
       pageOpportunities: pageOpportunities.length,
       crawlSignals: crawlSignals.length,
+      rankingOpportunities: rankingOpportunities.length,
       keywordPlanner: 0
     }
   }

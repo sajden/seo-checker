@@ -15,6 +15,7 @@ import { reviewCapacityCheck } from './review-capacity-policy.mjs'
 import { canonicalRepoFullName, workspaceProfileKey } from './workspace-identity.mjs'
 import { attachBatchEvidenceProvenance, checkActionEvidenceIntegrity } from './action-evidence-policy.mjs'
 import { exactTargetFromRecords, validateExactInspection } from './gsc-exact-url-policy.mjs'
+import { buildRankingOpportunities, rankingEngineVersion, rankingHypothesisForOpportunity } from './ranking-engine.mjs'
 import { isIndexingActionIdentity } from './action-type-policy.mjs'
 
 const env = loadEnv([
@@ -2997,6 +2998,10 @@ async function buildCodexOpportunityAction(workspace, targetChannelId = null, co
   const prompt = [
     'Du är SEO Agentens opportunity scout.',
     'Hitta upp till TRE rangordnade evidensbaserade låg-risk SEO-kodactions för befintliga sidor, eller returnera en tom lista om inget verifierat behov finns.',
+    '- Ranking Engine v2 är primärkälla för rankingactions. Välj i första hand en rankingOpportunity och använd exakt dess query, URL, mätvärden och hypotes.',
+    '- En rankingaction måste förbättra en specifik sökterm/sökintention. Generisk AI Search-readiness får inte ersätta ett verifierat rankingförslag när en rankingOpportunity finns.',
+    '- För ranking_ctr ska ändringen normalt omfatta title/meta/H1/intro. För ranking_relevance ska den normalt omfatta H1/intro/H2/FAQ och relevanta interna länkar. Ange exakt vilka fält som ska ändras.',
+    '- Om en action saknar query, position, impressions eller CTR ska den inte presenteras som en rankingförbättring; klassificera den som technical, indexing, internal-links eller AI Search.',
     '',
     'Regler:',
     '- Returnera ENDAST JSON.',
@@ -5749,8 +5754,10 @@ function startDiscordInteractionClient() {
       }
       if (customId.startsWith('seo-gsc-ui:')) {
         await interaction.deferReply({ flags: MessageFlags.Ephemeral })
-        const result = await handleGscUiButton(actionId, interaction.channelId)
-        await interaction.editReply({ content: result })
+        const decision = customId.slice('seo-gsc-ui:'.length)
+        const result = await handleGscUiButton(actionId, interaction.channelId, decision, interaction.message.id)
+        await interaction.editReply({ content: result.summary })
+        if (result.removeButtons) await interaction.message.edit({ components: [] }).catch(() => null)
         return
       }
       if (customId.startsWith('seo-revert:')) {
@@ -5813,17 +5820,42 @@ function startDiscordInteractionClient() {
   return client
 }
 
-async function handleGscUiButton(actionId, targetChannelId) {
+async function handleGscUiButton(actionId, targetChannelId, decision = 'index_now', discordMessageId = null) {
   const action = await findActionForWorkspace(actionId, targetChannelId)
-  if (!action) return `Hittar inte action \`${actionId}\`.`
-  if (!isIndexingCheckAction(action)) return 'Det här är inte en GSC/indexeringsaction.'
+  if (!action) return { summary: `Hittar inte action \`${actionId}\`.`, removeButtons: false }
+  if (!isIndexingCheckAction(action)) return { summary: 'Det här är inte en GSC/indexeringsaction.', removeButtons: false }
   const workspace = workspaceForChannel(targetChannelId)
+  if (decision === 'already_indexed' || decision === 'do_not_index') {
+    const normalizedDecision = decision === 'already_indexed' ? 'skipped' : 'deprioritized'
+    const decisionInput = {
+      actionId: action.id,
+      decision: normalizedDecision,
+      reason: decision === 'already_indexed' ? 'Operator confirmed the URL is already indexed.' : 'Operator does not want this URL indexed.',
+      source: `discord_indexing_${decision}`,
+      discordMessageId,
+      discordChannelId: targetChannelId
+    }
+    const runtimeResult = await executeActionDecisionThroughRuntime(decisionInput)
+    if (runtimeResult.ok) await saveActionDecisionBestEffort(decisionInput)
+    else await saveActionDecision(decisionInput)
+    clearActiveAction(action.id)
+    return {
+      summary: decision === 'already_indexed'
+        ? 'Noterat: URL:en är redan indexerad. Kortet är klart.'
+        : 'Noterat: URL:en ska inte indexeras. Kortet är avprioriterat.',
+      removeButtons: true
+    }
+  }
+  if (decision !== 'index_now') return { summary: 'Okänt indexeringsbeslut.', removeButtons: false }
   const result = await runGscInspectionAction(action, workspace, targetChannelId, 'discord_gsc_ui')
-  return result.ok
-    ? result.indexedByGsc
-      ? 'Jag körde GSC URL Inspection, verifierade indexering och markerade kortet som hanterat.'
-      : 'Jag körde GSC URL Inspection i noVNC-Firefoxen och postade observationen i kanalen.'
-    : `Kunde inte öppna GSC UI: ${result.error || result.status || 'okänt fel'}`
+  return {
+    summary: result.ok
+      ? result.indexedByGsc
+        ? 'GSC visar att URL:en redan är indexerad. Kortet är klart.'
+        : 'Indexering kontrollerad. Jag postade resultatet i kanalen. Om URL:en inte är indexerad behöver Begär indexering göras manuellt i Search Console.'
+      : `Kunde inte kontrollera indexering: ${result.error || result.status || 'okänt fel'}`,
+    removeButtons: result.ok && result.indexedByGsc
+  }
 }
 
 async function runGscInspectionAction(action, workspace, targetChannelId, source = 'gsc_firefox_ui') {
@@ -10555,6 +10587,7 @@ async function runCodexActionCardBrief({ action, workspace, workspacePolicy, rev
     '- Om Keyword Planner har volym/CPC/competition, använd det konkret i why/reason.',
     '- targetUrl måste alltid vara den slutliga befintliga sidan som ska ändras. Vid decision=rewrite är fältet obligatoriskt och måste korrigera en felaktig original-URL.',
     '- Byt aldrig domän i targetUrl.',
+    '- Byt inte ut en befintlig internlänk till en separat tjänst bara för att stärka en annan sida. Behåll befintliga tjänstekategorier och föreslå en kompletterande länk eller ett separat tillägg när båda är relevanta.',
     '- Ingen rå JSON/tool-output i fälten.',
     '- Låtsas inte att kod redan körts.',
     '',
@@ -10657,11 +10690,11 @@ function formatActionMessage(action, workspacePolicy, workspace, review = null) 
   const label = workspace?.label || action.workspaceSlug || action.projectSlug || 'workspace'
   const title = review?.actionTitle || humanActionTitle(action)
   const concreteAction = indexingCheck
-    ? `Kontrollera exakt URL (${action.targetUrl || action.url || 'mål-URL saknas'}) mot live-status, canonical, sitemap, internlänk och GSC. Ingen kodbranch skapas om inget tekniskt fel finns.`
+    ? `Testa indexering på följande URL: ${action.targetUrl || action.url || 'mål-URL saknas'}.`
     : review?.concreteAction || humanConcreteAction(action, workspace)
   const why = review?.why || action.why || 'Passerar SEO-agentens relevanskontroll.'
   const expectedWork = indexingCheck
-    ? 'kör kontrollen utan repoändring; om ett kodfel hittas skapas därefter ett separat review-kort med branch, build och compare-länk'
+    ? 'kontrollerar URL:en mot live-status, canonical, sitemap och GSC utan repoändring'
     : review?.expectedWork || (isCodeAction(action) ? 'gör en repoändring, bygger, committar och postar GitHub-länk' : 'hanterar kontrollen och markerar nästa steg')
   const risk = indexingCheck ? 'låg - kontrollen ändrar ingen kod eller design' : review?.risk || 'okänd'
   const recommendation = indexingCheck ? 'Kontrollera URL' : review?.recommendation || (isCodeAction(action) ? 'Review' : 'Review')
@@ -10688,7 +10721,7 @@ function formatActionMessage(action, workspacePolicy, workspace, review = null) 
     '',
     `ID: \`${action.id}\``,
     indexingCheck
-      ? `Det finns ingen commit ännu. Tryck Kontrollera URL. Bara om kontrollen hittar ett repo-fel får du därefter en separat compare-länk att granska och godkänna.`
+      ? `Välj om URL:en redan är indexerad, ska indexeras nu eller inte ska indexeras.`
       : isCodeAction(action)
       ? `Välj med knapparna, eller svara i vanlig svenska om jag ska köra den, hoppa över den, vänta med den eller förklara mer.`
       : `Det här är en kontroll, inte en kodaction. Skriv i chatten om den är hanterad, kan vänta eller behöver förklaras.`
@@ -10875,8 +10908,9 @@ function actionComponents(action) {
     add('approved', 'Approve', 3)
     add('skipped', 'Skip', 2)
   } else if (isIndexingCheckAction(action)) {
-    buttons.push({ type: 2, custom_id: 'seo-gsc-ui:inspect', label: 'Kontrollera URL', style: 1 })
-    add('skipped', 'Mark handled', 2)
+    buttons.push({ type: 2, custom_id: 'seo-gsc-ui:already_indexed', label: 'Redan indexerad', style: 2 })
+    buttons.push({ type: 2, custom_id: 'seo-gsc-ui:index_now', label: 'Indexera nu', style: 1 })
+    buttons.push({ type: 2, custom_id: 'seo-gsc-ui:do_not_index', label: 'Vill ej indexera', style: 4 })
   } else {
     add('skipped', 'Mark handled', 2)
   }
