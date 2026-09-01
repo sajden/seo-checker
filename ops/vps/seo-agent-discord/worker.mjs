@@ -8848,7 +8848,7 @@ function ensureAutonomousAgentState() {
 }
 
 function reopenRankingActionsAfterPolicyFix() {
-  const migrationVersion = 'ranking-evidence-policy-v5'
+  const migrationVersion = 'ranking-evidence-policy-v6'
   if (state.rankingPolicyMigrationVersion === migrationVersion) return
   const now = new Date().toISOString()
   let reopened = 0
@@ -8863,11 +8863,13 @@ function reopenRankingActionsAfterPolicyFix() {
       'autonomous_or_internal_not_decision_card',
       'sebcastwall_m365_support_only'
     ].includes(String(event?.reason || '')))
+    const oldRankingDeprioritization = String(ledger?.status || '') === 'deprioritized'
+      && (ledger?.events || []).some((event) => String(event?.reason || '').includes('uttryckligen nedprioriterat'))
     const failedDiffGate = Object.values(state.codeActionResults || {}).some((result) =>
       String(result?.status || '') === 'failed'
       && String(result?.error || '').includes('ranking_diff_missing_expected_seo_surface')
       && String(ledger?.actionId || '') === String(result?.actionId || ledger?.actionId || ''))
-    if (workspaceKey !== 'repo:sajden/sebcastwall' || !keyword || !targetUrl || (!oldPolicyGuard && !failedDiffGate)) continue
+    if (workspaceKey !== 'repo:sajden/sebcastwall' || !keyword || !targetUrl || (!oldPolicyGuard && !failedDiffGate && !oldRankingDeprioritization)) continue
     if (!/gsc[- ]query|förbättra ctr|forbattra ctr/.test(title)) continue
     ledger.guardedCount = 0
     ledger.status = 'seen'
@@ -10698,11 +10700,16 @@ async function runCodexActionCardBrief({ action, workspace, workspacePolicy, rev
       evidence: Array.isArray(action?.evidence) ? action.evidence.slice(0, 8) : []
     }
   }
+  const isMeasuredRanking = action?.track === 'ranking' || action?.actionType === 'ranking_content' || action?.evidenceSource === 'gsc'
   const prompt = [
     'Du är SEO Agentens Codex-hjärna innan ett Discord-actionkort postas.',
     'Ditt jobb är att förstå vilken sorts sajt/workspace detta är och formulera en konkret, workspace-korrekt åtgärd.',
     'Var smart: om det är en konsumenttjänst ska du inte använda B2B/SMB/konsultspråk. Om det är en katalog/tjänst/produkt ska åtgärden passa den typen.',
     'Om actionen verkar fel workspace, generisk, repetitiv eller otydlig: decision=block eller rewrite med tydlig förklaring.',
+    ...(isMeasuredRanking ? [
+      'Detta är en verifierad rankingaction. GSC-evidens + query + target-URL går före profilens generella avoid/fokusord; välj inte Deprioritize enbart för att queryn nämner en integration.',
+      'För ranking_content måste doThis uttryckligen omfatta minst en SEO-yta: title/meta/H1/intro/H2/FAQ eller kompletterande internlänk, och behålla den exakta queryn naturligt.'
+    ] : []),
     'Returnera ENDAST JSON:',
     '{"decision":"allow|rewrite|block","targetUrl":"slutlig https-URL som åtgärden gäller","title":"kort konkret svensk titel","doThis":"en konkret mening om exakt vad som ska göras","why":"kort varför detta är rätt för just detta workspace","risk":"låg|medium + kort orsak","expectedWork":"vad agenten gör automatiskt om det är låg risk, annars vad den behöver fråga om","recommendation":"Approve|Review|Deprioritize|Skip","reason":"kort intern orsak"}',
     '',
