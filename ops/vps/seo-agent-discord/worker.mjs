@@ -4045,6 +4045,7 @@ async function runQueuedApprovedCodeAction(entry, workspace, targetChannelId) {
   recordActionLedger(entry, workspace, targetChannelId, 'coding_started', { source: 'approved_queue' })
   saveState()
   try {
+    const prePromotionBaseline = await capturePrePromotionBaseline(entry, workspace)
     const result = await runCodexAction({ ...entry, repoFullName: entry.repoFullName || workspace.repoFullName, branch: entry.branch || workspace.branch || 'main' })
     const completedResult = { ...result, repoFullName: entry.repoFullName || workspace.repoFullName || null, branch: result.deliveryBranch || entry.branch || workspace.branch || 'main' }
     state.codeActionResults[entry.id] = result.requiresReview
@@ -4056,7 +4057,7 @@ async function runQueuedApprovedCodeAction(entry, workspace, targetChannelId) {
       repoFullName: entry.repoFullName || workspace.repoFullName || null,
       deliveryBranch: result.deliveryBranch || null
     })
-    if (!result.requiresReview) recordSeoExperiment(entry, workspace, targetChannelId, completedResult, { source: 'approved_queue' })
+    if (!result.requiresReview) recordSeoExperiment(entry, workspace, targetChannelId, completedResult, { source: 'approved_queue', prePromotionBaseline })
     delete state.approvedCodeActionQueue[entry.id]
     await markPostedActionHandled(entry.id, targetChannelId, result.requiresReview ? 'code_action_review_ready' : 'code_action_completed')
     if (!result.requiresReview) clearActiveAction(entry.id)
@@ -4295,6 +4296,7 @@ async function decideSeoReview(actionId, decision, targetChannelId, operatorId) 
   })
   saveState()
   try {
+    const prePromotionBaseline = await capturePrePromotionBaseline(action, workspace)
     const promotion = await promoteReviewReadyAction(actionId, record.result || {}, action)
     const completedAt = new Date().toISOString()
     const completedResult = { ...record.result, ...promotion, mergedToMain: true, requiresReview: false }
@@ -4305,7 +4307,7 @@ async function decideSeoReview(actionId, decision, targetChannelId, operatorId) 
       repoFullName: record.result?.repoFullName || workspace.repoFullName,
       source: 'discord_review_promotion'
     })
-    recordSeoExperiment(action, workspace, targetChannelId, completedResult, { source: 'discord_review_promotion' })
+    recordSeoExperiment(action, workspace, targetChannelId, completedResult, { source: 'discord_review_promotion', prePromotionBaseline })
     clearActiveAction(actionId)
     saveState()
     const liveVerified = promotion.verification?.ok !== false
@@ -4365,6 +4367,22 @@ async function decideSeoReview(actionId, decision, targetChannelId, operatorId) 
       publicMessage: `Godkännandet är sparat för ${posted.title || actionId}. Main är ännu inte ändrad. Agenten återförsöker publiceringen automatiskt. Orsak: ${String(error?.message || error).slice(0, 900)}`,
       removeButtons: true
     }
+  }
+}
+
+async function capturePrePromotionBaseline(action, workspace) {
+  const targetUrl = String(action?.targetUrl || '').trim()
+  if (!targetUrl || !workspace?.gscProperty) return null
+  try {
+    const batch = await fetchWorkspaceSeoBatch(workspace)
+    const sourceRunAt = batch?.lastRunAt || batch?.lastRunSummary?.ranAt || null
+    if (!sourceRunAt || Date.parse(sourceRunAt) > Date.now()) return null
+    const baseline = buildGscExperimentSnapshot({ batch, targetUrl, keyword: action.keyword || '' })
+    if (baseline.status !== 'ready') return null
+    return baseline
+  } catch (error) {
+    log('pre_promotion_baseline_failed', { actionId: action?.id || null, targetUrl, error: error?.message || String(error) })
+    return null
   }
 }
 
@@ -9790,6 +9808,7 @@ function recordSeoExperiment(action, workspace, targetChannelId, result, meta = 
   const surface = normalizeActionPath(targetUrl) || normalizeKeywordCluster(keyword) || 'unknown-surface'
   const unique = normalizeClusterPart(action.id || result?.commit || completedAt)
   const id = `${workspaceKey}:${surface}:${unique}`.slice(0, 220)
+  const prePromotionBaseline = meta.prePromotionBaseline || state.pendingExperimentBaselines?.[action.id] || null
   state.seoExperiments[id] = {
     ...(state.seoExperiments[id] || {}),
     id,
@@ -9809,9 +9828,13 @@ function recordSeoExperiment(action, workspace, targetChannelId, result, meta = 
     completedAt,
     reviewAfter: reviewDate.toISOString().slice(0, 10),
     source: meta.source || 'code_action',
-    baselineStatus: 'pending_gsc_snapshot',
-    measurements: { baseline: null, followups: {} },
+    baselineStatus: prePromotionBaseline?.status === 'ready' ? 'ready' : 'pending_gsc_snapshot',
+    baselineCapturedAt: prePromotionBaseline?.capturedAt || null,
+    measurements: { baseline: prePromotionBaseline?.status === 'ready' ? prePromotionBaseline : null, followups: {} },
     nextMeasurementAt: reviewDate.toISOString().slice(0, 10)
+  }
+  if (state.pendingExperimentBaselines?.[action.id]) {
+    delete state.pendingExperimentBaselines[action.id]
   }
   rememberAgentLesson(`Started SEO experiment for ${workspace?.label || workspaceKey}: ${keyword || targetUrl || action.id}${result?.commit ? ` (${result.commit})` : ''}`)
 }
