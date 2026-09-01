@@ -60,7 +60,8 @@ function scoreRow(row, options = {}) {
   const ctrValue = Math.min(25, ctrGap * 220)
   const businessValue = number(options.businessValue, 0)
   const trendValue = number(options.trendValue, 0)
-  return Math.round(positionPotential + impressionValue + ctrValue + businessValue + trendValue)
+  const demandValue = number(options.demandValue, 0)
+  return Math.round(positionPotential + impressionValue + ctrValue + businessValue + trendValue + demandValue)
 }
 
 function compactRow(row, options = {}) {
@@ -86,7 +87,7 @@ function compactRow(row, options = {}) {
   }
 }
 
-export function buildRankingOpportunities({ rows = [], opportunities = [], trends = [], analyticsPages = [], minImpressions = 10, max = 20 } = {}) {
+export function buildRankingOpportunities({ rows = [], opportunities = [], trends = [], analyticsPages = [], demandTopics = [], minImpressions = 10, max = 20 } = {}) {
   const source = [
     ...(Array.isArray(rows) ? rows : []),
     ...(Array.isArray(opportunities) ? opportunities : [])
@@ -94,14 +95,19 @@ export function buildRankingOpportunities({ rows = [], opportunities = [], trend
   const unique = new Map()
   const trendByQuery = new Map((Array.isArray(trends) ? trends : []).map((item) => [normalizeText(item.query), item]))
   const analyticsByPage = new Map((Array.isArray(analyticsPages) ? analyticsPages : []).map((item) => [normalizeUrl(item.pagePath || item.url), item]))
+  const demandByQuery = new Map((Array.isArray(demandTopics) ? demandTopics : [])
+    .filter((item) => item?.fresh !== false)
+    .map((item) => [normalizeText(item.topic || item.preferredKeyword), item]))
   for (const item of source) {
     const query = item?.query || item?.keys?.[1]
     const page = item?.page || item?.keys?.[0]
     const trend = trendByQuery.get(normalizeText(query))
     const analytics = analyticsByPage.get(normalizeUrl(page))
+    const demand = demandByQuery.get(normalizeText(query))
     const row = compactRow(item, {
       trendValue: trend && number(trend.impressionsDelta) > 0 ? 5 : trend && number(trend.positionDelta) < 0 ? 8 : 0,
-      businessValue: analytics && number(analytics.conversions) > 0 ? 6 : 0
+      businessValue: analytics && number(analytics.conversions) > 0 ? 6 : 0,
+      demandValue: demand ? Math.min(6, Math.max(0, number(demand.score) / 20)) : 0
     })
     if (!row || row.impressions < minImpressions) continue
     if (row.position < 4 || row.position > 30) continue

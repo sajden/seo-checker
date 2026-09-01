@@ -95,3 +95,26 @@ test('verifies Keyword Planner demand for a mapped existing URL', () => {
   assert.equal(result.ok, true)
   assert.equal(result.evidence.avgMonthlySearches, 170)
 })
+
+test('uses fresh Search Demand only as a ranking priority signal', () => {
+  const context = buildOpportunityEvidenceContext({
+    ...batch,
+    lastRunDetails: {
+      ...batch.lastRunDetails,
+      searchDemandProject: {
+        projectSlug: 'sebcastwall',
+        generatedAt: new Date().toISOString(),
+        topics: [{
+          topic: 'webbutveckling stockholm',
+          preferredKeyword: 'webbutveckling stockholm',
+          score: 90,
+          source: 'search-demand:google_trends',
+          demand: { capturedAt: new Date().toISOString(), intent: 'commercial' }
+        }]
+      }
+    }
+  })
+  assert.equal(context.searchDemand.freshTopicCount, 1)
+  assert.equal(context.rankingOpportunities[0].query, 'webbutveckling stockholm')
+  assert.equal(context.rankingOpportunities[0].score > 0, true)
+})

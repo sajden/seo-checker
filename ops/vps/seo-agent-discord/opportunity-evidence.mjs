@@ -107,6 +107,22 @@ function compactTrend(item) {
   }
 }
 
+function compactDemandTopic(item, generatedAt) {
+  if (!item?.topic && !item?.preferredKeyword) return null
+  const capturedAt = item?.demand?.capturedAt || item?.capturedAt || generatedAt || null
+  const ageMs = capturedAt ? Date.now() - Date.parse(capturedAt) : Number.POSITIVE_INFINITY
+  return {
+    topic: item.topic || item.preferredKeyword,
+    preferredKeyword: item.preferredKeyword || item.topic,
+    score: Number(item.score || 0),
+    source: item.source || item.demand?.source || null,
+    demandBucket: item.demand?.demandBucket || null,
+    intent: item.demand?.intent || null,
+    capturedAt,
+    fresh: Number.isFinite(ageMs) && ageMs >= -5 * 60 * 1000 && ageMs <= 14 * 24 * 60 * 60 * 1000
+  }
+}
+
 export function buildOpportunityEvidenceContext(batch) {
   const details = batch?.lastRunDetails || {}
   const gscRows = (Array.isArray(details.gscRows) ? details.gscRows : [])
@@ -127,11 +143,20 @@ export function buildOpportunityEvidenceContext(batch) {
     .map(compactCrawlSignal)
     .filter(Boolean)
     .slice(0, 20)
+  const searchDemandProject = details.searchDemandProject && typeof details.searchDemandProject === 'object'
+    ? details.searchDemandProject
+    : null
+  const demandTopics = (Array.isArray(searchDemandProject?.topics) ? searchDemandProject.topics : [])
+    .map((item) => compactDemandTopic(item, searchDemandProject.generatedAt))
+    .filter(Boolean)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 40)
   const rankingOpportunities = buildRankingOpportunities({
     rows: gscRows,
     opportunities: gscOpportunities,
     trends: (Array.isArray(details.seoMemory?.gscTrends) ? details.seoMemory.gscTrends : []).map(compactTrend).filter(Boolean),
     analyticsPages: (Array.isArray(details.analyticsSummary?.pages) ? details.analyticsSummary.pages : []).map(compactAnalyticsPage).filter(Boolean),
+    demandTopics,
     minImpressions: 10,
     max: 20
   }).map((item) => ({ ...item, hypothesis: rankingHypothesisForOpportunity(item) }))
@@ -152,6 +177,12 @@ export function buildOpportunityEvidenceContext(batch) {
       generatedAt: details.seoMemory.generatedAt || null,
       gscTrends: (details.seoMemory.gscTrends || []).map(compactTrend).filter(Boolean).slice(0, 40),
       serpTrends: (details.seoMemory.serpTrends || []).slice(0, 40)
+    } : null,
+    searchDemand: searchDemandProject ? {
+      generatedAt: searchDemandProject.generatedAt || null,
+      projectSlug: searchDemandProject.projectSlug || null,
+      topics: demandTopics,
+      freshTopicCount: demandTopics.filter((item) => item.fresh).length
     } : null,
     rankingEngine: rankingEngineVersion(),
     rankingOpportunities,
