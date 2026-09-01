@@ -1526,12 +1526,14 @@ function isMeasuredRankingAction(action) {
     || action?.evidenceSource === 'gsc'
   const hasQueryAndTarget = Boolean(String(action?.keyword || action?.query || '').trim())
     && Boolean(String(action?.targetUrl || action?.url || '').trim())
+  const title = normalize([action?.title, action?.recommendedAction].filter(Boolean).join(' '))
+  const hasRankingTitle = /lyft gsc[- ]query|förbättra ctr|forbattra ctr/.test(title)
   const evidence = normalize([
     action?.why,
     ...(Array.isArray(action?.evidence) ? action.evidence : [])
   ].filter(Boolean).join(' '))
   const hasGscMetrics = /impressions?|clicks?|klick|ctr|position/.test(evidence)
-  return hasExplicitTrack || (hasQueryAndTarget && hasGscMetrics)
+  return hasExplicitTrack || (hasQueryAndTarget && (hasGscMetrics || hasRankingTitle))
 }
 
 function isSebcastwallNonActionableSeoWork(action, targetUrl) {
