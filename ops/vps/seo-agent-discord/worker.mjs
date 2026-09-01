@@ -8848,7 +8848,7 @@ function ensureAutonomousAgentState() {
 }
 
 function reopenRankingActionsAfterPolicyFix() {
-  const migrationVersion = 'ranking-evidence-policy-v3'
+  const migrationVersion = 'ranking-evidence-policy-v4'
   if (state.rankingPolicyMigrationVersion === migrationVersion) return
   const now = new Date().toISOString()
   let reopened = 0
@@ -8862,7 +8862,11 @@ function reopenRankingActionsAfterPolicyFix() {
       'indexing_check_is_internal',
       'autonomous_or_internal_not_decision_card'
     ].includes(String(event?.reason || '')))
-    if (workspaceKey !== 'repo:sajden/sebcastwall' || !keyword || !targetUrl || !oldPolicyGuard) continue
+    const failedDiffGate = Object.values(state.codeActionResults || {}).some((result) =>
+      String(result?.status || '') === 'failed'
+      && String(result?.error || '').includes('ranking_diff_missing_expected_seo_surface')
+      && String(ledger?.actionId || '') === String(result?.actionId || ledger?.actionId || ''))
+    if (workspaceKey !== 'repo:sajden/sebcastwall' || !keyword || !targetUrl || (!oldPolicyGuard && !failedDiffGate)) continue
     if (!/gsc[- ]query|förbättra ctr|forbattra ctr/.test(title)) continue
     ledger.guardedCount = 0
     ledger.status = 'seen'
@@ -10441,6 +10445,7 @@ function actionChangeType(action) {
 }
 
 function actionKindForLearning(action) {
+  if (action?.track === 'ranking' || action?.actionType === 'ranking_content' || action?.evidenceSource === 'gsc') return 'content'
   const text = actionText(action)
   if (/indexering|url-inspection|gsc|oauth/.test(text) && !/title|h1|meta|copy|faq|content/.test(text)) return 'indexing'
   if (/internlank|interna-lank|internal-link/.test(text)) return 'internal-links'
