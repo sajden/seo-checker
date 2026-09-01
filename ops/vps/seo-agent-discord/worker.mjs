@@ -10062,7 +10062,8 @@ function shouldPostActionCard(action, workspace, targetChannelId) {
     return { ok: false, reason: 'workspace_avoid_terms_without_preferred_context' }
   }
   if (isSebcastwallWorkspace(workspace, profile)) {
-    if (/\b(abicart|klarna|fortnox|fortknox|visma|business-central|business central|mailchimp|monday|zendesk|account-status|help-outline)\b/.test(text)) {
+    const isMeasuredRanking = action?.track === 'ranking' || action?.actionType === 'ranking_content' || action?.evidenceSource === 'gsc'
+    if (!isMeasuredRanking && /\b(abicart|klarna|fortnox|fortknox|visma|business-central|business central|mailchimp|monday|zendesk|account-status|help-outline)\b/.test(text)) {
       return { ok: false, reason: 'sebcastwall_noise_keyword' }
     }
     const focus = sebcastwallPrimaryFocusPolicy(action)
