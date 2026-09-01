@@ -1218,7 +1218,7 @@ function scoreActionCandidate(state, action, context) {
   const ledger = ledgerForAction(state, action, context)
   if (ledger?.status === 'completed' && !ledgerRecheckDue(ledger)) return rejected(action, -90, 'already_completed_waiting_recheck', ['liknande action är redan genomförd'])
   if (ledger?.status === 'failed' && !ledgerRecheckDue(ledger)) return rejected(action, -70, 'failed_waiting_recheck', ['liknande action failade nyligen'])
-  if (ledger?.status === 'deprioritized' && !ledgerRecheckDue(ledger)) return rejected(action, -55, 'recently_deprioritized_waiting_recheck', ['nyligen bortprioriterad'])
+  if (ledger?.status === 'deprioritized' && !ledgerRecheckDue(ledger) && !isMeasuredRankingAction(action)) return rejected(action, -55, 'recently_deprioritized_waiting_recheck', ['nyligen bortprioriterad'])
   if (ledger?.status === 'ignored' && !ledgerRecheckDue(ledger)) return rejected(action, -55, 'recently_skipped_waiting_recheck', ['nyligen skippad'])
   const latestEvent = latestLedgerEvent(ledger)
   if (latestEvent?.event === 'guarded' && eventAgeDays(latestEvent) < 7) return rejected(action, -70, 'recently_guarded_waiting_recheck', ['guardad nyligen, väntar på ny vinkel eller färsk data'])
@@ -1265,7 +1265,7 @@ function scoreActionCandidate(state, action, context) {
     if (volume > 0) {
       score += Math.min(22, Math.ceil(volume / 50))
       positives.push(`har sökvolym ${volume}`)
-    } else if (/keyword|serp-gap|tack|täck/.test(text)) {
+    } else if (/keyword|serp-gap|tack|täck/.test(text) && !isMeasuredRankingAction(action)) {
       score -= 10
       negatives.push('keyword saknar verifierad volym')
     }
