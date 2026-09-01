@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { getDataDir } from "@/lib/server/runtime-paths";
@@ -59,7 +59,11 @@ async function upsertRun(run: AsyncSeoRun) {
     const runs = await listRuns();
     const next = [run, ...runs.filter((item) => item.id !== run.id)].slice(0, 100);
     await mkdir(storageDir, { recursive: true });
-    await writeFile(storageFile, JSON.stringify({ runs: next }, null, 2), "utf8");
+    // Never expose a partially-written JSON document to a concurrent status
+    // request. The API can be polled while a run is being updated.
+    const temporaryFile = `${storageFile}.${process.pid}.tmp`;
+    await writeFile(temporaryFile, JSON.stringify({ runs: next }, null, 2), "utf8");
+    await rename(temporaryFile, storageFile);
   });
   writeQueue = write.catch(() => undefined);
   await write;
