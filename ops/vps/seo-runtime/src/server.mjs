@@ -1495,7 +1495,7 @@ function isLegalOrPolicyTarget(value) {
 }
 
 function isKeywordPlanActionText(text) {
-  return /keyword-plan|keywordmap|keyword-map|target-pages|target-sidor|lagg-in-foreslagen-keyword-plan|lagg-in-en-forsta-keyword-plan/.test(text)
+  return /keyword-plan(?:-|$)|keywordmap|keyword-map|target-pages|target-sidor|lagg-in-foreslagen-keyword-plan|lagg-in-en-forsta-keyword-plan/.test(text)
 }
 
 function isGscOrOAuthNoise(action) {
