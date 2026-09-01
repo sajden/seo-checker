@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { promisify } from 'node:util'
 import { acquireHeavyWorkCapacity } from './workload-capacity.mjs'
+import { validateSeoDiff } from './seo-diff-policy.mjs'
 
 const exec = promisify(execFile)
 const runnerEnv = { ...process.env, PATH: `/home/deploy/.npm-global/bin:/home/deploy/.local/bin:${process.env.PATH || ""}` }
@@ -97,6 +98,11 @@ console.log(JSON.stringify({
   reviewContext: {
     targetUrl: action.targetUrl || action.url || '',
     keyword: action.keyword || '',
+    primaryQuery: action.primaryQuery || action.keyword || '',
+    actionType: action.actionType || '',
+    requiredFields: Array.isArray(action.requiredFields) ? action.requiredFields : [],
+    rankingMetrics: action.rankingMetrics || null,
+    hypothesis: action.hypothesis || '',
     why: action.why || '',
     intendedChange: action.recommendedAction || action.title || ''
   },
@@ -369,6 +375,13 @@ async function runQualityGate(repoDir, input) {
     const diffStat = await run('git', ['diff', '--stat'], repoDir)
     if (!diffStat.stdout.trim()) throw new Error('Codex made no changes')
     const diff = await run('git', ['diff', '--', '.'], repoDir)
+    const changedFiles = (await run('git', ['diff', '--name-only', '--', '.'], repoDir)).stdout
+      .split(/\r?\n/).map((item) => item.trim()).filter(Boolean)
+    const contract = validateSeoDiff({ action: input, diff: diff.stdout, changedFiles })
+    if (!contract.ok) {
+      await rejectDirtyWorktree(repoDir, input, contract)
+      throw new Error(`SEO action contract blocked commit: ${contract.reason}`)
+    }
     const review = deterministicMaterialityReview(input, diff.stdout)
       || deterministicLanguageReview(input, diff.stdout)
       || await reviewDiffWithCodex(repoDir, input, diffStat.stdout, diff.stdout, attempt)
@@ -494,6 +507,11 @@ async function reviewDiffWithCodex(repoDir, input, diffStat, diff, attempt) {
       repoFullName: input.repoFullName,
       targetUrl: input.targetUrl,
       keyword: input.keyword,
+      primaryQuery: input.primaryQuery,
+      actionType: input.actionType,
+      requiredFields: input.requiredFields,
+      rankingMetrics: input.rankingMetrics,
+      hypothesis: input.hypothesis,
       keywordMetrics: input.keywordMetrics,
       keywordMetricsStatus: input.keywordMetricsStatus,
       title: input.title,
@@ -535,6 +553,11 @@ async function reviseDiffWithCodex(repoDir, input, review, attempt) {
     `Repo: ${input.repoFullName || ''}`,
     `Target URL: ${input.targetUrl || ''}`,
     `Keyword: ${input.keyword || ''}`,
+    `Primary query: ${input.primaryQuery || input.keyword || ''}`,
+    `Action type: ${input.actionType || ''}`,
+    `Required SEO fields: ${Array.isArray(input.requiredFields) ? input.requiredFields.join(', ') : ''}`,
+    `Ranking metrics: ${input.rankingMetrics ? JSON.stringify(input.rankingMetrics) : 'not available'}`,
+    `Ranking hypothesis: ${input.hypothesis || 'not specified'}`,
     `Title: ${input.title || ''}`,
     '',
     'Workspace implementation rules:',
@@ -765,6 +788,8 @@ function buildPrompt(input) {
     '- Do not touch unrelated files.',
     '- Do not change deploy config, auth, API integrations, pricing, redirects, or routing unless the action explicitly requires it.',
     '- Prefer metadata, copy, schema, internal links, FAQ, or small existing-page changes.',
+    '- If this is a ranking action, implement the stated hypothesis and required SEO fields; do not substitute a generic FAQ or AI-readiness rewrite.',
+    '- If this is not a ranking action, do not invent a keyword objective; keep technical, indexing and AI-visibility work in its own scope.',
     '- Visual design is frozen for every workspace. Do not change CSS, layout, spacing, images, icons, animation, navigation, forms or visual component structure.',
     '- If the action text contains a generic template that conflicts with the workspace rules, rewrite the implementation around the workspace rules instead of copying the template.',
     '- Do not add B2B/SMB/konsult/SaaS language to consumer utilities such as vagkollen.se or parkeringspolaren.se.',
