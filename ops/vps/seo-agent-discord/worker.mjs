@@ -10067,11 +10067,11 @@ function shouldPostActionCard(action, workspace, targetChannelId) {
   if (ledger?.status === 'completed' && !isLedgerRecheckDue(ledger)) return { ok: false, reason: 'already_completed_waiting_recheck' }
   if (ledger?.status === 'ignored' && !isLedgerRecheckDue(ledger)) return { ok: false, reason: 'previously_ignored_waiting_recheck' }
   if (Number(ledger?.guardedCount || 0) >= 2 && !isLedgerRecheckDue(ledger)) return { ok: false, reason: 'repeatedly_guarded' }
-  if (profile.avoid?.some((term) => text.includes(normalizeForMatch(term))) && !profile.prefer?.some((term) => text.includes(normalizeForMatch(term)))) {
+  const isMeasuredRanking = action?.track === 'ranking' || action?.actionType === 'ranking_content' || action?.evidenceSource === 'gsc'
+  if (!isMeasuredRanking && profile.avoid?.some((term) => text.includes(normalizeForMatch(term))) && !profile.prefer?.some((term) => text.includes(normalizeForMatch(term)))) {
     return { ok: false, reason: 'workspace_avoid_terms_without_preferred_context' }
   }
   if (isSebcastwallWorkspace(workspace, profile)) {
-    const isMeasuredRanking = action?.track === 'ranking' || action?.actionType === 'ranking_content' || action?.evidenceSource === 'gsc'
     if (!isMeasuredRanking && /\b(abicart|klarna|fortnox|fortknox|visma|business-central|business central|mailchimp|monday|zendesk|account-status|help-outline)\b/.test(text)) {
       return { ok: false, reason: 'sebcastwall_noise_keyword' }
     }
@@ -10142,11 +10142,12 @@ function reviewActionForPosting(action, workspace, targetChannelId, workspacePol
 
   const preferredHits = (profile.prefer || []).filter((term) => text.includes(normalizeForMatch(term)))
   const avoidedHits = (profile.avoid || []).filter((term) => text.includes(normalizeForMatch(term)))
+  const isMeasuredRanking = action?.track === 'ranking' || action?.actionType === 'ranking_content' || action?.evidenceSource === 'gsc'
   if (preferredHits.length) {
     score += Math.min(30, preferredHits.length * 10)
     positives.push(`matchar workspace-mål: ${preferredHits.slice(0, 3).join(', ')}`)
   }
-  if (avoidedHits.length && !preferredHits.length) {
+  if (avoidedHits.length && !preferredHits.length && !isMeasuredRanking) {
     score -= 40
     negatives.push(`drar mot lågprioriterat spår: ${avoidedHits.slice(0, 3).join(', ')}`)
   }
