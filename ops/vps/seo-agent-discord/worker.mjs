@@ -548,8 +548,35 @@ async function maybeStartDailySeoRuns() {
 }
 
 async function listWorkspaces() {
-  const payload = await fetchPlatformJson('/api/platform/seo-monitor/workspaces')
-  return Array.isArray(payload.workspaces) ? payload.workspaces : []
+  try {
+    const payload = await fetchPlatformJson('/api/platform/seo-monitor/workspaces')
+    return Array.isArray(payload.workspaces) ? payload.workspaces : []
+  } catch (error) {
+    const fallback = configuredWorkspaceFallbacks()
+    if (!fallback.length) throw error
+    logThrottled('workspace_list_fallback', 15 * 60 * 1000, 'workspace_list_fallback', {
+      error: error?.message || String(error),
+      workspaceCount: fallback.length,
+      source: 'SEO_AGENT_WORKSPACE_CHANNELS'
+    })
+    return fallback
+  }
+}
+
+function configuredWorkspaceFallbacks() {
+  return Object.keys(workspaceChannels)
+    .map((key) => {
+      const parsed = parseWorkspaceChannelKey(key)
+      if (!parsed.gscProperty || !parsed.repoFullName) return null
+      return {
+        id: `${parsed.gscProperty}__${parsed.repoFullName}__${parsed.branch}`,
+        label: normalizeGscPropertyHost(parsed.gscProperty) || parsed.label || parsed.repoFullName,
+        gscProperty: parsed.gscProperty,
+        repoFullName: parsed.repoFullName,
+        branch: parsed.branch || 'main'
+      }
+    })
+    .filter(Boolean)
 }
 
 async function syncWorkspaceRepoCommits(workspaces) {
