@@ -5210,10 +5210,10 @@ async function markPostedActionHandled(actionId, targetChannelId = null, reason 
 
 function prioritizeActionQueue(items, workspace = null, targetChannelId = null) {
   const priorityWeight = (priority) => priority === 'critical' ? 0 : priority === 'high' ? 1 : priority === 'medium' ? 2 : 3
+  const workspaceText = String(workspace?.label || workspace?.id || '').toLowerCase()
+  const isSebcastwall = workspaceText.includes('sebcastwall')
   const typeWeight = (item) => {
     const text = String((item?.title || '') + ' ' + (item?.keyword || '') + ' ' + (item?.targetUrl || '') + ' ' + (item?.why || '') + ' ' + (item?.recommendedAction || '')).toLowerCase()
-    const workspaceText = String(workspace?.label || workspace?.id || '').toLowerCase()
-    const isSebcastwall = workspaceText.includes('sebcastwall')
     const aiFit = /ai[- ]?agent|ai agenter|ai konsult|ai-konsult|ai automatisering|ai-automatisering|automation|app|webbutveckling|kodning|internverktyg/.test(text)
     const integrationHeavy = /integration|integrationskollen|fortnox|visma|bokföring|bokforing|faktura/.test(text)
     if (text.includes('kontrollera indexering') || text.includes('url inspection') || text.includes('oauth-tokenutbyte')) return 5
