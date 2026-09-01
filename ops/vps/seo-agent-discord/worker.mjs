@@ -8844,6 +8844,38 @@ function ensureAutonomousAgentState() {
   state.siteKnowledge = state.siteKnowledge || {}
   state.repoCommitSync = state.repoCommitSync || {}
   migrateExistingStateToActionLedger()
+  reopenRankingActionsAfterPolicyFix()
+}
+
+function reopenRankingActionsAfterPolicyFix() {
+  const migrationVersion = 'ranking-evidence-policy-v3'
+  if (state.rankingPolicyMigrationVersion === migrationVersion) return
+  const now = new Date().toISOString()
+  let reopened = 0
+  for (const ledger of Object.values(state.actionLedger || {})) {
+    const workspaceKey = String(ledger?.workspaceKey || '').toLowerCase()
+    const title = String(ledger?.title || '').toLowerCase()
+    const keyword = String(ledger?.keyword || '').trim()
+    const targetUrl = String(ledger?.targetUrl || '').trim()
+    const oldPolicyGuard = (ledger?.events || []).some((event) => [
+      'workspace_avoid_terms_without_preferred_context',
+      'indexing_check_is_internal',
+      'autonomous_or_internal_not_decision_card'
+    ].includes(String(event?.reason || '')))
+    if (workspaceKey !== 'repo:sajden/sebcastwall' || !keyword || !targetUrl || !oldPolicyGuard) continue
+    if (!/gsc[- ]query|förbättra ctr|forbattra ctr/.test(title)) continue
+    ledger.guardedCount = 0
+    ledger.status = 'seen'
+    ledger.recheckAfter = now
+    ledger.lastEventAt = now
+    ledger.events = [
+      { event: 'reopened_after_ranking_policy_fix', at: now, reason: migrationVersion },
+      ...(Array.isArray(ledger.events) ? ledger.events : [])
+    ].slice(0, 20)
+    reopened += 1
+  }
+  state.rankingPolicyMigrationVersion = migrationVersion
+  if (reopened) log('ranking_actions_reopened_after_policy_fix', { reopened, migrationVersion })
 }
 
 function reconcileTransitionalLedgerStatuses() {
