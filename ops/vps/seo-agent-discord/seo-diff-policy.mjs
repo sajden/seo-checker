@@ -40,6 +40,20 @@ function hasSurface(diff, surface) {
   return patterns[surface] ? patterns[surface].test(text) : false
 }
 
+function queryOnSeoSurface(diff, keyword) {
+  const terms = meaningfulTerms(keyword)
+  if (!terms.length) return false
+  const queryPattern = new RegExp(terms.map((term) => term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('(?:\\s+\\w+){0,2}\\s+'))
+  return String(diff || '')
+    .split(/\r?\n/)
+    .filter((line) => /^\+[^+]/.test(line))
+    .some((line) => {
+      const normalizedLine = normalize(line)
+      const looksLikeSeoSurface = /title|h1|h2|description|meta|lead|intro|<p|question|answer|heading/.test(normalizedLine)
+      return looksLikeSeoSurface && queryPattern.test(normalizedLine)
+    })
+}
+
 export function validateSeoDiff({ action = {}, diff = '', changedFiles = [] } = {}) {
   if (!isRankingAction(action)) return { ok: true, reason: 'non_ranking_action' }
   const keyword = String(action.keyword || action.primaryQuery || '').trim()
@@ -54,6 +68,9 @@ export function validateSeoDiff({ action = {}, diff = '', changedFiles = [] } = 
     return { ok: false, reason: 'ranking_action_changed_visual_css' }
   }
   const actionType = String(action.actionType || '').toLowerCase()
+  if (!queryOnSeoSurface(diff, keyword)) {
+    return { ok: false, reason: 'ranking_diff_query_not_in_seo_surface', keyword }
+  }
   const requiredFields = Array.isArray(action.requiredFields) && action.requiredFields.length
     ? action.requiredFields
     : actionType === 'ranking_ctr' ? ['title', 'h1', 'intro'] : ['h1', 'intro', 'h2']
@@ -70,4 +87,3 @@ export function validateSeoDiff({ action = {}, diff = '', changedFiles = [] } = 
     requiredFields
   }
 }
-
