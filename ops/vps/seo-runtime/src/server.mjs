@@ -1520,7 +1520,22 @@ function isSebcastwallWorkspaceContext(context) {
   ].filter(Boolean).some((value) => normalize(value).includes('sebcastwall'))
 }
 
+function isMeasuredRankingAction(action) {
+  const hasExplicitTrack = action?.track === 'ranking'
+    || action?.actionType === 'ranking_content'
+    || action?.evidenceSource === 'gsc'
+  const hasQueryAndTarget = Boolean(String(action?.keyword || action?.query || '').trim())
+    && Boolean(String(action?.targetUrl || action?.url || '').trim())
+  const evidence = normalize([
+    action?.why,
+    ...(Array.isArray(action?.evidence) ? action.evidence : [])
+  ].filter(Boolean).join(' '))
+  const hasGscMetrics = /impressions?|clicks?|klick|ctr|position/.test(evidence)
+  return hasExplicitTrack || (hasQueryAndTarget && hasGscMetrics)
+}
+
 function isSebcastwallNonActionableSeoWork(action, targetUrl) {
+  if (isMeasuredRankingAction(action)) return false
   const text = normalize([
     action?.id,
     action?.title,
