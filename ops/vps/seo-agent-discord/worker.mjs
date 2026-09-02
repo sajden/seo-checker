@@ -2311,11 +2311,22 @@ async function chooseAutonomousCodeAction(actions, workspace, targetChannelId, w
       rejectionReasons.push({ id: executableAction.id, title: executableAction.title || executableAction.id, reason: `rewritten:${rewrittenCheck.reason}` })
       continue
     }
+    const rewrittenGuard = shouldPostActionCard(executableAction, workspace, targetChannelId)
+    if (!rewrittenGuard.ok) {
+      rejectionReasons.push({ id: executableAction.id, title: executableAction.title || executableAction.id, reason: `rewritten_guard:${rewrittenGuard.reason}` })
+      rememberGuardedAction(executableAction, workspace, targetChannelId, rewrittenGuard.reason)
+      continue
+    }
+    const rewrittenReview = reviewActionForPosting(executableAction, workspace, targetChannelId, workspacePolicy)
+    if (!isAutonomousReviewSafe(rewrittenReview)) {
+      rejectionReasons.push({ id: executableAction.id, title: executableAction.title || executableAction.id, reason: `rewritten_review:${rewrittenReview?.recommendation || 'unknown'}:${Math.round(Number(rewrittenReview?.score || 0))}:${rewrittenReview?.risk || ''}` })
+      continue
+    }
     return {
       action: executableAction,
-      review,
+      review: rewrittenReview,
       codexBrief,
-      reason: codexBrief?.why || review.why || 'Codex och agentens guard bedömde detta som en konkret låg-risk förbättring.'
+      reason: codexBrief?.why || rewrittenReview.why || 'Codex och agentens guard bedömde detta som en konkret låg-risk förbättring.'
     }
   }
   const synthetic = await syntheticAutonomousActionForWorkspace({
@@ -2863,6 +2874,25 @@ async function syntheticAutonomousActionForWorkspace({ workspace, targetChannelI
     })
     return null
   }
+  const rewrittenGuard = shouldPostActionCard(executableAction, workspace, targetChannelId)
+  if (!rewrittenGuard.ok) {
+    rememberGuardedAction(executableAction, workspace, targetChannelId, rewrittenGuard.reason)
+    logThrottled(`synthetic_autonomous_skipped:${workspace?.id || workspace?.label}:${action.id}:rewrite-guard`, 30 * 60 * 1000, 'synthetic_autonomous_skipped', {
+      workspace: workspace?.label || workspace?.id || null,
+      actionId: action.id,
+      reason: `rewritten_guard:${rewrittenGuard.reason}`
+    })
+    return null
+  }
+  const rewrittenReview = reviewActionForPosting(executableAction, workspace, targetChannelId, workspacePolicy)
+  if (!isAutonomousReviewSafe(rewrittenReview)) {
+    logThrottled(`synthetic_autonomous_skipped:${workspace?.id || workspace?.label}:${action.id}:rewrite-review`, 30 * 60 * 1000, 'synthetic_autonomous_skipped', {
+      workspace: workspace?.label || workspace?.id || null,
+      actionId: action.id,
+      reason: `rewritten_review:${rewrittenReview?.recommendation || 'unknown'}:${Math.round(Number(rewrittenReview?.score || 0))}:${rewrittenReview?.risk || ''}`
+    })
+    return null
+  }
   log('synthetic_autonomous_action_selected', {
     workspace: workspace?.label || workspace?.id || null,
     actionId: action.id,
@@ -2871,9 +2901,9 @@ async function syntheticAutonomousActionForWorkspace({ workspace, targetChannelI
   rememberAgentLesson(`Created synthetic ${profile.siteType || 'workspace'} goal-gap action because live queue did not provide a better low-risk code action.`)
   return {
     action: executableAction,
-    review,
+    review: rewrittenReview,
     codexBrief,
-    reason: codexBrief.why || syntheticEvidenceReason(action)
+    reason: codexBrief.why || rewrittenReview.why || syntheticEvidenceReason(action)
   }
 }
 
