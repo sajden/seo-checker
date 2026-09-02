@@ -454,8 +454,18 @@ function buildFallbackReview(input: SeoReviewInput): SeoReview {
       - ((input.crawlReport?.pages.length ?? 0) === 0 ? 20 : 0)
   ));
 
-  const rankedActions = mergeActions(topActions, [])
-    .filter((action) => !isRepeatedOpenAction(action, input.seoMemory))
+  const freshActions = topActions.filter((action) => !isRepeatedOpenAction(action, input.seoMemory));
+  const freshRankingActions = freshActions.filter(isEvidenceBackedRankingAction);
+  const recurringRankingActions = topActions.filter((action) =>
+    isEvidenceBackedRankingAction(action) && isRepeatedOpenAction(action, input.seoMemory)
+  );
+  // Do not let the memory de-duplication rule erase the ranking queue. If all
+  // ranking opportunities are already open, surface the best one as an
+  // explicit follow-up rather than replacing it with generic AI Search work.
+  const actionsForReview = freshRankingActions.length
+    ? [...freshRankingActions, ...freshActions.filter((action) => !isEvidenceBackedRankingAction(action))]
+    : [...recurringRankingActions.slice(0, 2), ...freshActions.filter((action) => !isEvidenceBackedRankingAction(action))];
+  const rankedActions = mergeActions(actionsForReview, [])
     .slice(0, 8)
     .map((action, index) => ({ ...action, rank: index + 1 }));
   const fallbackReview = {
@@ -559,12 +569,17 @@ function sanitizeReview(candidate: Partial<SeoReview>, fallback: SeoReview, memo
   // evidence is the primary product outcome. Pin those evidence-backed
   // opportunities ahead of secondary readiness/technical suggestions, while
   // retaining the LLM's useful detail for the remaining slots.
-  const rankingActions = fallback.topActions.filter(isEvidenceBackedRankingAction);
+  const freshRankingActions = fallback.topActions
+    .filter(isEvidenceBackedRankingAction)
+    .filter((action) => !isRepeatedOpenAction(action, memory));
+  const rankingActions = freshRankingActions.length
+    ? freshRankingActions
+    : fallback.topActions.filter(isEvidenceBackedRankingAction).slice(0, 2);
   const candidateWithoutRankingDuplicates = actions.filter((action) =>
     !rankingActions.some((rankingAction) => actionClusterKey(rankingAction) === actionClusterKey(action))
   );
   const mergedActions = mergeActions([...rankingActions, ...candidateWithoutRankingDuplicates], [])
-    .filter((action) => !isRepeatedOpenAction(action, memory))
+    .filter((action) => rankingActions.includes(action) || !isRepeatedOpenAction(action, memory))
     .slice(0, 8)
     .map((action, index) => ({ ...action, rank: index + 1 }));
   const strictScore = typeof candidate.score === "number"
