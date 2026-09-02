@@ -9919,8 +9919,9 @@ function ensureWorkspaceProfile(workspace, targetChannelId = null) {
     updatedAt: existing.updatedAt || new Date().toISOString()
   }
   if (isSebcastwallWorkspace(workspace)) {
+    profile.audience = defaults.audience
     profile.positioningPolicy = defaults.positioningPolicy
-    profile.businessFocusPolicyVersion = 'business-focus-v2'
+    profile.businessFocusPolicyVersion = 'business-focus-v3'
     profile.strategicExpansionCandidates = defaults.strategicExpansionCandidates
     profile.keywordMap = profile.keywordMap.map((item) => (
       item.keyword === 'Microsoft 365 automatisering'
@@ -10043,9 +10044,9 @@ function defaultWorkspaceProfile(workspace) {
     return {
       label: workspace?.label || 'sebcastwall.se',
       siteType: 'ai_technology_consultancy_and_local_home_it',
-      audience: 'företag som köper AI, utveckling, digital marknadsföring eller Microsoft 365 samt privatpersoner som behöver Hem-IT i Bromma/Stockholm',
-      goals: ['rank higher for valuable business searches', 'prioritize Microsoft products, AI, development and digital marketing for B2B', 'rank higher for local Hem-IT searches', 'increase qualified organic enquiries without changing the approved design'],
-      prefer: ['AI-genomgång', 'AI-utbildning', 'AI-agenter', 'AI-automation', 'AI & automatisering', 'webbutveckling företag', 'webbutveckling', 'webbappar', 'apputveckling', 'mobilappar', 'Flutter', 'kundappar', 'interna verktyg', 'Microsoft 365', 'Teams', 'SharePoint', 'Microsoft Planner', 'Planner', 'Power Automate', 'digital marknadsföring', 'Hem-IT', 'datorhjälp hemma', 'wifi hjälp', 'TV och teknik hemma', 'kameror och säkerhet'],
+      audience: 'B2B-företag som köper AI, utveckling, digital marknadsföring, Microsoft 365 eller automation samt B2C-privatpersoner som behöver lokal Hem-IT i Bromma/Stockholm',
+      goals: ['rank higher for valuable business searches', 'prioritize Microsoft products, AI, development and digital marketing for B2B', 'rank higher for local Hem-IT searches across Wi-Fi, computers, printers, cameras, accounts and smart home', 'increase qualified organic enquiries without changing the approved design'],
+      prefer: ['AI-genomgång', 'AI-utbildning', 'AI-agenter', 'AI-automation', 'AI & automatisering', 'webbutveckling företag', 'webbutveckling', 'webbappar', 'apputveckling', 'mobilappar', 'Flutter', 'kundappar', 'interna verktyg', 'Microsoft 365', 'Teams', 'SharePoint', 'Microsoft Planner', 'Planner', 'Power Automate', 'digital marknadsföring', 'Hem-IT', 'IT hjälp hemma', 'datorhjälp hemma', 'Mac hjälp', 'Windows hjälp', 'wifi hjälp', 'router', 'mesh', 'skrivare hemma', 'hemmakontor', 'TV och teknik hemma', 'Chromecast hjälp', 'smart hem', 'kameror och säkerhet', 'övervakningskamera hemma', 'BankID hjälp', 'backup iPhone', 'RUT IT hjälp hemma'],
       avoid: ['bookkeeping-only', 'generic integration-only', 'irrelevant imported queries', 'Fortnox', 'Visma', 'integration-only', 'AI workshop', 'AI-konsult som generell fras'],
       positioningPolicy: 'Preserve the approved B2B and B2C structure. Primary B2B focus: Microsoft products, AI, development, digital marketing and automation. Integrations are supporting work, not the primary position. B2B Wi-Fi/camera/security is a strategic expansion candidate only after the operator confirms the offer and target page.',
       strategicExpansionCandidates: ['B2B Wi-Fi och nätverk', 'kameraövervakning och säkerhet för företag'],
@@ -10055,6 +10056,16 @@ function defaultWorkspaceProfile(workspace) {
         { keyword: 'datorhjälp hemma Bromma', targetUrl: 'https://sebcastwall.se/tjanster/hem-it/dator-mac', intent: 'local_commercial', priority: 'high' },
         { keyword: 'wifi hjälp hemma Bromma', targetUrl: 'https://sebcastwall.se/tjanster/hem-it/wifi-natverk', intent: 'local_commercial', priority: 'high' },
         { keyword: 'Hem-IT Bromma', targetUrl: 'https://sebcastwall.se/tjanster/hem-it', intent: 'local_commercial', priority: 'high' },
+        { keyword: 'IT hjälp hemma Bromma', targetUrl: 'https://sebcastwall.se/tjanster/hem-it', intent: 'local_commercial', priority: 'high' },
+        { keyword: 'wifi hjälp hemma', targetUrl: 'https://sebcastwall.se/tjanster/hem-it/wifi-natverk', intent: 'local_commercial', priority: 'high' },
+        { keyword: 'skrivare hjälp hemma', targetUrl: 'https://sebcastwall.se/tjanster/hem-it/skrivare-utrustning', intent: 'local_commercial', priority: 'medium' },
+        { keyword: 'installera skrivare hemma', targetUrl: 'https://sebcastwall.se/tjanster/hem-it/skrivare-utrustning', intent: 'local_commercial', priority: 'medium' },
+        { keyword: 'kameror och säkerhet hemma', targetUrl: 'https://sebcastwall.se/tjanster/hem-it/kameror-smart-sakerhet', intent: 'local_commercial', priority: 'medium' },
+        { keyword: 'övervakningskamera hemma', targetUrl: 'https://sebcastwall.se/tjanster/hem-it/kameror-smart-sakerhet', intent: 'local_commercial', priority: 'medium' },
+        { keyword: 'BankID hjälp hemma', targetUrl: 'https://sebcastwall.se/tjanster/hem-it/konton-bankid-backup', intent: 'local_commercial', priority: 'medium' },
+        { keyword: 'backup iPhone hjälp', targetUrl: 'https://sebcastwall.se/tjanster/hem-it/konton-bankid-backup', intent: 'local_commercial', priority: 'medium' },
+        { keyword: 'Chromecast hjälp hemma', targetUrl: 'https://sebcastwall.se/tjanster/hem-it/smart-hem-tv', intent: 'local_commercial', priority: 'medium' },
+        { keyword: 'smart hem hjälp', targetUrl: 'https://sebcastwall.se/tjanster/hem-it/smart-hem-tv', intent: 'local_commercial', priority: 'low' },
         { keyword: 'webbutveckling företag', targetUrl: 'https://sebcastwall.se/tjanster/webbutveckling', intent: 'commercial', priority: 'high' },
         { keyword: 'webbapplikation företag', targetUrl: 'https://sebcastwall.se/tjanster/interna-verktyg', intent: 'commercial', priority: 'high' },
         { keyword: 'apputveckling företag', targetUrl: 'https://sebcastwall.se/tjanster/mobilappar', intent: 'commercial', priority: 'high' },
