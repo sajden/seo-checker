@@ -9898,7 +9898,10 @@ function ensureWorkspaceProfile(workspace, targetChannelId = null) {
     goals: [...new Set([...(existing.goals || []), ...(defaults.goals || [])])].slice(0, 20),
     prefer: [...new Set([...(existing.prefer || []), ...(defaults.prefer || [])])].slice(0, 30),
     avoid: [...new Set([...(existing.avoid || []), ...(defaults.avoid || [])])].slice(0, 30),
-    keywordMap: mergeKeywordMap(existing.keywordMap || state.keywordMaps?.[key] || [], defaults.keywordMap || []),
+    keywordMap: normalizeSebcastwallKeywordMap(
+      workspace,
+      mergeKeywordMap(existing.keywordMap || state.keywordMaps?.[key] || [], defaults.keywordMap || [])
+    ),
     updatedAt: existing.updatedAt || new Date().toISOString()
   }
   state.workspaceProfiles[key] = profile
@@ -9932,6 +9935,19 @@ function mergeKeywordMap(existing, defaults) {
     })
   }
   return [...byKey.values()].slice(0, 60)
+}
+
+function normalizeSebcastwallKeywordMap(workspace, items) {
+  if (!isSebcastwallWorkspace(workspace)) return items
+  return (Array.isArray(items) ? items : []).map((item) => {
+    const targetUrl = String(item?.targetUrl || '')
+    if (!/\/tjanster\/app-webbutveckling(?:\/|$)/i.test(targetUrl)) return item
+    const keyword = normalizeForMatch(item?.keyword || '')
+    const canonicalPath = /app(?:utveckling|utveckla)/i.test(keyword)
+      ? '/tjanster/mobilappar'
+      : '/tjanster/interna-verktyg'
+    return { ...item, targetUrl: `https://sebcastwall.se${canonicalPath}` }
+  })
 }
 
 function mapKeywordForAction(action, keywordMap) {
@@ -10004,10 +10020,11 @@ function defaultWorkspaceProfile(workspace) {
       label: workspace?.label || 'sebcastwall.se',
       siteType: 'ai_technology_consultancy_and_local_home_it',
       audience: 'företag som köper AI, utveckling, digital marknadsföring eller Microsoft 365 samt privatpersoner som behöver Hem-IT i Bromma/Stockholm',
-      goals: ['rank higher for valuable business searches', 'rank higher for local Hem-IT searches', 'increase qualified organic enquiries without changing the approved design'],
-      prefer: ['Hem-IT', 'datorhjälp hemma', 'wifi hjälp', 'TV och teknik hemma', 'webbutveckling', 'webbapplikationer', 'apputveckling', 'mobilappar', 'Flutter', 'kundappar', 'interna verktyg', 'AI-automation', 'AI-agenter', 'AI-genomgång', 'Microsoft 365'],
+      goals: ['rank higher for valuable business searches', 'prioritize Microsoft products, AI, development and digital marketing for B2B', 'rank higher for local Hem-IT searches', 'increase qualified organic enquiries without changing the approved design'],
+      prefer: ['AI-genomgång', 'AI-utbildning', 'AI-agenter', 'AI-automation', 'AI & automatisering', 'webbutveckling företag', 'webbutveckling', 'webbappar', 'apputveckling', 'mobilappar', 'Flutter', 'kundappar', 'interna verktyg', 'Microsoft 365', 'Teams', 'SharePoint', 'Power Automate', 'digital marknadsföring', 'Hem-IT', 'datorhjälp hemma', 'wifi hjälp', 'TV och teknik hemma', 'kameror och säkerhet'],
       avoid: ['bookkeeping-only', 'generic integration-only', 'irrelevant imported queries', 'Fortnox', 'Visma', 'integration-only', 'AI workshop', 'AI-konsult som generell fras'],
-      positioningPolicy: 'Preserve the approved B2B and B2C structure. Integrations are supporting work, not the primary position.',
+      positioningPolicy: 'Preserve the approved B2B and B2C structure. Primary B2B focus: Microsoft products, AI, development, digital marketing and automation. Integrations are supporting work, not the primary position. B2B Wi-Fi/camera/security is a strategic expansion candidate only after the operator confirms the offer and target page.',
+      strategicExpansionCandidates: ['B2B Wi-Fi och nätverk', 'kameraövervakning och säkerhet för företag'],
       designPolicy: 'Frozen: no CSS, layout, images, navigation, shared components, forms, CTA behavior, public prices, routes, redirects or public claims.',
       deliveryPolicy: 'Sebcastwall changes go to seo-agent/<action-id> review branches. Never autonomous push to main or production.',
       keywordMap: [
@@ -10015,14 +10032,15 @@ function defaultWorkspaceProfile(workspace) {
         { keyword: 'wifi hjälp hemma Bromma', targetUrl: 'https://sebcastwall.se/tjanster/hem-it/wifi-natverk', intent: 'local_commercial', priority: 'high' },
         { keyword: 'Hem-IT Bromma', targetUrl: 'https://sebcastwall.se/tjanster/hem-it', intent: 'local_commercial', priority: 'high' },
         { keyword: 'webbutveckling företag', targetUrl: 'https://sebcastwall.se/tjanster/webbutveckling', intent: 'commercial', priority: 'high' },
-        { keyword: 'webbapplikation företag', targetUrl: 'https://sebcastwall.se/tjanster/app-webbutveckling', intent: 'commercial', priority: 'high' },
-        { keyword: 'apputveckling företag', targetUrl: 'https://sebcastwall.se/tjanster/app-webbutveckling', intent: 'commercial', priority: 'high' },
+        { keyword: 'webbapplikation företag', targetUrl: 'https://sebcastwall.se/tjanster/interna-verktyg', intent: 'commercial', priority: 'high' },
+        { keyword: 'apputveckling företag', targetUrl: 'https://sebcastwall.se/tjanster/mobilappar', intent: 'commercial', priority: 'high' },
         { keyword: 'mobilapputveckling Flutter', targetUrl: 'https://sebcastwall.se/tjanster/mobilappar', intent: 'commercial', priority: 'high' },
         { keyword: 'kundapp utveckling', targetUrl: 'https://sebcastwall.se/tjanster/mobilappar/kundappar', intent: 'commercial', priority: 'high' },
         { keyword: 'interna verktyg företag', targetUrl: 'https://sebcastwall.se/tjanster/interna-verktyg', intent: 'commercial', priority: 'high' },
         { keyword: 'AI automatisering företag', targetUrl: 'https://sebcastwall.se/tjanster/ai-automatisering', intent: 'commercial', priority: 'medium' },
         { keyword: 'AI agenter företag', targetUrl: 'https://sebcastwall.se/tjanster/ai-agenter', intent: 'commercial', priority: 'medium' },
-        { keyword: 'Microsoft 365 automatisering', targetUrl: 'https://sebcastwall.se/tjanster/microsoft-365', intent: 'commercial', priority: 'low' }
+        { keyword: 'Microsoft 365 automatisering', targetUrl: 'https://sebcastwall.se/tjanster/microsoft-365', intent: 'commercial', priority: 'high' },
+        { keyword: 'digital marknadsföring företag', targetUrl: 'https://sebcastwall.se/tjanster/digital-marknadsforing', intent: 'commercial', priority: 'medium' }
       ],
       autonomy: 'autonomous_seo_review_branch'
     }
