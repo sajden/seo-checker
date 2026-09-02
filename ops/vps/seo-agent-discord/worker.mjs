@@ -5297,8 +5297,12 @@ function prioritizeActionQueue(items, workspace = null, targetChannelId = null) 
     const base = Number.isFinite(value) ? value : null
     const boost = guidanceScore(item)
     const rankingBoost = isSebcastwall && isEvidenceBackedRankingAction(item) ? 35 : 0
+    const primaryBusinessBoost = isSebcastwall && primaryBusinessFitForAction(item) ? 20 : 0
+    const supportingIntegrationPenalty = isSebcastwall && isSupportingIntegrationAction(item) ? -25 : 0
     const genericPenalty = isSebcastwall && !isEvidenceBackedRankingAction(item) && !item?.keyword ? -20 : 0
-    return base === null ? (boost || rankingBoost || genericPenalty ? 50 + boost + rankingBoost + genericPenalty : null) : base + boost + rankingBoost + genericPenalty
+    return base === null
+      ? (boost || rankingBoost || primaryBusinessBoost || supportingIntegrationPenalty || genericPenalty ? 50 + boost + rankingBoost + primaryBusinessBoost + supportingIntegrationPenalty + genericPenalty : null)
+      : base + boost + rankingBoost + primaryBusinessBoost + supportingIntegrationPenalty + genericPenalty
   }
   return [...items].sort((a, b) => {
     const aScore = score(a)
@@ -5310,6 +5314,16 @@ function prioritizeActionQueue(items, workspace = null, targetChannelId = null) 
     if (byType) return byType
     return priorityWeight(String(a?.priority || 'medium')) - priorityWeight(String(b?.priority || 'medium'))
   })
+}
+
+function primaryBusinessFitForAction(action = {}) {
+  const text = actionText(action)
+  return /microsoft|teams|sharepoint|power automate|digital marknadsforing|ai|automation|webbutveckling|webbapp|mobilapp|flutter|interna verktyg|internverktyg/.test(text)
+}
+
+function isSupportingIntegrationAction(action = {}) {
+  const text = actionText(action)
+  return /integration|integrationskollen|fortnox|visma|bokforing|faktura/.test(text) && !primaryBusinessFitForAction(action)
 }
 
 function isEvidenceBackedRankingAction(action = {}) {

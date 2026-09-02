@@ -314,6 +314,13 @@ test('verified ranking actions outrank autonomous Codex deprioritization', () =>
   assert.match(workerSource, /ranking-evidence-policy-v7/)
 })
 
+test('SebCastwall queue prefers primary business tracks over supporting integrations', () => {
+  assert.match(workerSource, /function primaryBusinessFitForAction\(action = \{\}\)/)
+  assert.match(workerSource, /function isSupportingIntegrationAction\(action = \{\}\)/)
+  assert.match(workerSource, /primaryBusinessBoost = isSebcastwall && primaryBusinessFitForAction\(item\) \? 20 : 0/)
+  assert.match(workerSource, /supportingIntegrationPenalty = isSebcastwall && isSupportingIntegrationAction\(item\) \? -25 : 0/)
+})
+
 test('Swedish SEO copy does not preserve awkward English grammar for exact match', () => {
   assert.match(runnerSource, /använder inte engelsk plural/)
   assert.match(runnerSource, /Do not preserve English plural forms/)
