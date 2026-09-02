@@ -5318,7 +5318,7 @@ function prioritizeActionQueue(items, workspace = null, targetChannelId = null) 
 
 function primaryBusinessFitForAction(action = {}) {
   const text = actionText(action)
-  return /microsoft|teams|sharepoint|power automate|digital marknadsforing|ai|automation|webbutveckling|webbapp|mobilapp|flutter|interna verktyg|internverktyg/.test(text)
+  return /microsoft|teams|sharepoint|planner|power automate|digital marknadsforing|ai|automation|webbutveckling|webbapp|mobilapp|flutter|interna verktyg|internverktyg/.test(text)
 }
 
 function isSupportingIntegrationAction(action = {}) {
@@ -10045,7 +10045,7 @@ function defaultWorkspaceProfile(workspace) {
       siteType: 'ai_technology_consultancy_and_local_home_it',
       audience: 'företag som köper AI, utveckling, digital marknadsföring eller Microsoft 365 samt privatpersoner som behöver Hem-IT i Bromma/Stockholm',
       goals: ['rank higher for valuable business searches', 'prioritize Microsoft products, AI, development and digital marketing for B2B', 'rank higher for local Hem-IT searches', 'increase qualified organic enquiries without changing the approved design'],
-      prefer: ['AI-genomgång', 'AI-utbildning', 'AI-agenter', 'AI-automation', 'AI & automatisering', 'webbutveckling företag', 'webbutveckling', 'webbappar', 'apputveckling', 'mobilappar', 'Flutter', 'kundappar', 'interna verktyg', 'Microsoft 365', 'Teams', 'SharePoint', 'Power Automate', 'digital marknadsföring', 'Hem-IT', 'datorhjälp hemma', 'wifi hjälp', 'TV och teknik hemma', 'kameror och säkerhet'],
+      prefer: ['AI-genomgång', 'AI-utbildning', 'AI-agenter', 'AI-automation', 'AI & automatisering', 'webbutveckling företag', 'webbutveckling', 'webbappar', 'apputveckling', 'mobilappar', 'Flutter', 'kundappar', 'interna verktyg', 'Microsoft 365', 'Teams', 'SharePoint', 'Microsoft Planner', 'Planner', 'Power Automate', 'digital marknadsföring', 'Hem-IT', 'datorhjälp hemma', 'wifi hjälp', 'TV och teknik hemma', 'kameror och säkerhet'],
       avoid: ['bookkeeping-only', 'generic integration-only', 'irrelevant imported queries', 'Fortnox', 'Visma', 'integration-only', 'AI workshop', 'AI-konsult som generell fras'],
       positioningPolicy: 'Preserve the approved B2B and B2C structure. Primary B2B focus: Microsoft products, AI, development, digital marketing and automation. Integrations are supporting work, not the primary position. B2B Wi-Fi/camera/security is a strategic expansion candidate only after the operator confirms the offer and target page.',
       strategicExpansionCandidates: ['B2B Wi-Fi och nätverk', 'kameraövervakning och säkerhet för företag'],
@@ -10064,6 +10064,7 @@ function defaultWorkspaceProfile(workspace) {
         { keyword: 'AI automatisering företag', targetUrl: 'https://sebcastwall.se/tjanster/ai-automatisering', intent: 'commercial', priority: 'medium' },
         { keyword: 'AI agenter företag', targetUrl: 'https://sebcastwall.se/tjanster/ai-agenter', intent: 'commercial', priority: 'medium' },
         { keyword: 'Microsoft 365 automatisering', targetUrl: 'https://sebcastwall.se/tjanster/microsoft-365', intent: 'commercial', priority: 'high' },
+        { keyword: 'Microsoft Planner för företag', targetUrl: 'https://sebcastwall.se/tjanster/microsoft-365', intent: 'commercial', priority: 'high' },
         { keyword: 'digital marknadsföring företag', targetUrl: 'https://sebcastwall.se/tjanster/digital-marknadsforing', intent: 'commercial', priority: 'medium' }
       ],
       autonomy: 'autonomous_seo_review_branch'
