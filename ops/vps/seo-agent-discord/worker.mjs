@@ -9905,17 +9905,14 @@ function ensureWorkspaceProfile(workspace, targetChannelId = null) {
     updatedAt: existing.updatedAt || new Date().toISOString()
   }
   if (isSebcastwallWorkspace(workspace)) {
-    if (!existing.businessFocusPolicyVersion
-      || existing.positioningPolicy === 'Preserve the approved B2B and B2C structure. Integrations are supporting work, not the primary position.') {
-      profile.positioningPolicy = defaults.positioningPolicy
-      profile.businessFocusPolicyVersion = 'business-focus-v2'
-      profile.strategicExpansionCandidates = defaults.strategicExpansionCandidates
-      profile.keywordMap = profile.keywordMap.map((item) => (
-        item.keyword === 'Microsoft 365 automatisering'
-          ? { ...item, priority: 'high' }
-          : item
-      ))
-    }
+    profile.positioningPolicy = defaults.positioningPolicy
+    profile.businessFocusPolicyVersion = 'business-focus-v2'
+    profile.strategicExpansionCandidates = defaults.strategicExpansionCandidates
+    profile.keywordMap = profile.keywordMap.map((item) => (
+      item.keyword === 'Microsoft 365 automatisering'
+        ? { ...item, priority: 'high' }
+        : item
+    ))
   }
   state.workspaceProfiles[key] = profile
   state.keywordMaps[key] = profile.keywordMap
