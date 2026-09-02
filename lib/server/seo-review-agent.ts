@@ -554,7 +554,16 @@ function parseReviewJson(output: string) {
 
 function sanitizeReview(candidate: Partial<SeoReview>, fallback: SeoReview, memory: SeoTrendSummary): SeoReview {
   const actions = normalizeActions(candidate.topActions, fallback.topActions);
-  const mergedActions = mergeActions(actions, fallback.topActions)
+  // The LLM may correctly describe a real AI Search/content issue but still
+  // choose it as action #1. For this agent, ranking work backed by GSC or SERP
+  // evidence is the primary product outcome. Pin those evidence-backed
+  // opportunities ahead of secondary readiness/technical suggestions, while
+  // retaining the LLM's useful detail for the remaining slots.
+  const rankingActions = fallback.topActions.filter(isEvidenceBackedRankingAction);
+  const candidateWithoutRankingDuplicates = actions.filter((action) =>
+    !rankingActions.some((rankingAction) => actionClusterKey(rankingAction) === actionClusterKey(action))
+  );
+  const mergedActions = mergeActions([...rankingActions, ...candidateWithoutRankingDuplicates], [])
     .filter((action) => !isRepeatedOpenAction(action, memory))
     .slice(0, 8)
     .map((action, index) => ({ ...action, rank: index + 1 }));
@@ -575,6 +584,16 @@ function sanitizeReview(candidate: Partial<SeoReview>, fallback: SeoReview, memo
     monitoringNotes: mergeStrings(stringArrayOr(candidate.monitoringNotes, []), fallback.monitoringNotes, 12),
     fixBriefMarkdown: buildFixBriefMarkdown(mergedActions, fallback)
   };
+}
+
+function isEvidenceBackedRankingAction(action: SeoReviewAction) {
+  if (action.evidenceType === "gsc" || action.evidenceType === "serp") return true;
+  if (!action.keyword || !action.targetUrl || isIndexingAction(action)) return false;
+  return hasKnownDemand(action) && !/ai search readiness/i.test(`${action.title} ${action.action}`);
+}
+
+function isIndexingAction(action: SeoReviewAction) {
+  return normalizeActionKind(action.title, action.action) === "indexing";
 }
 
 function normalizeActions(value: unknown, fallback: SeoReviewAction[]) {
