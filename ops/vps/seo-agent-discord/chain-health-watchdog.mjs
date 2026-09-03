@@ -27,6 +27,7 @@ const previous = readJson(alertStatePath, {})
 const issues = []
 
 await checkService('seo-agent-discord.service', 'discord-worker')
+await checkDiscordAuth()
 await checkService('seo-runtime.service', 'seo-runtime-service')
 await checkOneshotService('seo-agent-auto-deploy.service', 'seo-auto-deploy')
 await checkRuntimeHealth()
@@ -92,6 +93,30 @@ async function checkService(unit, id) {
     if (result.stdout.trim() !== 'active') addIssue(id, unit, `systemd-status är ${result.stdout.trim() || 'okänd'}.`)
   } catch (error) {
     addIssue(id, unit, `systemd-tjänsten är inte aktiv (${commandError(error)}).`)
+  }
+}
+
+async function checkDiscordAuth() {
+  if (!discordToken) {
+    addIssue('discord-auth', 'Discord Bot', 'DISCORD_BOT_TOKEN saknas; interaktioner och larm kan inte levereras.')
+    return
+  }
+  if (!discordChannelId) {
+    addIssue('discord-auth', 'Discord Bot', 'Discord alert/channel-id saknas; interaktioner kan vara uppe men larm kan inte levereras.')
+    return
+  }
+
+  try {
+    const response = await fetch('https://discord.com/api/v10/users/@me', {
+      headers: { authorization: `Bot ${discordToken}` },
+      signal: AbortSignal.timeout(8_000)
+    })
+    if (!response.ok) {
+      const detail = (await response.text()).slice(0, 200)
+      addIssue('discord-auth', 'Discord Bot', `Discord nekar bot-token (${response.status}: ${detail}).`)
+    }
+  } catch (error) {
+    addIssue('discord-auth', 'Discord Bot', `Discord auth kunde inte verifieras (${error?.message || String(error)}).`)
   }
 }
 
