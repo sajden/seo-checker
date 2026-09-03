@@ -20,6 +20,7 @@ const repoHealthStaleMs = Number(env.SEO_AGENT_CHAIN_REPO_HEALTH_STALE_MS || 45 
 const repeatAlertMs = Number(env.SEO_AGENT_CHAIN_ALERT_REPEAT_MS || 6 * 60 * 60 * 1000)
 const liveFailureThreshold = Number(env.SEO_AGENT_CHAIN_LIVE_FAILURE_THRESHOLD || 3)
 const recoveryThreshold = Number(env.SEO_AGENT_CHAIN_RECOVERY_THRESHOLD || 2)
+const restartCooldownMs = Number(env.SEO_AGENT_CHAIN_RESTART_COOLDOWN_MS || 15 * 60 * 1000)
 const dryRun = env.SEO_AGENT_CHAIN_HEALTH_DRY_RUN === 'true' || process.argv.includes('--dry-run')
 
 const previous = readJson(alertStatePath, {})
@@ -43,24 +44,33 @@ const previousIds = Array.isArray(previous.activeIssueIds) ? previous.activeIssu
 const changed = JSON.stringify(issueIds) !== JSON.stringify(previousIds)
 const lastAlertAt = Date.parse(previous.lastAlertAt || '')
 const shouldRepeat = !Number.isFinite(lastAlertAt) || now.getTime() - lastAlertAt >= repeatAlertMs
+const remediations = []
+
+if (confirmedIssues.some((issue) => issue.id === 'discord-worker')) {
+  const restarted = await restartServiceOnce('seo-agent-discord.service', 'discord-worker', previous, now)
+  if (restarted) remediations.push(restarted)
+}
 
 if (confirmedIssues.length && (changed || shouldRepeat)) {
-  await notify([
+  const delivered = await notify([
     '**SEO-kedjan behöver tillsyn**',
     ...confirmedIssues.map((issue) => `- **${issue.label}:** ${issue.detail}`),
+    ...remediations.map((item) => `- **Självreparation:** ${item.detail}`),
     '',
     'Samma felläge larmas inte igen förrän läget ändras eller sex timmar har gått.'
   ].join('\n'))
   previous.lastAlertAt = now.toISOString()
+  previous.lastAlertDelivery = delivered ? 'ok' : 'failed'
 }
 
 if (!confirmedIssues.length && previousIds.length) {
-  await notify([
+  const delivered = await notify([
     '**SEO-kedjan är återställd**',
     `Tidigare fel är borta: ${previousIds.join(', ')}.`,
     'Datainsamling, agentruntime och repo-kontroller rapporterar normalt igen.'
   ].join('\n'))
   previous.lastRecoveryAt = now.toISOString()
+  previous.lastRecoveryDelivery = delivered ? 'ok' : 'failed'
 }
 
 const nextState = {
@@ -69,6 +79,7 @@ const nextState = {
   status: confirmedIssues.length ? 'degraded' : 'healthy',
   activeIssueIds: issueIds,
   activeIssues: confirmedIssues,
+  remediations,
   issueObservations: health.issueObservations
 }
 writeJson(alertStatePath, nextState)
@@ -81,6 +92,27 @@ async function checkService(unit, id) {
     if (result.stdout.trim() !== 'active') addIssue(id, unit, `systemd-status är ${result.stdout.trim() || 'okänd'}.`)
   } catch (error) {
     addIssue(id, unit, `systemd-tjänsten är inte aktiv (${commandError(error)}).`)
+  }
+}
+
+async function restartServiceOnce(unit, id, state, now) {
+  const restartState = state.restartAttempts && typeof state.restartAttempts === 'object' ? state.restartAttempts : {}
+  const lastAttemptAt = Date.parse(restartState[id]?.at || '')
+  if (Number.isFinite(lastAttemptAt) && now.getTime() - lastAttemptAt < restartCooldownMs) return null
+
+  try {
+    await exec('systemctl', ['--user', 'restart', unit], { timeout: 20_000 })
+    state.restartAttempts = {
+      ...restartState,
+      [id]: { at: now.toISOString(), unit, status: 'restart_requested' }
+    }
+    return { id, unit, detail: `${unit} var nere och startades om automatiskt.` }
+  } catch (error) {
+    state.restartAttempts = {
+      ...restartState,
+      [id]: { at: now.toISOString(), unit, status: 'restart_failed', error: commandError(error) }
+    }
+    return { id, unit, detail: `${unit} var nere men kunde inte startas om (${commandError(error)}).` }
   }
 }
 
@@ -280,16 +312,22 @@ function addIssue(id, label, detail) {
 async function notify(content) {
   if (dryRun) {
     console.log(`[dry-run] ${content}`)
-    return
+    return true
   }
-  if (!discordToken || !discordChannelId) throw new Error('discord_alert_credentials_missing')
-  const response = await fetch(`https://discord.com/api/v10/channels/${discordChannelId}/messages`, {
-    method: 'POST',
-    headers: { authorization: `Bot ${discordToken}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ content: content.slice(0, 1990), allowed_mentions: { parse: [] } }),
-    signal: AbortSignal.timeout(12_000)
-  })
-  if (!response.ok) throw new Error(`discord_alert_${response.status}:${(await response.text()).slice(0, 300)}`)
+  try {
+    if (!discordToken || !discordChannelId) throw new Error('discord_alert_credentials_missing')
+    const response = await fetch(`https://discord.com/api/v10/channels/${discordChannelId}/messages`, {
+      method: 'POST',
+      headers: { authorization: `Bot ${discordToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ content: content.slice(0, 1990), allowed_mentions: { parse: [] } }),
+      signal: AbortSignal.timeout(12_000)
+    })
+    if (!response.ok) throw new Error(`discord_alert_${response.status}:${(await response.text()).slice(0, 300)}`)
+    return true
+  } catch (error) {
+    console.error(JSON.stringify({ event: 'discord_alert_delivery_failed', error: error?.message || String(error), at: new Date().toISOString() }))
+    return false
+  }
 }
 
 function loadEnv(paths) {
