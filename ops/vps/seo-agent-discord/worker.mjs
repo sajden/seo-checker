@@ -2607,6 +2607,11 @@ async function remindPendingCodeReviews(workspaces) {
   const targetChannelId = postedAction.channelId || await channelForWorkspace(workspace)
   if (!targetChannelId) return false
   const clearedPreviousCards = await clearReviewComponentsForAction(actionId, targetChannelId)
+  if (clearedPreviousCards === 'discord_auth_failed') {
+    state.lastCodeReviewReminderAt = new Date().toISOString()
+    saveState()
+    return false
+  }
   if (!clearedPreviousCards) return false
   const commitUrl = result.commit ? githubCommitUrl(result.repoFullName || workspace.repoFullName, result.commit) : ''
   const posted = await sendDiscordMessage([
@@ -2640,11 +2645,13 @@ async function clearReviewComponentsForAction(actionId, targetChannelId) {
       })
       delete state.messageToAction[messageId]
     } catch (error) {
+      const errorMessage = error?.message || String(error)
       log('pending_code_review_previous_card_clear_failed', {
         actionId,
         messageId,
-        error: error?.message || String(error)
+        error: errorMessage
       })
+      if (isDiscordAuthError(error)) return 'discord_auth_failed'
       return false
     }
   }
@@ -5545,6 +5552,10 @@ function clearContentReviewCardMessageRefs() {
 
 function isDiscordUnknownMessageError(error) {
   return /discord_404:\s*Unknown Message/.test(String(error?.message || error || ''))
+}
+
+function isDiscordAuthError(error) {
+  return /discord_401:\s*401:\s*Unauthorized|Authentication failed/i.test(String(error?.message || error || ''))
 }
 
 async function contentReviewChannelFor(type) {
