@@ -2651,6 +2651,10 @@ async function clearReviewComponentsForAction(actionId, targetChannelId) {
         messageId,
         error: errorMessage
       })
+      if (isDiscordUnknownMessageError(error)) {
+        delete state.messageToAction[messageId]
+        continue
+      }
       if (isDiscordAuthError(error)) return 'discord_auth_failed'
       return false
     }

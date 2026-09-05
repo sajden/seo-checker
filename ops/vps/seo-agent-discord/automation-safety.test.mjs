@@ -213,6 +213,8 @@ test('pending review branches are reminded in Discord', () => {
   assert.match(workerSource, /remindPendingCodeReviews\(workspaces\)/)
   assert.match(workerSource, /clearReviewComponentsForAction\(actionId, targetChannelId\)/)
   assert.match(workerSource, /pending_code_review_previous_card_clear_failed/)
+  assert.match(workerSource, /isDiscordUnknownMessageError\(error\)/)
+  assert.match(workerSource, /delete state\.messageToAction\[messageId\]/)
   assert.match(workerSource, /Det här är inte ett nytt förslag/)
   assert.match(workerSource, /pending_code_review_reminded/)
 })
