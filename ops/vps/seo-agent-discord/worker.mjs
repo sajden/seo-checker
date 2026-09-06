@@ -80,6 +80,7 @@ const opportunityScoutMinIntervalMs = Number(env.SEO_AGENT_OPPORTUNITY_SCOUT_MIN
 const opportunityScoutGrowthMinIntervalMs = Number(env.SEO_AGENT_OPPORTUNITY_SCOUT_GROWTH_MIN_INTERVAL_MS || String(60 * 60 * 1000))
 const opportunityScoutInvalidCooldownMs = Number(env.SEO_AGENT_OPPORTUNITY_SCOUT_INVALID_COOLDOWN_MS || String(3 * 60 * 60 * 1000))
 const opportunityScoutNoActionCooldownMs = Number(env.SEO_AGENT_OPPORTUNITY_SCOUT_NO_ACTION_COOLDOWN_MS || String(12 * 60 * 60 * 1000))
+const autonomousQualityGateCooldownMs = Number(env.SEO_AGENT_AUTONOMOUS_QUALITY_GATE_COOLDOWN_MS || String(6 * 60 * 60 * 1000))
 const sameTargetAutonomousCooldownMs = Number(env.SEO_AGENT_SAME_TARGET_AUTONOMOUS_COOLDOWN_MS || String(90 * 24 * 60 * 60 * 1000))
 const sameTargetAutonomousMaxRecent = Number(env.SEO_AGENT_SAME_TARGET_AUTONOMOUS_MAX_RECENT || '1')
 const engagementMinViews = Number(env.SEO_AGENT_ENGAGEMENT_MIN_VIEWS || '50')
@@ -1917,6 +1918,16 @@ async function maybeQueueAutonomousCodeActions(workspaces) {
       })
       continue
     }
+    const qualityGateBlock = activeAutonomousQualityGateBlock(workspace, targetChannelId)
+    if (qualityGateBlock) {
+      logThrottled(`autonomous_quality_gate_cooldown:${qualityGateBlock.key}`, 30 * 60 * 1000, 'autonomous_quality_gate_cooldown', {
+        workspace: workspace.label || workspace.id || null,
+        actionId: qualityGateBlock.actionId || null,
+        until: qualityGateBlock.until || null,
+        reason: qualityGateBlock.reason || null
+      })
+      continue
+    }
     const repoReady = await repoAutomationReady(workspace.repoFullName, workspace.branch || 'main')
     if (!repoReady.ready) {
       logThrottled(`autonomous_repo_not_ready:${workspace.repoFullName}`, 60 * 60 * 1000, 'autonomous_repo_not_ready', {
@@ -2016,6 +2027,39 @@ async function maybeQueueAutonomousCodeActions(workspaces) {
     saveState()
     return
   }
+}
+
+
+function activeAutonomousQualityGateBlock(workspace, targetChannelId) {
+  const key = workspaceProfileKey(workspace, targetChannelId)
+  const block = state.autonomousQualityGateBlocks?.[key]
+  if (!block) return null
+  const untilMs = Date.parse(block.until || '')
+  if (untilMs && untilMs > Date.now()) return { ...block, key }
+  delete state.autonomousQualityGateBlocks[key]
+  return null
+}
+
+function rememberAutonomousQualityGateBlock(action, workspace, targetChannelId, failure, error) {
+  if (!action?.autonomous || failure?.category !== 'quality_gate') return false
+  const key = workspaceProfileKey(workspace, targetChannelId)
+  const now = new Date()
+  const until = new Date(now.getTime() + autonomousQualityGateCooldownMs)
+  state.autonomousQualityGateBlocks = state.autonomousQualityGateBlocks || {}
+  state.autonomousQualityGateBlocks[key] = {
+    at: now.toISOString(),
+    until: until.toISOString(),
+    actionId: action.id || null,
+    status: failure.status || 'quality_rejected',
+    reason: failure.operatorSummary || error?.message || String(error || 'quality_gate')
+  }
+  log('autonomous_quality_gate_cooldown_started', {
+    workspace: workspace?.label || workspace?.id || null,
+    actionId: action.id || null,
+    until: until.toISOString(),
+    reason: state.autonomousQualityGateBlocks[key].reason
+  })
+  return true
 }
 
 function autonomousWorkspaceOrder(workspaces) {
@@ -4206,6 +4250,7 @@ async function runQueuedApprovedCodeAction(entry, workspace, targetChannelId) {
     state.messageToAction[posted.id] = entry.id
   } catch (error) {
     const failure = classifyCodeActionFailure(error)
+    rememberAutonomousQualityGateBlock(entry, workspace, targetChannelId, failure, error)
     state.codeActionResults[entry.id] = { status: failure.status, failedAt: new Date().toISOString(), error: error?.message || String(error), failure }
     recordActionLedger(entry, workspace, targetChannelId, failure.ledgerEvent, { error: error?.message || String(error), failure })
     if (failure.status === 'no_changes') {
@@ -8436,6 +8481,7 @@ async function postRuntimeCodeActionResult(runtimeRun) {
       return
     }
   }
+  rememberAutonomousQualityGateBlock(action, workspace, targetChannelId, failure, new Error(payload.error || payload.status || 'runtime_code_action_failed'))
   const recovered = await recoverRuntimeFailureAfterRecentCommit(action, workspace, failure)
   if (recovered) {
     state.codeActionResults = state.codeActionResults || {}

@@ -102,6 +102,17 @@ test('recent code result targets are removed from opportunity scout evidence bef
   assert.ok(workerSource.indexOf('recentCodeResultBlockedStatuses') < workerSource.indexOf('buildKeywordPlannerDiscoveryEvidence(keywordMap, excludedTargets)'))
 })
 
+
+test('autonomous code backs off after quality gate rejection', () => {
+  assert.match(workerSource, /SEO_AGENT_AUTONOMOUS_QUALITY_GATE_COOLDOWN_MS/)
+  assert.match(workerSource, /function activeAutonomousQualityGateBlock\(workspace, targetChannelId\)/)
+  assert.match(workerSource, /function rememberAutonomousQualityGateBlock\(action, workspace, targetChannelId, failure, error\)/)
+  assert.match(workerSource, /autonomous_quality_gate_cooldown/)
+  assert.match(workerSource, /rememberAutonomousQualityGateBlock\(entry, workspace, targetChannelId, failure, error\)/)
+  assert.match(workerSource, /rememberAutonomousQualityGateBlock\(action, workspace, targetChannelId, failure, new Error/)
+  assert.ok(workerSource.indexOf('activeAutonomousQualityGateBlock(workspace, targetChannelId)') < workerSource.indexOf('repoAutomationReady(workspace.repoFullName'))
+})
+
 test('runtime mutations require bearer authentication', () => {
   assert.match(runtimeSource, /runtime_auth_not_configured/)
   assert.match(runtimeSource, /isAuthorizedRuntimeRequest/)
