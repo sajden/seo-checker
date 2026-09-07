@@ -375,3 +375,12 @@ test('approved runtime queue is revalidated immediately before execution', () =>
   assert.match(workerSource, /pre_runtime_policy_recheck/)
   assert.match(workerSource, /approved_queue_pruned_by_policy/)
 })
+
+test('autonomous code does not handle legal policy or tax claims', () => {
+  assert.match(workerSource, /function isLegalOrPolicyActionText\(action\)/)
+  assert.match(workerSource, /legal_policy_or_tax_claim_needs_explicit_request/)
+  assert.match(workerSource, /\\b\(\?:juridik\|juridisk\|legal\|policy/)
+  assert.match(workerSource, /rutavdrag\|rut-ber\[aä\]ttig\|rutber\[aä\]ttig/)
+  assert.match(workerSource, /if \(isLegalOrPolicyActionText\(action\)\) \{\s+return \{ ok: false, reason: 'legal_policy_or_tax_claim_needs_explicit_request' \}/)
+  assert.match(workerSource, /isCodeAction\(action\) && isLegalOrPolicyActionText\(action\)/)
+})

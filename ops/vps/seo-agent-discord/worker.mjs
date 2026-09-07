@@ -2401,6 +2401,9 @@ function autonomousCodeCandidateCheck(action, workspace, targetChannelId) {
   if (isWeakExactKeywordCoverageAction(action)) {
     return { ok: false, reason: 'keyword_coverage_lacks_search_evidence' }
   }
+  if (isLegalOrPolicyActionText(action)) {
+    return { ok: false, reason: 'legal_policy_or_tax_claim_needs_explicit_request' }
+  }
   if (isSebcastwallWorkspace(workspace)) {
     const observedEvidence = sebcastwallObservedEvidenceCheck(action)
     if (!observedEvidence.ok) return observedEvidence
@@ -10319,6 +10322,7 @@ function shouldPostActionCard(action, workspace, targetChannelId) {
   if (isKeywordPlanAction(action)) return { ok: false, reason: 'keyword_plan_is_strategy_not_action_card' }
   if (isCodeAction(action) && !targetUrl && kind !== 'new-page') return { ok: false, reason: 'missing_target_url' }
   if (isCodeAction(action) && isLegalOrPolicyRoute(targetUrl)) return { ok: false, reason: 'legal_or_policy_route_needs_explicit_request' }
+  if (isCodeAction(action) && isLegalOrPolicyActionText(action)) return { ok: false, reason: 'legal_policy_or_tax_claim_needs_explicit_request' }
   if (ledger?.status === 'completed' && !isLedgerRecheckDue(ledger)) return { ok: false, reason: 'already_completed_waiting_recheck' }
   if (ledger?.status === 'ignored' && !isLedgerRecheckDue(ledger)) return { ok: false, reason: 'previously_ignored_waiting_recheck' }
   if (Number(ledger?.guardedCount || 0) >= 2 && !isLedgerRecheckDue(ledger)) return { ok: false, reason: 'repeatedly_guarded' }
@@ -10351,6 +10355,11 @@ function isLegalOrPolicyRoute(value) {
   } catch {}
   const compact = pathname.replace(/\/+$/, '') || '/'
   return /(?:^|\/)(terms|privacy|integritet|cookie|cookies|legal|terms-of-service|tos|anvandarvillkor|användarvillkor|villkor|dataskydd|gdpr)(?:\/|$)/i.test(compact)
+}
+
+function isLegalOrPolicyActionText(action) {
+  const text = actionText(action)
+  return /\b(?:juridik|juridisk|legal|policy|privacy|integritet|cookie|cookies|gdpr|dataskydd|villkor|anv[aä]ndarvillkor|terms|tos|skatt|tax|moms|rut|rot|rutavdrag|rut-ber[aä]ttig|rutber[aä]ttig|rotavdrag|avdragsr[aä]tt|bokf[oö]ring|compliance)\b/.test(text)
 }
 
 function isKeywordPlanAction(action) {
