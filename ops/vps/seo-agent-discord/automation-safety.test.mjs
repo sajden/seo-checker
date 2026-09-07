@@ -345,6 +345,15 @@ test('cosmetic synonym-only SEO diffs are blocked deterministically', () => {
   assert.match(runnerSource, /utan materiellt nytt SEO-värde/)
 })
 
+test('no-op Codex actions clean review worktrees before failing', () => {
+  assert.match(runnerSource, /async function rejectNoChangeWorktree/)
+  assert.match(runnerSource, /code_no_change_cleaned/)
+  assert.match(runnerSource, /git', \['clean', '-fd'\]/)
+  assert.match(runnerSource, /returnRejectedReviewBranchToBase\(repoDir\)/)
+  assert.match(runnerSource, /rejectNoChangeWorktree\(repoDir, action, 'final_staged_diff_empty'\)/)
+  assert.match(runnerSource, /rejectNoChangeWorktree\(repoDir, input, 'quality_gate_diff_empty'\)/)
+})
+
 test('target history and rejected actions use a ninety day guard', () => {
   assert.match(workerSource, /SEO_AGENT_COMPLETED_TARGET_COOLDOWN_MS \|\| String\(90 \* 24 \* 60 \* 60 \* 1000\)/)
   assert.match(workerSource, /ledger\?\.status === 'rejected' && !isLedgerRecheckDue\(ledger\)/)

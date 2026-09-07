@@ -72,7 +72,10 @@ const safety = await runWorkspaceSafetyGate(repoDir, action)
 await runBestBuild(bestBuildDir(repoDir))
 await run('git', ['add', '-A'], repoDir)
 const diff = await run('git', ['diff', '--cached', '--stat'], repoDir)
-if (!diff.stdout.trim()) throw new Error('Codex made no changes')
+if (!diff.stdout.trim()) {
+  await rejectNoChangeWorktree(repoDir, action, 'final_staged_diff_empty')
+  throw new Error('Codex made no changes')
+}
 await run('git', ['config', 'user.name', 'SEO Agent'], repoDir)
 await run('git', ['config', 'user.email', 'seo-agent@sebcastwall.se'], repoDir)
 await run('git', ['commit', '-m', seoAgentCommitMessage(action.title || 'SEO action', `SEO-action-id: ${action.id}`)], repoDir)
@@ -373,7 +376,10 @@ async function runQualityGate(repoDir, input) {
   let lastReview = null
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     const diffStat = await run('git', ['diff', '--stat'], repoDir)
-    if (!diffStat.stdout.trim()) throw new Error('Codex made no changes')
+    if (!diffStat.stdout.trim()) {
+      await rejectNoChangeWorktree(repoDir, input, 'quality_gate_diff_empty')
+      throw new Error('Codex made no changes')
+    }
     const diff = await run('git', ['diff', '--', '.'], repoDir)
     const changedFiles = (await run('git', ['diff', '--name-only', '--', '.'], repoDir)).stdout
       .split(/\r?\n/).map((item) => item.trim()).filter(Boolean)
@@ -605,6 +611,45 @@ async function rejectDirtyWorktree(repoDir, input, review) {
     usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0, calls: 0 },
     actionId: input.id,
     note: `Rejected dirty worktree saved to ${patchPath}. Reason: ${review?.reason || 'quality_blocked'}`
+  })
+}
+
+async function rejectNoChangeWorktree(repoDir, input, reason = 'no_changes') {
+  const diff = await run('git', ['diff'], repoDir).catch(() => ({ stdout: '' }))
+  const stagedDiff = await run('git', ['diff', '--cached'], repoDir).catch(() => ({ stdout: '' }))
+  const untracked = await run('git', ['ls-files', '--others', '--exclude-standard'], repoDir).catch(() => ({ stdout: '' }))
+  const status = await run('git', ['status', '--short'], repoDir).catch(() => ({ stdout: '' }))
+  const rejectDir = '/home/deploy/seo-agent-discord/state/rejected-diffs'
+  mkdirSync(rejectDir, { recursive: true })
+  const safeId = String(input.id || input.title || Date.now()).replace(/[^a-z0-9_.-]+/gi, '-').slice(0, 160)
+  const patchPath = join(rejectDir, `${new Date().toISOString().replace(/[:.]/g, '-')}-${safeId}-noop.txt`)
+  writeFileSync(patchPath, [
+    `# No-op SEO action cleaned: ${input.id || ''}`,
+    `# Reason: ${reason}`,
+    '',
+    '# git status --short',
+    status.stdout || '',
+    '',
+    '# git diff',
+    diff.stdout || '',
+    '',
+    '# git diff --cached',
+    stagedDiff.stdout || '',
+    '',
+    '# untracked files',
+    untracked.stdout || ''
+  ].join('\n'))
+  await run('git', ['reset', '--hard'], repoDir)
+  await run('git', ['clean', '-fd'], repoDir)
+  await returnRejectedReviewBranchToBase(repoDir)
+  recordCodexUsage({
+    agent: 'seo-agent',
+    purpose: 'code_no_change_cleaned',
+    workspace: input.workspaceSlug || input.projectSlug || input.repoFullName || null,
+    status: 'blocked',
+    usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0, calls: 0 },
+    actionId: input.id,
+    note: `No-op Codex worktree cleaned and saved to ${patchPath}. Reason: ${reason}`
   })
 }
 
